@@ -1,0 +1,17 @@
+[Unit]
+Description=AI Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/ai-discord-bot
+# Wait 15 seconds before starting to ensure Wi-Fi is connected
+ExecStartPre=/bin/sleep 15
+ExecStart=%h/.bun/bin/bun run src/index.ts
+Restart=on-failure
+RestartSec=10
+Environment=PATH=%h/.local/share/fnm/node-versions/v24.12.0/installation/bin:%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
