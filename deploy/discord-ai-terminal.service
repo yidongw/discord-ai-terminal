@@ -1,11 +1,11 @@
 [Unit]
-Description=AI Discord Bot
+Description=Discord AI Terminal
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/Projects/ai-discord-bot
+WorkingDirectory=%h/Projects/discord-ai-terminal
 # Wait 15 seconds before starting to ensure Wi-Fi is connected
 ExecStartPre=/bin/sleep 15
 ExecStart=%h/.bun/bin/bun run src/index.ts

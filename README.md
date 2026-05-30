@@ -1,4 +1,4 @@
-# AI Discord Bot
+# Discord AI Terminal
 
 A Discord bot that runs Claude Code or Codex sessions on different projects based on Discord channel names. Each channel maps to a folder in your file system, allowing you to interact with repositories through Discord.
 
@@ -11,7 +11,7 @@ A Discord bot that runs Claude Code or Codex sessions on different projects base
 3. Clone and setup:
    ```bash
    git clone <repository-url>
-   cd ai-discord-bot
+   cd discord-ai-terminal
    bun install
    ```
 4. Create `.env` file:
@@ -36,7 +36,7 @@ A Discord bot that runs Claude Code or Codex sessions on different projects base
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
 2. Click "New Application"
-3. Give your application a name (e.g., "AI Discord Bot")
+3. Give your application a name (e.g., "Discord AI Terminal")
 4. Click "Create"
 
 ### 2. Create a Bot User
@@ -75,7 +75,7 @@ A Discord bot that runs Claude Code or Codex sessions on different projects base
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd ai-discord-bot
+cd discord-ai-terminal
 
 # Install dependencies
 bun install
@@ -135,7 +135,7 @@ bun start
 
 You should see:
 ```
-Bot is ready! Logged in as AI Discord Bot#1234
+Bot is ready! Logged in as Discord AI Terminal#1234
 Successfully registered application commands.
 ```
 
@@ -195,14 +195,14 @@ Bot: 🔧 LS (path: .)
 
 For detailed setup instructions, troubleshooting, and development information, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Running as a Service (Linux)
+## Running as a Service
 
 To keep the bot running persistently, use the included systemd user service:
 
 ```bash
 # Copy service file to user systemd directory
 mkdir -p ~/.config/systemd/user
-cp deploy/ai-discord-bot.service ~/.config/systemd/user/
+cp deploy/discord-ai-terminal.service ~/.config/systemd/user/
 
 # Edit the service file to match your paths if needed
 # The default uses %h (home directory) for paths
@@ -211,8 +211,8 @@ cp deploy/ai-discord-bot.service ~/.config/systemd/user/
 
 # Reload systemd and enable the service
 systemctl --user daemon-reload
-systemctl --user enable ai-discord-bot
-systemctl --user start ai-discord-bot
+systemctl --user enable discord-ai-terminal
+systemctl --user start discord-ai-terminal
 
 # Enable lingering so service runs without active login session
 loginctl enable-linger
@@ -222,16 +222,16 @@ loginctl enable-linger
 
 ```bash
 # Check status
-systemctl --user status ai-discord-bot
+systemctl --user status discord-ai-terminal
 
 # View logs
-journalctl --user -u ai-discord-bot -n 50 -f
+journalctl --user -u discord-ai-terminal -n 50 -f
 
 # Restart after code changes
-systemctl --user restart ai-discord-bot
+systemctl --user restart discord-ai-terminal
 
 # Stop the service
-systemctl --user stop ai-discord-bot
+systemctl --user stop discord-ai-terminal
 ```
 
 ## Credits

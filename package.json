@@ -1,5 +1,5 @@
 {
-  "name": "agent-discord-bot",
+  "name": "discord-ai-terminal",
   "module": "src/index.ts",
   "type": "module",
   "private": true,

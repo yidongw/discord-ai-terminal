@@ -66,7 +66,7 @@ Required environment variables:
 
 ## Important Restrictions (for Claude Code)
 
-- **Never run the bot** - The bot is likely already running as a service. Running a second instance would cause conflicts (duplicate responses, port conflicts). Use `systemctl --user status claude-discord-bot` to check if it's running.
+- **Never run the bot** - The bot is likely already running as a service. Running a second instance would cause conflicts (duplicate responses, port conflicts). Use `systemctl --user status discord-ai-terminal` to check if it's running.
 - You can run tests, but never run the main application.
 
 ## Service Management
@@ -75,20 +75,20 @@ This bot runs as a systemd user service. Common commands:
 
 ```bash
 # Check if running
-systemctl --user status ai-discord-bot
+systemctl --user status discord-ai-terminal
 
 # View logs
-journalctl --user -u ai-discord-bot -n 50
+journalctl --user -u discord-ai-terminal -n 50
 
 # Restart after code changes
-systemctl --user restart ai-discord-bot
+systemctl --user restart discord-ai-terminal
 
 # Stop/Start
-systemctl --user stop ai-discord-bot
-systemctl --user start ai-discord-bot
+systemctl --user stop discord-ai-terminal
+systemctl --user start discord-ai-terminal
 ```
 
-See `deploy/claude-discord-bot.service` for the service file and README.md for installation instructions.
+See `deploy/discord-ai-terminal.service` for the service file and README.md for installation instructions.
 
 ## Testing Notes
 
