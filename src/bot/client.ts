@@ -10,6 +10,15 @@ import { SessionManager } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
 import { parseAgentInvocations, starterMessageText, threadName } from "./parser.js";
 import { resolveWorkDir } from "../utils/path-resolver.js";
+import {
+  ensureAttachmentDir,
+  getTempPath,
+  downloadAttachment,
+  isImageType,
+  buildPromptWithAttachments,
+  cleanupOldAttachments,
+  type DownloadedAttachment,
+} from "../utils/attachments.js";
 import type { MCPPermissionServer } from "../mcp/server.js";
 
 export class DiscordBot {
@@ -100,8 +109,11 @@ export class DiscordBot {
 
     await msg.react("👀").catch(() => {});
 
+    const attachments = await this.downloadMsgAttachments(msg);
+
     for (let i = 0; i < invocations.length; i++) {
       const { agent, prompt } = invocations[i];
+      const fullPrompt = buildPromptWithAttachments(prompt, attachments);
       const tName = threadName(agent, prompt);
 
       // Single agent: thread from the user's own message (cleaner, no extra bot message).
@@ -134,7 +146,7 @@ export class DiscordBot {
           thread,
           agent,
           resolved.workDir,
-          prompt,
+          fullPrompt,
           discordContext
         );
       } catch (err: any) {
@@ -159,6 +171,9 @@ export class DiscordBot {
 
     await msg.react("👀").catch(() => {});
 
+    const attachments = await this.downloadMsgAttachments(msg);
+    const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
+
     const discordContext = {
       channelId: thread.id,
       channelName: thread.name,
@@ -173,11 +188,44 @@ export class DiscordBot {
         thread,
         session.agent,
         session.workDir,
-        msg.content,
+        fullPrompt,
         discordContext
       );
     } catch (err: any) {
       await msg.reply(`❌ Failed to resume **${session.agent}**: ${err.message}`);
     }
+  }
+
+  /**
+   * Download all attachments on a Discord message to local temp files so the
+   * agent can read them (e.g. images) by absolute path. Failures are logged
+   * and skipped so a bad attachment never blocks the agent run.
+   */
+  private async downloadMsgAttachments(
+    msg: Message
+  ): Promise<DownloadedAttachment[]> {
+    if (msg.attachments.size === 0) return [];
+
+    ensureAttachmentDir();
+    cleanupOldAttachments();
+
+    const results: DownloadedAttachment[] = [];
+    let index = 0;
+    for (const att of msg.attachments.values()) {
+      const name = att.name ?? "attachment";
+      try {
+        const tempPath = getTempPath(msg.channelId, name, index++);
+        await downloadAttachment(att.url, tempPath);
+        results.push({
+          tempPath,
+          originalName: name,
+          contentType: att.contentType ?? undefined,
+          isImage: isImageType(att.contentType ?? undefined, name),
+        });
+      } catch (err) {
+        console.error(`Failed to download attachment ${name}:`, err);
+      }
+    }
+    return results;
   }
 }
