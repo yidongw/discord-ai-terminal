@@ -28,9 +28,10 @@ export function resolveWorkDir(channelName: string, baseFolder: string): Resolve
   const repoPath = path.join(baseFolder, repo);
   if (!fs.existsSync(repoPath)) return null;
 
-  const wtPath = path.join(repoPath, "worktrees", worktree);
+  const wtPath = path.join(baseFolder, "worktrees", repo, worktree);
 
   if (!fs.existsSync(wtPath)) {
+    fs.mkdirSync(path.dirname(wtPath), { recursive: true });
     const result = spawnSync("git", ["-C", repoPath, "worktree", "add", "-b", worktree, wtPath], {
       encoding: "utf8",
     });
