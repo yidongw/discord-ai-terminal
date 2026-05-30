@@ -90,14 +90,7 @@ export class DiscordBot {
   private async handleChannelMessage(msg: Message): Promise<void> {
     const channel = msg.channel as TextChannel;
     const channelName = channel.name;
-    const resolved = resolveWorkDir(channelName, this.baseFolder);
-
-    if (!resolved) {
-      await msg.reply(
-        `No working directory found for \`${channelName}\`. Check BASE_FOLDER or channel name.`
-      );
-      return;
-    }
+    const resolved = resolveWorkDir(channelName, this.baseFolder) ?? { workDir: this.baseFolder, repo: channelName };
 
     const invocations = parseAgentInvocations(msg.content);
     if (invocations.length === 0) {
@@ -105,21 +98,33 @@ export class DiscordBot {
       return;
     }
 
-    for (const { agent, prompt } of invocations) {
-      const starterText = starterMessageText(agent, prompt);
+    await msg.react("👀").catch(() => {});
+
+    for (let i = 0; i < invocations.length; i++) {
+      const { agent, prompt } = invocations[i];
       const tName = threadName(agent, prompt);
 
-      const starterMsg = await channel.send(starterText);
-      const thread = (await starterMsg.startThread({
-        name: tName,
-        autoArchiveDuration: 1440,
-      })) as ThreadChannel;
+      // Single agent: thread from the user's own message (cleaner, no extra bot message).
+      // Multiple agents: post a starter message per agent (Discord only allows one thread per message).
+      let thread: ThreadChannel;
+      if (invocations.length === 1) {
+        thread = (await msg.startThread({
+          name: tName,
+          autoArchiveDuration: 1440,
+        })) as ThreadChannel;
+      } else {
+        const starterMsg = await channel.send(starterMessageText(agent, prompt));
+        thread = (await starterMsg.startThread({
+          name: tName,
+          autoArchiveDuration: 1440,
+        })) as ThreadChannel;
+      }
 
       const discordContext = {
         channelId: thread.id,
         channelName: tName,
         userId: msg.author.id,
-        messageId: starterMsg.id,
+        messageId: msg.id,
       };
 
       try {
@@ -151,6 +156,8 @@ export class DiscordBot {
       await msg.reply("Agent is still running. Use `/stop` to cancel.");
       return;
     }
+
+    await msg.react("👀").catch(() => {});
 
     const discordContext = {
       channelId: thread.id,

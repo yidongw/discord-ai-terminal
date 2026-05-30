@@ -8,11 +8,21 @@ export interface AgentRunOptions {
   discordContext?: DiscordContext;
 }
 
+// Normalized events that session-manager handles regardless of agent
+export type AgentEvent =
+  | { kind: "init";       sessionId: string; model: string; cwd: string }
+  | { kind: "text";       content: string }
+  | { kind: "tool_start"; id: string; label: string }
+  | { kind: "tool_done";  id: string; preview: string; isError: boolean }
+  | { kind: "done";       turns: number | null; cost: number | null; tokens: string | null }
+  | { kind: "error";      message: string };
+
 export interface AgentRunner {
   readonly key: string;
   readonly label: string;
   readonly color: number;
   buildCommand(workDir: string, prompt: string, opts: AgentRunOptions): string;
+  parseLine(line: string, workDir: string): AgentEvent | null;
 }
 
 const registry = new Map<string, AgentRunner>();
@@ -32,6 +42,8 @@ export function listAgentKeys(): string[] {
 // Register built-in agents on import
 import { ccAgent } from "./cc.js";
 import { codexAgent } from "./codex.js";
+import { cursorAgent } from "./cs.js";
 
 registerAgent(ccAgent);
 registerAgent(codexAgent);
+registerAgent(cursorAgent);
