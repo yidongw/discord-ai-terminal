@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.discord-ai-terminal</string>
+
+	<!--
+	  launchd refuses to posix_spawn the bun binary directly (the job never
+	  runs, runs=0, no log is produced), so we launch it through /bin/sh, cd
+	  into the project, and exec bun. This is the robust, proven form on macOS.
+	-->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>cd /Users/xinjuan/git/discord-ai-terminal &amp;&amp; exec /Users/xinjuan/.bun/bin/bun run src/index.ts</string>
+	</array>
+
+	<!-- Start on login/boot -->
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- Restart automatically if it ever exits (crash or otherwise) -->
+	<key>KeepAlive</key>
+	<true/>
+
+	<!-- Wait at least 15s between restarts to avoid rapid crash loops -->
+	<key>ThrottleInterval</key>
+	<integer>15</integer>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/Users/xinjuan/.bun/bin:/Users/xinjuan/.local/bin:/Users/xinjuan/.local/share/fnm/node-versions/v24.12.0/installation/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>/Users/xinjuan/git/discord-ai-terminal/discord-ai-terminal.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/xinjuan/git/discord-ai-terminal/discord-ai-terminal.log</string>
+</dict>
+</plist>

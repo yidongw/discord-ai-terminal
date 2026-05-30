@@ -195,9 +195,47 @@ Bot: 🔧 LS (path: .)
 
 For detailed setup instructions, troubleshooting, and development information, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Running as a Service
+## Running as a Service (macOS)
 
-To keep the bot running persistently, use the included systemd user service:
+To keep the bot running persistently and start it automatically after a reboot,
+use the included launchd agent. It is configured with `RunAtLoad` (start on
+login/boot) and `KeepAlive` (restart automatically if it ever exits).
+
+```bash
+# Edit deploy/com.discord-ai-terminal.plist so the paths match your machine:
+#   - the `cd <project path>` and bun path in ProgramArguments
+#   - the StandardOutPath / StandardErrorPath log location
+
+# Install the agent
+cp deploy/com.discord-ai-terminal.plist ~/Library/LaunchAgents/
+
+# Load and enable it (starts the bot immediately and on every login/boot)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.discord-ai-terminal.plist
+launchctl enable gui/$(id -u)/com.discord-ai-terminal
+```
+
+> Note: launchd will not `posix_spawn` the `bun` binary directly, so the plist
+> launches it through `/bin/sh -c "cd <project> && exec bun run src/index.ts"`.
+
+### Service Management (macOS)
+
+```bash
+# Check status (the running PID shows in the first column)
+launchctl list | grep discord-ai-terminal
+
+# View logs
+tail -f discord-ai-terminal.log
+
+# Restart after code changes
+launchctl kickstart -k gui/$(id -u)/com.discord-ai-terminal
+
+# Stop / unload the service
+launchctl bootout gui/$(id -u)/com.discord-ai-terminal
+```
+
+## Running as a Service (Linux)
+
+To keep the bot running persistently on Linux, use the included systemd user service:
 
 ```bash
 # Copy service file to user systemd directory
@@ -218,7 +256,7 @@ systemctl --user start discord-ai-terminal
 loginctl enable-linger
 ```
 
-### Service Management
+### Service Management (Linux)
 
 ```bash
 # Check status

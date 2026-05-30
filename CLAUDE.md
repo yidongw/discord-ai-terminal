@@ -66,29 +66,39 @@ Required environment variables:
 
 ## Important Restrictions (for Claude Code)
 
-- **Never run the bot** - The bot is likely already running as a service. Running a second instance would cause conflicts (duplicate responses, port conflicts). Use `systemctl --user status discord-ai-terminal` to check if it's running.
+- **Never run the bot** - The bot is likely already running as a service. Running a second instance would cause conflicts (duplicate responses, port conflicts). Use `launchctl list | grep discord-ai-terminal` (macOS) to check if it's running.
 - You can run tests, but never run the main application.
 
 ## Service Management
 
-This bot runs as a systemd user service. Common commands:
+On macOS this bot runs as a launchd user agent (`com.discord-ai-terminal`). It is
+configured with `RunAtLoad` and `KeepAlive` so it starts on login/boot and
+restarts automatically if it exits. Common commands:
 
 ```bash
-# Check if running
-systemctl --user status discord-ai-terminal
+# Check if running (running PID shows in the first column)
+launchctl list | grep discord-ai-terminal
 
 # View logs
-journalctl --user -u discord-ai-terminal -n 50
+tail -f discord-ai-terminal.log
 
 # Restart after code changes
-systemctl --user restart discord-ai-terminal
+launchctl kickstart -k gui/$(id -u)/com.discord-ai-terminal
 
-# Stop/Start
-systemctl --user stop discord-ai-terminal
-systemctl --user start discord-ai-terminal
+# Stop / unload
+launchctl bootout gui/$(id -u)/com.discord-ai-terminal
 ```
 
-See `deploy/discord-ai-terminal.service` for the service file and README.md for installation instructions.
+On Linux the bot runs as a systemd user service instead (`discord-ai-terminal`):
+
+```bash
+systemctl --user status discord-ai-terminal
+journalctl --user -u discord-ai-terminal -n 50
+systemctl --user restart discord-ai-terminal
+```
+
+See `deploy/com.discord-ai-terminal.plist` (macOS) and `deploy/discord-ai-terminal.service`
+(Linux) for the service files, and README.md for installation instructions.
 
 ## Testing Notes
 
