@@ -1,106 +1,224 @@
 #!/usr/bin/env node
 
-// MCP bridge script that connects stdio to our HTTP MCP server
+// MCP stdio bridge for the Discord bot.
+//
+// Claude Code speaks the MCP protocol to this script over stdio. The protocol
+// (initialize / tools/list / tools/call) is terminated *locally* here — this
+// process is long-lived, so the handshake state survives across messages.
+//
+// Only the actual side effects (ask the user a question / request a permission
+// decision) are forwarded to the bot's HTTP server via its plain JSON endpoints
+// (POST /tool/ask_user_question, POST /tool/approve_tool). This avoids the
+// stateless-MCP-over-HTTP problem where every line became a fresh HTTP request
+// that failed with "Server not initialized".
+
 const http = require('http');
 const { createInterface } = require('readline');
 
-// Debug: Log environment variables at startup
-console.error(`MCP Bridge startup: DISCORD_CHANNEL_ID=${process.env.DISCORD_CHANNEL_ID}, DISCORD_CHANNEL_NAME=${process.env.DISCORD_CHANNEL_NAME}, DISCORD_USER_ID=${process.env.DISCORD_USER_ID}`);
+const HOST = process.env.MCP_SERVER_HOST || 'localhost';
+const PORT = parseInt(process.env.MCP_SERVER_PORT || '3001', 10);
+const PROTOCOL_VERSION = '2024-11-05';
 
-// Function to send a single JSON-RPC message to the HTTP server
-function sendToMcpServer(jsonLine) {
+function log(...args) {
+  console.error('[mcp-bridge]', ...args);
+}
+
+log(`startup: DISCORD_CHANNEL_ID=${process.env.DISCORD_CHANNEL_ID}, server=${HOST}:${PORT}`);
+
+// Discord context comes from env (baked into the per-session mcp-config by the
+// bot) and is forwarded to the HTTP server as headers, matching what the
+// server's extractDiscordContext() expects.
+// HTTP header values must be ASCII. Discord channel/thread names routinely
+// contain em dashes, emoji, etc. (the thread name is derived from the prompt),
+// which Node's http rejects with ERR_INVALID_CHAR. Strip anything outside
+// printable ASCII — the name is only metadata; channelId is what matters.
+function headerSafe(value) {
+  return String(value).replace(/[^\x20-\x7E]/g, '').trim();
+}
+
+function discordHeaders() {
+  const headers = {};
+  if (process.env.DISCORD_CHANNEL_ID) headers['X-Discord-Channel-Id'] = headerSafe(process.env.DISCORD_CHANNEL_ID);
+  if (process.env.DISCORD_CHANNEL_NAME) headers['X-Discord-Channel-Name'] = headerSafe(process.env.DISCORD_CHANNEL_NAME);
+  if (process.env.DISCORD_USER_ID) headers['X-Discord-User-Id'] = headerSafe(process.env.DISCORD_USER_ID);
+  if (process.env.DISCORD_MESSAGE_ID) headers['X-Discord-Message-Id'] = headerSafe(process.env.DISCORD_MESSAGE_ID);
+  return headers;
+}
+
+// POST a tool's arguments to the bot's HTTP endpoint and resolve with the
+// parsed JSON response. No timeout here: ask_user_question intentionally blocks
+// until the user clicks (the server applies its own timeout).
+function callToolEndpoint(toolName, args) {
   return new Promise((resolve, reject) => {
-    // Skip empty lines
-    if (!jsonLine.trim()) {
-      resolve('');
-      return;
-    }
-
-    const postData = jsonLine;
-
-    // Add Discord context environment variables as headers
-    const headers = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json, text/event-stream',
-      'Content-Length': Buffer.byteLength(postData)
-    };
-
-    // Pass Discord environment variables as headers
-    if (process.env.DISCORD_CHANNEL_ID) {
-      headers['X-Discord-Channel-Id'] = process.env.DISCORD_CHANNEL_ID;
-      console.error(`MCP Bridge: Adding Discord headers: channelId=${process.env.DISCORD_CHANNEL_ID}, channelName=${process.env.DISCORD_CHANNEL_NAME}, userId=${process.env.DISCORD_USER_ID}`);
-    }
-    if (process.env.DISCORD_CHANNEL_NAME) {
-      headers['X-Discord-Channel-Name'] = process.env.DISCORD_CHANNEL_NAME;
-    }
-    if (process.env.DISCORD_USER_ID) {
-      headers['X-Discord-User-Id'] = process.env.DISCORD_USER_ID;
-    }
-    if (process.env.DISCORD_MESSAGE_ID) {
-      headers['X-Discord-Message-Id'] = process.env.DISCORD_MESSAGE_ID;
-    }
-
-    const options = {
-      hostname: 'localhost',
-      port: 3001,
-      path: '/mcp',
-      method: 'POST',
-      headers
-    };
-
-    const req = http.request(options, (res) => {
-      let responseData = '';
-
-      res.on('data', (chunk) => {
-        responseData += chunk;
-      });
-
-      res.on('end', () => {
-        // Handle Server-Sent Events format
-        if (responseData.startsWith('event: message\ndata: ')) {
-          const jsonData = responseData.replace('event: message\ndata: ', '').trim();
-          resolve(jsonData);
-        } else {
-          resolve(responseData);
-        }
-      });
-    });
-
-    req.on('error', (err) => {
-      console.error('MCP Bridge Error:', err);
-      reject(err);
-    });
-
-    req.write(postData);
+    const body = JSON.stringify(args ?? {});
+    const req = http.request(
+      {
+        host: HOST,
+        port: PORT,
+        path: `/tool/${toolName}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          ...discordHeaders(),
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (err) {
+            reject(new Error(`Bad response from /tool/${toolName}: ${data.slice(0, 200)}`));
+          }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.write(body);
     req.end();
   });
 }
 
-// Use readline to process stdin line by line
-const rl = createInterface({
-  input: process.stdin,
-  terminal: false
-});
-
-rl.on('line', async (line) => {
-  try {
-    const result = await sendToMcpServer(line);
-    if (result) {
-      process.stdout.write(result + '\n');
-    }
-  } catch (err) {
-    console.error('MCP Bridge Error:', err);
-    process.stdout.write(JSON.stringify({
-      jsonrpc: '2.0',
-      error: {
-        code: -32603,
-        message: `MCP server connection failed: ${err.message}`
+const TOOLS = [
+  {
+    name: 'ask_user_question',
+    description:
+      'Ask the Discord user a question with multiple-choice options. Sends ' +
+      'buttons to the Discord channel and blocks until the user clicks one ' +
+      '(or picks "Other..." to type a free-form answer). Use this instead of ' +
+      'the built-in AskUserQuestion tool.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        questions: {
+          type: 'array',
+          description: 'The questions to ask (usually one).',
+          items: {
+            type: 'object',
+            properties: {
+              question: { type: 'string', description: 'The question to ask.' },
+              header: { type: 'string', description: 'Short header for the question.' },
+              options: {
+                type: 'array',
+                description: 'Choices to present as buttons.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    label: { type: 'string', description: 'Button label.' },
+                    description: { type: 'string', description: 'Optional longer description.' },
+                  },
+                  required: ['label'],
+                },
+              },
+              multiSelect: { type: 'boolean', description: 'Whether multiple options may be selected.' },
+            },
+            required: ['question', 'options'],
+          },
+        },
       },
-      id: null
-    }) + '\n');
+      required: ['questions'],
+    },
+  },
+  {
+    name: 'approve_tool',
+    description:
+      'Request permission from the Discord user before running a tool. ' +
+      'Posts an approval message with ✅/❌ reactions and blocks until the ' +
+      'user responds. Returns a permission decision.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool_name: { type: 'string', description: 'The tool requesting permission.' },
+        input: { type: 'object', description: 'The input the tool wants to run with.' },
+      },
+      required: ['tool_name', 'input'],
+    },
+  },
+];
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + '\n');
+}
+
+function ok(id, result) {
+  send({ jsonrpc: '2.0', id, result });
+}
+
+function fail(id, code, message) {
+  send({ jsonrpc: '2.0', id, error: { code, message } });
+}
+
+async function handle(msg) {
+  const { id, method, params } = msg;
+  const isNotification = id === undefined || id === null;
+
+  switch (method) {
+    case 'initialize':
+      ok(id, {
+        protocolVersion: params?.protocolVersion || PROTOCOL_VERSION,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: 'discord-permissions', version: '1.0.0' },
+      });
+      return;
+
+    case 'notifications/initialized':
+    case 'initialized':
+      return; // notification, no response
+
+    case 'ping':
+      if (!isNotification) ok(id, {});
+      return;
+
+    case 'tools/list':
+      ok(id, { tools: TOOLS });
+      return;
+
+    case 'tools/call': {
+      const name = params?.name;
+      const args = params?.arguments ?? {};
+      if (!TOOLS.some((t) => t.name === name)) {
+        fail(id, -32602, `Unknown tool: ${name}`);
+        return;
+      }
+      try {
+        const result = await callToolEndpoint(name, args);
+        ok(id, { content: [{ type: 'text', text: JSON.stringify(result) }] });
+      } catch (err) {
+        log(`tools/call ${name} failed:`, err.message);
+        // Return as a tool error so the agent can recover rather than killing the session.
+        ok(id, {
+          content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }],
+          isError: true,
+        });
+      }
+      return;
+    }
+
+    default:
+      // Unknown request → method not found; ignore unknown notifications.
+      if (!isNotification) fail(id, -32601, `Method not found: ${method}`);
+      return;
   }
+}
+
+const rl = createInterface({ input: process.stdin, terminal: false });
+
+// Serialize handling so responses are written in request order and a blocking
+// ask_user_question doesn't interleave with later messages.
+let queue = Promise.resolve();
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    log('skipping non-JSON line:', line.slice(0, 120));
+    return;
+  }
+  queue = queue.then(() => handle(msg)).catch((err) => log('handler error:', err));
 });
 
-// Handle process termination
 process.on('SIGINT', () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));

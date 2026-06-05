@@ -16,6 +16,13 @@ export interface DiscordContext {
 
 export type PermissionMode = "auto" | "plan" | "approve";
 
+const DISCORD_SYSTEM_PROMPT =
+  "You are running inside a Discord bot. " +
+  "The built-in AskUserQuestion tool does NOT work in this environment. " +
+  "Whenever you need to ask the user a question with choices, call " +
+  "mcp__discord-permissions__ask_user_question instead — it sends Discord " +
+  "buttons and waits for the user to click one.";
+
 export function buildClaudeCommand(
   workingDir: string,
   prompt: string,
@@ -25,6 +32,8 @@ export function buildClaudeCommand(
   model: string = "sonnet"
 ): string {
   const escapedPrompt = escapeShellString(prompt);
+  const sessionMcpConfigPath = createSessionMcpConfig(discordContext);
+  const escapedSystemPrompt = escapeShellString(DISCORD_SYSTEM_PROMPT);
 
   const commandParts = [
     `cd ${workingDir}`,
@@ -37,24 +46,22 @@ export function buildClaudeCommand(
     "-p",
     escapedPrompt,
     "--verbose",
+    "--mcp-config",
+    sessionMcpConfigPath,
+    "--append-system-prompt",
+    escapedSystemPrompt,
   ];
 
   // Add permission mode based on setting
   if (mode === "plan") {
-    // Plan mode with MCP permission tool for Discord approval
-    const sessionMcpConfigPath = createSessionMcpConfig(discordContext);
     commandParts.push("--permission-mode", "plan");
-    commandParts.push("--mcp-config", sessionMcpConfigPath);
     commandParts.push("--permission-prompt-tool", "mcp__discord-permissions__approve_tool");
     commandParts.push("--allowedTools", "mcp__discord-permissions");
   } else if (mode === "approve") {
-    // Approve mode - prompt for each dangerous action via Discord
-    const sessionMcpConfigPath = createSessionMcpConfig(discordContext);
-    commandParts.push("--mcp-config", sessionMcpConfigPath);
     commandParts.push("--permission-prompt-tool", "mcp__discord-permissions__approve_tool");
     commandParts.push("--allowedTools", "mcp__discord-permissions");
   } else {
-    // auto mode - skip all permissions
+    // auto mode - skip all permissions, but still expose the ask_user_question MCP tool
     commandParts.push("--dangerously-skip-permissions");
   }
 

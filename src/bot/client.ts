@@ -45,7 +45,10 @@ export class DiscordBot {
 
   setMCPServer(mcp: MCPPermissionServer): void {
     this.mcpServer = mcp;
-    mcp.getPermissionManager().setDiscordBot(this);
+    // setDiscordBot wires the bot into BOTH the server (used by ask_user_question)
+    // and the permission manager (used by approve_tool). Calling the manager
+    // directly would leave the server's own discordBot null, breaking questions.
+    mcp.setDiscordBot(this);
   }
 
   async login(token: string): Promise<void> {
