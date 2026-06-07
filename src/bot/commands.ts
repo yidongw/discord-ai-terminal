@@ -106,7 +106,7 @@ export class CommandHandler {
     const threadId = i.channelId;
     if (this.sessionManager.hasActiveProcess(threadId)) {
       this.sessionManager.killProcess(threadId);
-      await i.reply({ embeds: [embed("🛑 Stopped", "Agent process killed.", 0xffa500)] });
+      await i.reply({ embeds: [embed("🛑 Stopping", "Halted the agent — still delivering any output it already produced…", 0xffa500)] });
     } else {
       await i.reply({ embeds: [embed("ℹ️ Nothing Running", "No active agent in this thread.", 0x888888)] });
     }
