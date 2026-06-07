@@ -7,12 +7,24 @@ import type { DiscordContext } from "../utils/shell.js";
 
 const TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_EMBED = 4000;
+// Grace period after SIGTERM before we escalate to SIGKILL. This keeps a
+// runaway agent that ignores SIGTERM from streaming "already produced" output
+// forever after a /stop.
+const SIGKILL_GRACE_MS = 3000;
 
 interface ActiveSession {
   process: ChildProcess;
   thread: any;
   toolCalls: Map<string, { message: any }>;
   workDir: string;
+  // Serialized, batched outbound message queue for this thread.
+  outbox: Outbox;
+  // Agent reported a terminal event (done/error) itself.
+  done: boolean;
+  // We initiated a stop (user /stop, timeout, or done cleanup). Suppresses the
+  // "Process Failed" embed for the non-zero exit code that SIGTERM produces.
+  stopping: boolean;
+  killTimer?: ReturnType<typeof setTimeout>;
 }
 
 export class SessionManager {
@@ -25,16 +37,33 @@ export class SessionManager {
   }
 
   getDb() { return this.db; }
+
+  // A thread is "active" while its process is alive OR its outbox still has
+  // queued/in-flight messages. The session stays in the map until both are
+  // drained (see the close handler), so this never reports idle while messages
+  // are still being delivered.
   hasActiveProcess(threadId: string) { return this.active.has(threadId); }
 
+  // Graceful stop: signal the agent to stop producing NEW output, but let the
+  // outbox keep delivering whatever it already produced. The close handler
+  // drains the outbox and removes the session once delivery finishes.
   killProcess(threadId: string): void {
-    this.active.get(threadId)?.process.kill("SIGTERM");
-    this.active.delete(threadId);
+    const session = this.active.get(threadId);
+    if (session) this.stopProcess(session);
   }
 
   clearSession(threadId: string): void {
     this.killProcess(threadId);
     this.db.deleteThreadSession(threadId);
+  }
+
+  private stopProcess(session: ActiveSession): void {
+    if (session.stopping) return;
+    session.stopping = true;
+    try { session.process.kill("SIGTERM"); } catch {}
+    session.killTimer = setTimeout(() => {
+      try { session.process.kill("SIGKILL"); } catch {}
+    }, SIGKILL_GRACE_MS);
   }
 
   async runAgent(
@@ -70,7 +99,15 @@ export class SessionManager {
     });
     proc.stdin.end();
 
-    const session: ActiveSession = { process: proc, thread, toolCalls: new Map(), workDir };
+    const session: ActiveSession = {
+      process: proc,
+      thread,
+      toolCalls: new Map(),
+      workDir,
+      outbox: new Outbox(thread),
+      done: false,
+      stopping: false,
+    };
     this.active.set(threadId, session);
 
     if (!existing) {
@@ -78,12 +115,13 @@ export class SessionManager {
     }
 
     const timeout = setTimeout(() => {
-      proc.kill("SIGTERM");
-      thread.send({ embeds: [embed("⏰ Timeout", "30 min limit reached.", 0xffd700)] }).catch(console.error);
+      session.outbox.enqueue(() =>
+        thread.send({ embeds: [embed("⏰ Timeout", "30 min limit reached.", 0xffd700)] })
+      );
+      this.stopProcess(session);
     }, TIMEOUT_MS);
 
     let buffer = "";
-    let done = false;
 
     proc.stdout.on("data", (data: Buffer) => {
       buffer += data.toString();
@@ -93,7 +131,10 @@ export class SessionManager {
         if (!line.trim()) continue;
         console.log(`[${agentKey}] RAW: ${line}`);
         const event = agent.parseLine(line, workDir);
-        if (event) this.handleEvent(threadId, event, session).catch(console.error);
+        if (event) {
+          try { this.handleEvent(threadId, event, session); }
+          catch (err) { console.error(err); }
+        }
       }
     });
 
@@ -101,81 +142,112 @@ export class SessionManager {
       const text = data.toString().trim();
       console.error(`[${agentKey}] stderr:`, text);
       if (text && !text.includes("INFO") && !text.includes("DEBUG")) {
-        thread.send({ embeds: [embed("⚠️ Warning", text.slice(0, 2000), 0xffa500)] }).catch(console.error);
+        session.outbox.enqueue(() =>
+          thread.send({ embeds: [embed("⚠️ Warning", text.slice(0, 2000), 0xffa500)] })
+        );
       }
     });
 
-    proc.on("close", (code) => {
+    proc.on("close", async (code) => {
       clearTimeout(timeout);
-      this.active.delete(threadId);
-      if (code !== 0 && code !== null && !done) {
-        thread.send({ embeds: [embed("❌ Process Failed", `Exit code: ${code}`, 0xff0000)] }).catch(console.error);
+      if (session.killTimer) clearTimeout(session.killTimer);
+
+      // Flush any trailing partial line the agent wrote without a newline.
+      if (buffer.trim()) {
+        const event = agent.parseLine(buffer, workDir);
+        if (event) {
+          try { this.handleEvent(threadId, event, session); }
+          catch (err) { console.error(err); }
+        }
+        buffer = "";
       }
+
+      // Only surface a failure if the agent didn't report a terminal event and
+      // we didn't intentionally stop it (SIGTERM yields a non-zero/null code).
+      if (code !== 0 && code !== null && !session.done && !session.stopping) {
+        session.outbox.enqueue(() =>
+          thread.send({ embeds: [embed("❌ Process Failed", `Exit code: ${code}`, 0xff0000)] })
+        );
+      }
+
+      // Deliver everything already queued before marking the thread idle.
+      await session.outbox.drain();
+      // Guard against a newer run having replaced this session in the map.
+      if (this.active.get(threadId) === session) this.active.delete(threadId);
     });
 
-    proc.on("error", (err) => {
+    proc.on("error", async (err) => {
       clearTimeout(timeout);
-      this.active.delete(threadId);
-      thread.send({ embeds: [embed("❌ Process Error", err.message, 0xff0000)] }).catch(console.error);
+      if (session.killTimer) clearTimeout(session.killTimer);
+      session.outbox.enqueue(() =>
+        thread.send({ embeds: [embed("❌ Process Error", err.message, 0xff0000)] })
+      );
+      await session.outbox.drain();
+      if (this.active.get(threadId) === session) this.active.delete(threadId);
     });
-
-    const handleEvent = this.handleEvent.bind(this);
-    // Patch done flag via event
-    const origHandle = this.handleEvent.bind(this);
-    this.handleEvent = async (tid, event, sess) => {
-      if (event.kind === "done" || event.kind === "error") {
-        done = true;
-        clearTimeout(timeout);
-        proc.kill("SIGTERM");
-        this.active.delete(tid);
-      }
-      return origHandle(tid, event, sess);
-    };
   }
 
-  private async handleEvent(threadId: string, event: AgentEvent, session: ActiveSession): Promise<void> {
-    const { thread, toolCalls } = session;
+  // Translates a parsed agent event into ordered outbox operations. This is
+  // synchronous: it only enqueues work, it never awaits Discord, so stdout
+  // parsing stays ahead and the outbox handles delivery + ordering + batching.
+  private handleEvent(threadId: string, event: AgentEvent, session: ActiveSession): void {
+    const { outbox, toolCalls, thread } = session;
 
     if (event.kind === "init") {
       this.db.updateSessionId(threadId, event.sessionId);
-      await thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${event.model}`, 0x00ff00)] });
+      outbox.enqueue(() =>
+        thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${event.model}`, 0x00ff00)] })
+      );
       return;
     }
 
     if (event.kind === "text") {
-      await this.sendChunked(thread, event.content);
+      outbox.pushText(event.content);
       return;
     }
 
     if (event.kind === "tool_start") {
-      const msg = await thread.send({ embeds: [new EmbedBuilder().setDescription(`⏳ ${event.label}`).setColor(0x0099ff)] });
-      toolCalls.set(event.id, { message: msg });
+      outbox.enqueue(async () => {
+        const msg = await thread.send({ embeds: [new EmbedBuilder().setDescription(`⏳ ${event.label}`).setColor(0x0099ff)] });
+        toolCalls.set(event.id, { message: msg });
+      });
       return;
     }
 
     if (event.kind === "tool_done") {
-      const tracked = toolCalls.get(event.id);
-      if (tracked?.message) {
+      outbox.enqueue(async () => {
+        const tracked = toolCalls.get(event.id);
+        if (!tracked?.message) return;
         const current = tracked.message.embeds[0].data.description ?? "";
         const updated = current.replace("⏳", event.isError ? "❌" : "✅");
         await tracked.message.edit({
           embeds: [new EmbedBuilder().setDescription(`${updated}${event.preview ? `\n*${event.preview.slice(0, 100)}*` : ""}`).setColor(event.isError ? 0xff0000 : 0x00ff00)],
-        }).catch(console.error);
-      }
+        });
+      });
       return;
     }
 
     if (event.kind === "done") {
+      session.done = true;
       const parts: string[] = [];
       if (event.turns !== null) parts.push(`${event.turns} turns`);
       if (event.cost !== null) parts.push(event.cost < 0.01 ? `${(event.cost * 100).toFixed(2)}¢` : `$${event.cost.toFixed(2)}`);
       if (event.tokens) parts.push(event.tokens);
-      await thread.send({ embeds: [embed("✅ Done", parts.length ? `*${parts.join(" · ")}*` : "Complete.", 0x00ff00)] });
+      outbox.enqueue(() =>
+        thread.send({ embeds: [embed("✅ Done", parts.length ? `*${parts.join(" · ")}*` : "Complete.", 0x00ff00)] })
+      );
+      // Some agents (SDK) keep the process alive after "done"; stop it so the
+      // close handler can drain the outbox and free the thread.
+      this.stopProcess(session);
       return;
     }
 
     if (event.kind === "error") {
-      await thread.send({ embeds: [embed("❌ Failed", event.message, 0xff0000)] });
+      session.done = true;
+      outbox.enqueue(() =>
+        thread.send({ embeds: [embed("❌ Failed", event.message, 0xff0000)] })
+      );
+      this.stopProcess(session);
       return;
     }
 
@@ -183,43 +255,122 @@ export class SessionManager {
     const raw = event as any;
     if (raw.kind === "_sdk_assistant") {
       this.db.updateSessionId(threadId, raw.sessionId);
-      if (raw.content?.trim()) await this.sendChunked(thread, raw.content);
+      if (raw.content?.trim()) outbox.pushText(raw.content);
       for (const tool of (raw.tools ?? [])) {
         const label = formatToolCall(tool, session.workDir);
-        const msg = await thread.send({ embeds: [new EmbedBuilder().setDescription(`⏳ ${label}`).setColor(0x0099ff)] });
-        toolCalls.set(tool.id, { message: msg });
+        outbox.enqueue(async () => {
+          const msg = await thread.send({ embeds: [new EmbedBuilder().setDescription(`⏳ ${label}`).setColor(0x0099ff)] });
+          toolCalls.set(tool.id, { message: msg });
+        });
       }
     }
     if (raw.kind === "_sdk_tool_results") {
       for (const result of (raw.results ?? [])) {
-        const tracked = toolCalls.get(result.tool_use_id);
-        if (!tracked?.message) continue;
-        const firstLine = String(result.content ?? "").split("\n")[0].trim().slice(0, 100);
-        const current = tracked.message.embeds[0].data.description ?? "";
-        const updated = current.replace("⏳", result.is_error ? "❌" : "✅");
-        await tracked.message.edit({
-          embeds: [new EmbedBuilder().setDescription(`${updated}${firstLine ? `\n*${firstLine}*` : ""}`).setColor(result.is_error ? 0xff0000 : 0x00ff00)],
-        }).catch(console.error);
+        outbox.enqueue(async () => {
+          const tracked = toolCalls.get(result.tool_use_id);
+          if (!tracked?.message) return;
+          const firstLine = String(result.content ?? "").split("\n")[0].trim().slice(0, 100);
+          const current = tracked.message.embeds[0].data.description ?? "";
+          const updated = current.replace("⏳", result.is_error ? "❌" : "✅");
+          await tracked.message.edit({
+            embeds: [new EmbedBuilder().setDescription(`${updated}${firstLine ? `\n*${firstLine}*` : ""}`).setColor(result.is_error ? 0xff0000 : 0x00ff00)],
+          });
+        });
       }
     }
   }
 
-  private async sendChunked(thread: any, content: string): Promise<void> {
-    const text = formatForDiscord(content);
-    if (text.length <= MAX_EMBED) {
-      await thread.send({ embeds: [new EmbedBuilder().setDescription(text).setColor(0x7289da)] });
-      return;
+  destroy(): void {
+    for (const [, session] of this.active) {
+      if (session.killTimer) clearTimeout(session.killTimer);
+      try { session.process.kill("SIGKILL"); } catch {}
     }
-    const chunks = splitText(text, MAX_EMBED);
-    for (let i = 0; i < chunks.length; i++) {
-      await thread.send({
-        embeds: [new EmbedBuilder().setDescription(chunks[i]).setColor(0x7289da).setFooter(i > 0 ? { text: `(${i + 1}/${chunks.length})` } : null)],
-      });
-    }
+    this.active.clear();
+  }
+}
+
+/**
+ * Per-thread outbound message queue. Sends are serialized (preserving order and
+ * applying natural backpressure against Discord's rate limit) and consecutive
+ * text is coalesced into as few embeds as possible — but only when a backlog
+ * actually forms, so light traffic still sends immediately.
+ */
+export class Outbox {
+  private queue: OutItem[] = [];
+  private running = false;
+  private idleWaiters: Array<() => void> = [];
+
+  constructor(private thread: any) {}
+
+  private get busy(): boolean {
+    return this.running || this.queue.length > 0;
   }
 
-  destroy(): void {
-    for (const [id] of this.active) this.killProcess(id);
+  // Append streamed text. Merges into a pending text item so a burst (or
+  // everything that accumulates while an earlier send is in flight) goes out
+  // as one message.
+  pushText(content: string): void {
+    if (!content) return;
+    const last = this.queue[this.queue.length - 1];
+    if (last && last.type === "text") last.content += content;
+    else this.queue.push({ type: "text", content });
+    void this.pump();
+  }
+
+  // Enqueue an ordered async send/edit. Any pending text already queued ahead
+  // of it is delivered first, so message order matches agent output order.
+  enqueue(run: () => Promise<unknown>): void {
+    this.queue.push({ type: "op", run });
+    void this.pump();
+  }
+
+  // Resolves once the queue is fully drained.
+  drain(): Promise<void> {
+    if (!this.busy) return Promise.resolve();
+    return new Promise((res) => this.idleWaiters.push(res));
+  }
+
+  private async pump(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    try {
+      while (this.queue.length > 0) {
+        const item = this.queue.shift()!;
+        try {
+          if (item.type === "text") await sendChunked(this.thread, item.content);
+          else await item.run();
+        } catch (err) {
+          console.error("[outbox] send failed:", err);
+        }
+      }
+    } finally {
+      this.running = false;
+    }
+    // Items added during the final await are handled by re-pumping; only once
+    // the queue is genuinely empty do we settle the idle waiters.
+    if (this.queue.length > 0) { void this.pump(); return; }
+    const waiters = this.idleWaiters;
+    this.idleWaiters = [];
+    for (const w of waiters) w();
+  }
+}
+
+type OutItem =
+  | { type: "text"; content: string }
+  | { type: "op"; run: () => Promise<unknown> };
+
+async function sendChunked(thread: any, content: string): Promise<void> {
+  const text = formatForDiscord(content);
+  if (!text) return;
+  if (text.length <= MAX_EMBED) {
+    await thread.send({ embeds: [new EmbedBuilder().setDescription(text).setColor(0x7289da)] });
+    return;
+  }
+  const chunks = splitText(text, MAX_EMBED);
+  for (let i = 0; i < chunks.length; i++) {
+    await thread.send({
+      embeds: [new EmbedBuilder().setDescription(chunks[i]).setColor(0x7289da).setFooter(i > 0 ? { text: `(${i + 1}/${chunks.length})` } : null)],
+    });
   }
 }
 
