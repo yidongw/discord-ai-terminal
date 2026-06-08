@@ -1,11 +1,25 @@
 import { spawn, type ChildProcess } from "child_process";
-import { EmbedBuilder } from "discord.js";
+import * as fs from "fs";
+import * as path from "path";
+import { EmbedBuilder, type Client } from "discord.js";
 import { formatForDiscord } from "../utils/discord-format.js";
-import { getAgent, type AgentEvent } from "../agents/index.js";
-import { DatabaseManager, toolIsHidden } from "../db/database.js";
+import { getAgent, type AgentEvent, type AgentRunner } from "../agents/index.js";
+import { DatabaseManager, toolIsHidden, type ActiveRun } from "../db/database.js";
 import { mainRepoOf, removeWorktree, type RemoveResult } from "../utils/path-resolver.js";
 import { setThreadStatus } from "../utils/thread-status.js";
-import type { DiscordContext } from "../utils/shell.js";
+import { escapeShellString, type DiscordContext } from "../utils/shell.js";
+import { RunTailer, isPidAlive } from "./run-tailer.js";
+
+// A side-effect to run when a run finishes (e.g. post a PR summary comment).
+// Persisted in active_runs as JSON so it survives a bot restart, and dispatched
+// at finalize from the FULL run text re-read off the log file. The actual work
+// is done by a handler registered via setCompletionHandler (keeps this module
+// free of any github/* dependency).
+export type CompletionAction =
+  | { kind: "pr_test"; repo: string; prNumber: number; agentKey: string }
+  | { kind: "pr_fix"; repo: string; prNumber: number };
+
+export type CompletionHandler = (action: CompletionAction, text: string) => Promise<void>;
 
 const TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_EMBED = 4000;
@@ -16,9 +30,28 @@ const SIGKILL_GRACE_MS = 3000;
 // Discord's typing indicator lasts ~10s; refresh a little sooner so it stays
 // visible continuously while a run is active or its outbox is still draining.
 const TYPING_REFRESH_MS = 8000;
+// On graceful shutdown, how long we wait for outboxes to deliver already-parsed
+// output before exiting. Kept under launchd's restart grace so the agents (which
+// we deliberately leave running) are re-attached cleanly on the next boot.
+const SHUTDOWN_DRAIN_MS = 4000;
 
 interface ActiveSession {
-  process: ChildProcess;
+  // Identity of the detached run this session is streaming. The run survives a
+  // bot restart; `runId`/`pid`/`logPath` are what we persist and re-attach to.
+  runId: string;
+  pid: number;
+  logPath: string;
+  agentKey: string;
+  channelId: string;
+  startedAt: number;
+  // Present only for runs THIS bot spawned (gives us the exit code). A
+  // re-attached run has no handle — we watch its PID instead.
+  proc?: ChildProcess;
+  exited: boolean;
+  exitCode?: number | null;
+  tailer?: RunTailer;
+  timeout?: ReturnType<typeof setTimeout>;
+  finalized: boolean;
   thread: any;
   toolCalls: Map<string, { message: any }>;
   workDir: string;
@@ -29,9 +62,9 @@ interface ActiveSession {
   done: boolean;
   stopping: boolean;
   killTimer?: ReturnType<typeof setTimeout>;
-  // Accumulated plain-text output; used by onDone for GitHub PR summaries.
-  textOutput: string;
-  onDone?: (text: string) => void;
+  // Action to dispatch when the run finishes (e.g. post a PR summary). The text
+  // it needs is re-read from the log at finalize, so it works after a restart.
+  completion?: CompletionAction;
 }
 
 export class SessionManager {
@@ -42,19 +75,62 @@ export class SessionManager {
   // single ordered queue and a single typing indicator instead of racing.
   private outboxes = new Map<string, Outbox>();
   private typing = new Map<string, TypingIndicator>();
+  // Where detached runs write their append-only output logs (one per run). The
+  // bot tails these and re-attaches to them after a restart.
+  private runsDir: string;
+  // Dispatches a run's CompletionAction (registered by index.ts; only set when
+  // the GitHub integration is enabled).
+  private completionHandler?: CompletionHandler;
 
   constructor() {
     this.db = new DatabaseManager();
     this.db.cleanupOldThreadSessions();
+    this.runsDir = path.join(process.cwd(), "runs");
+    try { fs.mkdirSync(this.runsDir, { recursive: true }); } catch {}
+    this.cleanupOrphanLogs();
   }
 
   getDb() { return this.db; }
 
-  // A thread is "active" while its process is alive OR its outbox still has
-  // queued/in-flight messages. The session stays in the map until both are
-  // drained (see the close handler), so this never reports idle while messages
-  // are still being delivered.
-  hasActiveProcess(threadId: string) { return this.active.has(threadId); }
+  setCompletionHandler(handler: CompletionHandler): void {
+    this.completionHandler = handler;
+  }
+
+  // A thread is "active" while its run is in flight OR its outbox still has
+  // queued/in-flight messages. We check the in-memory map AND the persisted
+  // active_runs table — the latter covers the window on startup after a restart,
+  // before reattachRuns() has wired the tailer back up, so an incoming message
+  // or scheduler tick can't double-spawn onto a thread that already has a live
+  // detached run.
+  hasActiveProcess(threadId: string) {
+    return this.active.has(threadId) || this.db.hasActiveRun(threadId);
+  }
+
+  // Delete leftover .jsonl logs whose run already finalized (but whose unlink
+  // failed), while preserving logs for runs we still need to re-attach to.
+  private cleanupOrphanLogs(): void {
+    let files: string[];
+    try { files = fs.readdirSync(this.runsDir); } catch { return; }
+    const keep = new Set(this.db.listActiveRuns().map((r) => path.basename(r.logPath)));
+    for (const f of files) {
+      if (!f.endsWith(".jsonl") || keep.has(f)) continue;
+      try { fs.unlinkSync(path.join(this.runsDir, f)); } catch {}
+    }
+  }
+
+  private removeLog(logPath: string): void {
+    try { fs.unlinkSync(logPath); } catch {}
+  }
+
+  // Signal a detached run's whole process group (the bash wrapper AND the
+  // claude/codex child). `detached: true` makes the bash PID a group leader, so
+  // a negative PID reaches the group; fall back to the bare PID if that fails.
+  private signalGroup(pid: number, sig: NodeJS.Signals): void {
+    try { process.kill(-pid, sig); }
+    catch {
+      try { process.kill(pid, sig); } catch {}
+    }
+  }
 
   // Graceful stop: signal the agent to stop producing NEW output, but let the
   // outbox keep delivering whatever it already produced. The close handler
@@ -62,6 +138,10 @@ export class SessionManager {
   killProcess(threadId: string): void {
     const session = this.active.get(threadId);
     if (session) this.stopProcess(session);
+    // Drop any persisted run row for this thread that we have NOT re-attached
+    // (e.g. a dead run from before a restart). For an in-memory session the
+    // tailer's finalize also deletes it; deleting here too is idempotent.
+    this.db.deleteActiveRunsForThread(threadId);
   }
 
   clearSession(threadId: string): void {
@@ -91,12 +171,15 @@ export class SessionManager {
     return result;
   }
 
+  // Graceful stop: signal the run's process group to stop. The tailer notices
+  // the process is gone, drains whatever it already wrote, and finalizes (which
+  // deletes the active_runs row, removes the log, and releases the thread).
   private stopProcess(session: ActiveSession): void {
     if (session.stopping) return;
     session.stopping = true;
-    try { session.process.kill("SIGTERM"); } catch {}
+    this.signalGroup(session.pid, "SIGTERM");
     session.killTimer = setTimeout(() => {
-      try { session.process.kill("SIGKILL"); } catch {}
+      this.signalGroup(session.pid, "SIGKILL");
     }, SIGKILL_GRACE_MS);
   }
 
@@ -148,7 +231,7 @@ export class SessionManager {
     workDir: string,
     prompt: string,
     discordContext: DiscordContext | undefined,
-    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; onDone?: (text: string) => void }
+    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; completion?: CompletionAction }
   ): Promise<void> {
     const agent = getAgent(agentKey);
     if (!agent) throw new Error(`Unknown agent: ${agentKey}`);
@@ -168,16 +251,53 @@ export class SessionManager {
       prNumber: opts?.prNumber,
     });
 
-    console.log(`[${agentKey}] CMD: ${command}`);
+    // Per-run append-only log. The agent writes here (not to a pipe we own), so
+    // it keeps streaming after a bot restart and a future bot can re-attach by
+    // tailing this file from the persisted offset.
+    const runId = `${threadId}-${Date.now()}`;
+    const logPath = path.join(this.runsDir, `${runId}.jsonl`);
+    // Redirect at the shell. Bun's child_process can't reliably pass a raw fd via
+    // `stdio`, and we already launch through bash — so bash owns the fd and keeps
+    // it open after we exit. stderr is merged in (non-JSON lines just fail to
+    // parse and are ignored).
+    const fullCommand = `(${command}) >> ${escapeShellString(logPath)} 2>&1`;
 
-    const proc = spawn("/bin/bash", ["-c", command], {
-      stdio: ["pipe", "pipe", "pipe"],
+    console.log(`[${agentKey}] CMD: ${command}`);
+    console.log(`[${agentKey}] LOG: ${logPath}`);
+
+    // `detached: true` puts the run in its own process group/session so killing
+    // the bot job (launchctl kickstart -k) doesn't take it down; unref() so it
+    // doesn't keep the bot's event loop alive.
+    const proc = spawn("/bin/bash", ["-c", fullCommand], {
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
       env: { ...process.env, SHELL: "/bin/bash" },
     });
-    proc.stdin.end();
+    proc.unref();
+
+    const pid = proc.pid ?? -1;
+    const startedAt = Date.now();
+
+    // Replace any stale run row for this thread BEFORE recording the new one, so
+    // a restart never re-attaches to two runs for the same thread.
+    this.db.deleteActiveRunsForThread(threadId);
+    this.db.createActiveRun({
+      runId, threadId, channelId, agent: agentKey, workDir, pid, logPath,
+      stdoutOffset: 0, startedAt,
+      completionJson: opts?.completion ? JSON.stringify(opts.completion) : undefined,
+    });
 
     const session: ActiveSession = {
-      process: proc,
+      runId,
+      pid,
+      logPath,
+      agentKey,
+      channelId,
+      startedAt,
+      proc,
+      exited: false,
+      exitCode: null,
+      finalized: false,
       thread,
       toolCalls: new Map(),
       workDir,
@@ -185,8 +305,7 @@ export class SessionManager {
       outbox: this.getOutbox(threadId, thread),
       done: false,
       stopping: false,
-      textOutput: "",
-      onDone: opts?.onDone,
+      completion: opts?.completion,
     };
     this.active.set(threadId, session);
 
@@ -211,77 +330,213 @@ export class SessionManager {
       });
     }
 
-    const timeout = setTimeout(() => {
+    // Capture the exit code so the tailer can surface an abnormal exit. (A
+    // re-attached run has no handle, so it relies on the agent's own done/error
+    // event instead — see finalizeRun.)
+    proc.on("exit", (code) => { session.exited = true; session.exitCode = code; });
+    proc.on("error", (err) => {
+      session.exited = true;
+      session.outbox.enqueue(() =>
+        thread.send({ embeds: [embed("❌ Process Error", err.message, 0xff0000)] })
+      );
+    });
+
+    session.timeout = setTimeout(() => {
       session.outbox.enqueue(() =>
         thread.send({ embeds: [embed("⏰ Timeout", "30 min limit reached.", 0xffd700)] })
       );
       this.stopProcess(session);
     }, TIMEOUT_MS);
 
-    let buffer = "";
+    this.startTailer(threadId, session, agent, 0, () => !session.exited);
+  }
 
-    proc.stdout.on("data", (data: Buffer) => {
-      buffer += data.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        console.log(`[${agentKey}] RAW: ${line}`);
-        const event = agent.parseLine(line, workDir);
+  // Stream a run's output by tailing its log file and feeding each complete line
+  // through the same parse → handleEvent → outbox pipeline the old stdout handler
+  // used. This is the single code path for both fresh runs and re-attached ones.
+  private startTailer(
+    threadId: string,
+    session: ActiveSession,
+    agent: AgentRunner,
+    startOffset: number,
+    isAlive: () => boolean
+  ): void {
+    const tailer = new RunTailer({
+      logPath: session.logPath,
+      startOffset,
+      isAlive,
+      onLine: (line) => {
+        const event = agent.parseLine(line, session.workDir);
         if (event) {
           try { this.handleEvent(threadId, event, session); }
           catch (err) { console.error(err); }
         }
-      }
+      },
+      onOffset: (offset) => {
+        try { this.db.updateActiveRunOffset(session.runId, offset); } catch {}
+      },
+      onFinalize: () => this.finalizeRun(threadId, session),
     });
+    session.tailer = tailer;
+    tailer.start();
+  }
 
-    proc.stderr.on("data", (data: Buffer) => {
-      const text = data.toString().trim();
-      console.error(`[${agentKey}] stderr:`, text);
-      if (text && !text.includes("INFO") && !text.includes("DEBUG")) {
-        session.outbox.enqueue(() =>
-          thread.send({ embeds: [embed("⚠️ Warning", text.slice(0, 2000), 0xffa500)] })
-        );
-      }
-    });
+  // Run the end-of-life logic once the agent process is gone and its output is
+  // fully drained: surface an abnormal exit, deliver everything queued, then drop
+  // the persisted run + log and release the thread.
+  private async finalizeRun(threadId: string, session: ActiveSession): Promise<void> {
+    if (session.finalized) return;
+    session.finalized = true;
+    if (session.timeout) clearTimeout(session.timeout);
+    if (session.killTimer) clearTimeout(session.killTimer);
 
-    proc.on("close", async (code) => {
-      clearTimeout(timeout);
-      if (session.killTimer) clearTimeout(session.killTimer);
-
-      // Flush any trailing partial line the agent wrote without a newline.
-      if (buffer.trim()) {
-        const event = agent.parseLine(buffer, workDir);
-        if (event) {
-          try { this.handleEvent(threadId, event, session); }
-          catch (err) { console.error(err); }
-        }
-        buffer = "";
-      }
-
-      // Only surface a failure if the agent didn't report a terminal event and
-      // we didn't intentionally stop it (SIGTERM yields a non-zero/null code).
-      if (code !== 0 && code !== null && !session.done && !session.stopping) {
-        session.outbox.enqueue(() =>
-          thread.send({ embeds: [embed("❌ Process Failed", `Exit code: ${code}`, 0xff0000)] })
-        );
-      }
-
-      // Deliver everything already queued before marking the thread idle.
-      await session.outbox.drain();
-      // Guard against a newer run having replaced this session in the map.
-      if (this.active.get(threadId) === session) this.releaseThread(threadId);
-    });
-
-    proc.on("error", async (err) => {
-      clearTimeout(timeout);
-      if (session.killTimer) clearTimeout(session.killTimer);
+    // Only for fresh runs (exitCode known): surface a crash the agent didn't
+    // report and we didn't intentionally stop. A SIGTERM/SIGKILL yields a null
+    // code, so an intentional /stop or timeout won't trip this.
+    const code = session.exitCode;
+    if (code !== undefined && code !== null && code !== 0 && !session.done && !session.stopping) {
       session.outbox.enqueue(() =>
-        thread.send({ embeds: [embed("❌ Process Error", err.message, 0xff0000)] })
+        session.thread.send({ embeds: [embed("❌ Process Failed", `Exit code: ${code}`, 0xff0000)] })
       );
-      await session.outbox.drain();
-      if (this.active.get(threadId) === session) this.releaseThread(threadId);
-    });
+    }
+
+    // Deliver everything already queued before marking the thread idle.
+    await session.outbox.drain();
+
+    // Run the completion action (e.g. post a PR summary). We re-read the FULL run
+    // text from the log here rather than accumulating it in memory, so it's the
+    // complete output regardless of how far a restart made us resume — and it
+    // fires whether the run finished before or after the restart. Must happen
+    // before we remove the log.
+    if (session.completion && this.completionHandler) {
+      const { text, completed } = this.extractRunResult(session);
+      if (completed) {
+        try { await this.completionHandler(session.completion, text); }
+        catch (err) { console.error(`[completion] ${session.completion.kind} failed:`, err); }
+      }
+    }
+
+    this.db.deleteActiveRun(session.runId);
+    this.removeLog(session.logPath);
+
+    // Guard against a newer run having replaced this session in the map.
+    if (this.active.get(threadId) === session) this.releaseThread(threadId);
+  }
+
+  // Re-parse a run's whole log to recover its full assistant text and whether it
+  // reached a terminal (done/error) event. Used to dispatch completion actions
+  // with the complete output, independent of the streaming resume offset.
+  private extractRunResult(session: ActiveSession): { text: string; completed: boolean } {
+    const agent = getAgent(session.agentKey);
+    if (!agent) return { text: "", completed: false };
+    let raw: string;
+    try { raw = fs.readFileSync(session.logPath, "utf8"); }
+    catch { return { text: "", completed: false }; }
+
+    let text = "";
+    let completed = false;
+    for (const line of raw.split("\n")) {
+      const t = line.trim();
+      if (!t) continue;
+      const event = agent.parseLine(t, session.workDir) as any;
+      if (!event) continue;
+      if (event.kind === "text") text += event.content;
+      else if (event.kind === "_sdk_assistant" && event.content) text += event.content;
+      else if (event.kind === "done" || event.kind === "error") completed = true;
+    }
+    return { text, completed };
+  }
+
+  // On startup, re-attach to every run that was in flight when the bot last
+  // exited. Detached agents keep running across a restart; here we re-open their
+  // logs and resume streaming from the persisted offset. A run whose thread is
+  // gone, or whose process already exited while we were down, is finalized.
+  //
+  // MUST run before the scheduler starts and before incoming messages can spawn
+  // new runs (see index.ts) — hasActiveProcess() already guards via the DB rows,
+  // but sequencing keeps the window tight.
+  async reattachRuns(client: Client): Promise<void> {
+    const runs = this.db.listActiveRuns();
+    if (runs.length === 0) return;
+    console.log(`[reattach] re-attaching to ${runs.length} in-flight run(s)`);
+    for (const run of runs) {
+      try {
+        await this.reattachOne(client, run);
+      } catch (err) {
+        console.error(`[reattach] run ${run.runId} failed:`, err);
+      }
+    }
+  }
+
+  private async reattachOne(client: Client, run: ActiveRun): Promise<void> {
+    const agent = getAgent(run.agent);
+    if (!agent) {
+      this.db.deleteActiveRun(run.runId);
+      this.removeLog(run.logPath);
+      return;
+    }
+
+    let thread: any;
+    try {
+      thread = await client.channels.fetch(run.threadId);
+    } catch (err: any) {
+      // 10003 = Unknown Channel → the thread is gone for good.
+      if (err?.code === 10003) {
+        this.db.deleteActiveRun(run.runId);
+        this.removeLog(run.logPath);
+        return;
+      }
+      throw err; // transient — leave the row so a later boot can retry.
+    }
+    if (!thread) {
+      this.db.deleteActiveRun(run.runId);
+      this.removeLog(run.logPath);
+      return;
+    }
+
+    const alive = isPidAlive(run.pid);
+    const session: ActiveSession = {
+      runId: run.runId,
+      pid: run.pid,
+      logPath: run.logPath,
+      agentKey: run.agent,
+      channelId: run.channelId,
+      startedAt: run.startedAt,
+      proc: undefined,
+      exited: !alive,
+      exitCode: undefined, // unknown for a re-attached run
+      finalized: false,
+      thread,
+      toolCalls: new Map(),
+      workDir: run.workDir,
+      toolOverrides: this.db.getToolOverrides(run.channelId),
+      outbox: this.getOutbox(run.threadId, thread),
+      done: false,
+      stopping: false,
+      // The completion action was persisted, so a PR run that survives a restart
+      // still posts its summary comment when it finishes — see finalizeRun.
+      completion: parseCompletion(run.completionJson),
+    };
+    this.active.set(run.threadId, session);
+    this.getTyping(run.threadId, thread).start();
+
+    if (alive) {
+      // Re-arm the timeout relative to the original start.
+      const remaining = run.startedAt + TIMEOUT_MS - Date.now();
+      const fire = () => {
+        session.outbox.enqueue(() =>
+          thread.send({ embeds: [embed("⏰ Timeout", "30 min limit reached.", 0xffd700)] })
+        );
+        this.stopProcess(session);
+      };
+      if (remaining <= 0) fire();
+      else session.timeout = setTimeout(fire, remaining);
+      console.log(`[reattach] ${run.runId} alive (pid ${run.pid}); resuming at offset ${run.stdoutOffset}`);
+    } else {
+      console.log(`[reattach] ${run.runId} already exited; draining remaining output`);
+    }
+
+    this.startTailer(run.threadId, session, agent, run.stdoutOffset, () => isPidAlive(run.pid));
   }
 
   // Translates a parsed agent event into ordered outbox operations. This is
@@ -299,7 +554,6 @@ export class SessionManager {
     }
 
     if (event.kind === "text") {
-      session.textOutput += event.content;
       outbox.pushText(event.content);
       return;
     }
@@ -337,11 +591,7 @@ export class SessionManager {
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("✅ Done", parts.length ? `*${parts.join(" · ")}*` : "Complete.", 0x00ff00)] })
       );
-      if (session.onDone) {
-        const cb = session.onDone;
-        const text = session.textOutput;
-        outbox.enqueue(async () => { try { cb(text); } catch {} });
-      }
+      // The completion action (if any) runs at finalize, from the full log text.
       this.stopProcess(session);
       return;
     }
@@ -351,11 +601,6 @@ export class SessionManager {
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("❌ Failed", event.message, 0xff0000)] })
       );
-      if (session.onDone) {
-        const cb = session.onDone;
-        const text = session.textOutput;
-        outbox.enqueue(async () => { try { cb(text); } catch {} });
-      }
       this.stopProcess(session);
       return;
     }
@@ -365,7 +610,6 @@ export class SessionManager {
     if (raw.kind === "_sdk_assistant") {
       this.db.updateSessionId(threadId, raw.sessionId);
       if (raw.content?.trim()) {
-        session.textOutput += raw.content;
         outbox.pushText(raw.content);
       }
       for (const tool of (raw.tools ?? [])) {
@@ -393,10 +637,32 @@ export class SessionManager {
     }
   }
 
-  destroy(): void {
+  // Graceful shutdown that PRESERVES running agents. Stop the tailers (each does
+  // a final drain + offset flush + fd close), deliver whatever is already queued,
+  // then return so the process can exit. The detached agents keep running and the
+  // active_runs rows persist, so the next boot re-attaches via reattachRuns().
+  async detachAndExit(): Promise<void> {
     for (const [, session] of this.active) {
+      if (session.timeout) clearTimeout(session.timeout);
       if (session.killTimer) clearTimeout(session.killTimer);
-      try { session.process.kill("SIGKILL"); } catch {}
+      try { session.tailer?.stop(); } catch {}
+    }
+    const drains = Array.from(this.outboxes.values()).map((o) => o.drain());
+    await Promise.race([
+      Promise.all(drains),
+      new Promise<void>((res) => setTimeout(res, SHUTDOWN_DRAIN_MS)),
+    ]);
+    for (const [, typing] of this.typing) typing.stop();
+  }
+
+  // Hard teardown: SIGKILL every run's process group and clear all state. Used by
+  // tests; the live bot uses detachAndExit() so runs survive restarts.
+  killAll(): void {
+    for (const [, session] of this.active) {
+      if (session.timeout) clearTimeout(session.timeout);
+      if (session.killTimer) clearTimeout(session.killTimer);
+      try { session.tailer?.stop(); } catch {}
+      this.signalGroup(session.pid, "SIGKILL");
     }
     for (const [, typing] of this.typing) typing.stop();
     this.active.clear();
@@ -528,6 +794,13 @@ async function sendChunked(thread: any, content: string): Promise<void> {
 
 function embed(title: string, description: string, color: number) {
   return new EmbedBuilder().setTitle(title).setDescription(description).setColor(color);
+}
+
+// Parse a persisted CompletionAction back from its JSON, tolerating null/garbage.
+function parseCompletion(json?: string): CompletionAction | undefined {
+  if (!json) return undefined;
+  try { return JSON.parse(json) as CompletionAction; }
+  catch { return undefined; }
 }
 
 function splitText(text: string, max: number): string[] {

@@ -36,6 +36,27 @@ export interface ThreadSession {
   createdAt: number;
 }
 
+// A run whose agent process is detached and surviving across bot restarts. The
+// bot tails `logPath` from `stdoutOffset` to stream the agent's output; on
+// startup it re-attaches to every row here. Deleted once the run finalizes.
+export interface ActiveRun {
+  runId: string;
+  threadId: string;
+  channelId: string;
+  agent: string;
+  workDir: string;
+  pid: number;
+  logPath: string;
+  // Byte offset of fully-consumed (complete-line) output already handed to the
+  // outbox. Resume point after a restart.
+  stdoutOffset: number;
+  startedAt: number;
+  // Optional JSON-encoded action to run when the run finishes (e.g. post a PR
+  // summary). Persisted so it survives a restart — see SessionManager's
+  // CompletionAction. Opaque to the DB layer.
+  completionJson?: string;
+}
+
 export interface ScheduledTask {
   id: string;
   threadId: string;
@@ -114,6 +135,22 @@ export class DatabaseManager {
 
       CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due
         ON scheduled_tasks (enabled, next_run_at);
+
+      CREATE TABLE IF NOT EXISTS active_runs (
+        run_id          TEXT PRIMARY KEY,
+        thread_id       TEXT NOT NULL,
+        channel_id      TEXT NOT NULL,
+        agent           TEXT NOT NULL,
+        work_dir        TEXT NOT NULL,
+        pid             INTEGER NOT NULL,
+        log_path        TEXT NOT NULL,
+        stdout_offset   INTEGER NOT NULL DEFAULT 0,
+        started_at      INTEGER NOT NULL,
+        completion_json TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_active_runs_thread
+        ON active_runs (thread_id);
 
       CREATE TABLE IF NOT EXISTS pr_threads (
         pr_number       TEXT NOT NULL,
@@ -348,6 +385,70 @@ export class DatabaseManager {
 
   deleteScheduledTasksForThread(threadId: string): void {
     this.db.prepare(`DELETE FROM scheduled_tasks WHERE thread_id = ?`).run(threadId);
+  }
+
+  // ── Active runs ──────────────────────────────────────────────────────────
+
+  private rowToActiveRun(row: any): ActiveRun {
+    return {
+      runId: row.run_id,
+      threadId: row.thread_id,
+      channelId: row.channel_id,
+      agent: row.agent,
+      workDir: row.work_dir,
+      pid: row.pid,
+      logPath: row.log_path,
+      stdoutOffset: row.stdout_offset,
+      startedAt: row.started_at,
+      completionJson: row.completion_json ?? undefined,
+    };
+  }
+
+  createActiveRun(run: ActiveRun): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO active_runs
+         (run_id, thread_id, channel_id, agent, work_dir, pid, log_path, stdout_offset, started_at, completion_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        run.runId,
+        run.threadId,
+        run.channelId,
+        run.agent,
+        run.workDir,
+        run.pid,
+        run.logPath,
+        run.stdoutOffset,
+        run.startedAt,
+        run.completionJson ?? null
+      );
+  }
+
+  // Synchronous offset checkpoint — called at the end of each tail tick so a
+  // restart resumes from the last fully-consumed line boundary.
+  updateActiveRunOffset(runId: string, offset: number): void {
+    this.db.prepare(`UPDATE active_runs SET stdout_offset = ? WHERE run_id = ?`).run(offset, runId);
+  }
+
+  deleteActiveRun(runId: string): void {
+    this.db.prepare(`DELETE FROM active_runs WHERE run_id = ?`).run(runId);
+  }
+
+  // Forget every run for a thread (e.g. a new run is replacing it, or the
+  // thread/worktree is being torn down).
+  deleteActiveRunsForThread(threadId: string): void {
+    this.db.prepare(`DELETE FROM active_runs WHERE thread_id = ?`).run(threadId);
+  }
+
+  listActiveRuns(): ActiveRun[] {
+    const rows = this.db.prepare(`SELECT * FROM active_runs ORDER BY started_at ASC`).all() as any[];
+    return rows.map((r) => this.rowToActiveRun(r));
+  }
+
+  hasActiveRun(threadId: string): boolean {
+    const row = this.db.prepare(`SELECT 1 FROM active_runs WHERE thread_id = ? LIMIT 1`).get(threadId);
+    return !!row;
   }
 
   // ── PR threads ───────────────────────────────────────────────────────────

@@ -25,11 +25,16 @@ async function main() {
   // between (disposable) agent runs and re-invokes them through runAgent().
   const scheduler = new Scheduler(bot.client, sessionManager, sessionManager.getDb());
 
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return; // a second SIGTERM during drain shouldn't re-enter
+    shuttingDown = true;
     console.log("Shutting down...");
     try { scheduler.stop(); } catch {}
     try { await mcpServer.stop(); } catch {}
-    try { sessionManager.destroy(); } catch {}
+    // Leave in-flight agents RUNNING (detached). detachAndExit drains whatever is
+    // already queued, flushes offsets, and returns; the next boot re-attaches.
+    try { await sessionManager.detachAndExit(); } catch {}
     process.exit(0);
   };
 
@@ -37,10 +42,31 @@ async function main() {
   process.on("SIGTERM", shutdown);
 
   await bot.login(config.discordToken);
+
+  // login() resolves before the gateway is READY, but reattach needs to fetch
+  // channels — wait for ready first.
+  if (!bot.client.isReady()) {
+    await new Promise<void>((resolve) => bot.client.once("ready", () => resolve()));
+  }
+
+  // Build the GitHub handler (if enabled) and register its completion handler
+  // BEFORE reattach, so a PR run that finished while the bot was down still posts
+  // its summary when reattach finalizes it.
+  const githubEnabled = !!(process.env.GITHUB_WEBHOOK_SECRET || process.env.GITHUB_TOKEN);
+  const githubHandler = githubEnabled
+    ? new GitHubHandler(bot.client, sessionManager, config.baseFolder)
+    : undefined;
+  if (githubHandler) {
+    sessionManager.setCompletionHandler((action, text) => githubHandler.runCompletionAction(action, text));
+  }
+
+  // Re-attach to any runs that survived the last restart BEFORE the scheduler
+  // (or an incoming message) can spawn a new run onto the same thread.
+  await sessionManager.reattachRuns(bot.client);
+
   scheduler.start();
 
-  if (process.env.GITHUB_WEBHOOK_SECRET || process.env.GITHUB_TOKEN) {
-    const githubHandler = new GitHubHandler(bot.client, sessionManager, config.baseFolder);
+  if (githubHandler) {
     const webhookServer = new GitHubWebhookServer(githubHandler);
     const webhookPort = parseInt(process.env.GITHUB_WEBHOOK_PORT ?? "3002");
     webhookServer.start(webhookPort);
