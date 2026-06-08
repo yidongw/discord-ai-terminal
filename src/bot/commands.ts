@@ -9,7 +9,7 @@ import {
   type ThreadChannel,
 } from "discord.js";
 import { SessionManager } from "./session-manager.js";
-import { DEFAULT_HIDDEN_TOOLS, toolIsHidden } from "../db/database.js";
+import { DEFAULT_HIDDEN_TOOLS, KNOWN_TOOLS, toolIsHidden } from "../db/database.js";
 import type { PermissionMode, ClaudeModel } from "../db/database.js";
 
 export class CommandHandler {
@@ -212,13 +212,19 @@ export class CommandHandler {
 
     if (sub === "list") {
       const overrides = db.getToolOverrides(i.channelId);
-      const names = new Set<string>([...DEFAULT_HIDDEN_TOOLS, ...Object.keys(overrides)]);
-      const hidden = [...names].filter((t) => toolIsHidden(t, overrides));
-      const shownOverrides = [...names].filter((t) => t in overrides && !overrides[t]);
+      // Curated known tools first, then any tool this channel has an override
+      // for (e.g. an MCP tool) that isn't in the known list.
+      const names = [
+        ...KNOWN_TOOLS,
+        ...Object.keys(overrides).filter((t) => !KNOWN_TOOLS.includes(t)),
+      ];
+      const hidden = names.filter((t) => toolIsHidden(t, overrides));
+      const shown = names.filter((t) => !toolIsHidden(t, overrides));
+      const fmt = (arr: string[]) => (arr.length ? arr.map((t) => `\`${t}\``).join(", ") : "none");
       const desc =
-        `**Hidden:** ${hidden.length ? hidden.map((t) => `\`${t}\``).join(", ") : "none"}\n` +
-        `**Shown (overridden):** ${shownOverrides.length ? shownOverrides.map((t) => `\`${t}\``).join(", ") : "none"}\n` +
-        `\n*Defaults hidden: ${DEFAULT_HIDDEN_TOOLS.map((t) => `\`${t}\``).join(", ")}. All other tools show by default.*`;
+        `🙈 **Hidden:** ${fmt(hidden)}\n\n` +
+        `👁️ **Shown:** ${fmt(shown)}\n\n` +
+        `*Any tool not listed (e.g. MCP tools) shows by default. Use \`/tools hide <tool>\` or \`/tools show <tool>\`.*`;
       await i.reply({ embeds: [embed("🔧 Tool Visibility", desc, 0x5865f2)] });
       return;
     }

@@ -4,6 +4,14 @@ import * as path from "path";
 export type PermissionMode = "auto" | "plan" | "approve";
 export type ClaudeModel = "opus" | "sonnet" | "haiku";
 
+// The common built-in tools, shown in `/tools list` so the user sees the full
+// picture. Not exhaustive (MCP tools are dynamic) — any tool a channel has an
+// override for is listed too.
+export const KNOWN_TOOLS = [
+  "Bash", "Read", "Edit", "Write", "Glob", "Grep",
+  "Task", "TodoWrite", "WebFetch", "WebSearch", "NotebookEdit",
+];
+
 // Tool-call messages hidden in every channel unless a per-channel override says
 // otherwise. Other tools are shown by default. Toggle with the /tools command.
 export const DEFAULT_HIDDEN_TOOLS = ["Bash", "Read", "Edit"];
