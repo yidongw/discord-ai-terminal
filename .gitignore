@@ -38,3 +38,6 @@ log.txt
 
 # Detached agent run logs (tailed + re-attached across restarts)
 runs/
+
+# Background command logs (run_in_background; re-invoke cc on completion)
+jobs/

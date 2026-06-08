@@ -57,6 +57,24 @@ export interface ActiveRun {
   completionJson?: string;
 }
 
+// A long-running shell command the user asked cc to run "in the background".
+// The command runs detached (surviving bot restarts); when it finishes the bot
+// re-invokes cc with its output. status goes running → finished; the row is
+// deleted once cc has been woken with the result.
+export interface BackgroundJob {
+  jobId: string;
+  threadId: string;
+  channelId: string;
+  workDir: string;
+  command: string;
+  label?: string;
+  pid: number;
+  logPath: string;
+  status: "running" | "finished";
+  exitCode?: number | null;
+  startedAt: number;
+}
+
 export interface ScheduledTask {
   id: string;
   threadId: string;
@@ -151,6 +169,23 @@ export class DatabaseManager {
 
       CREATE INDEX IF NOT EXISTS idx_active_runs_thread
         ON active_runs (thread_id);
+
+      CREATE TABLE IF NOT EXISTS background_jobs (
+        job_id      TEXT PRIMARY KEY,
+        thread_id   TEXT NOT NULL,
+        channel_id  TEXT NOT NULL,
+        work_dir    TEXT NOT NULL,
+        command     TEXT NOT NULL,
+        label       TEXT,
+        pid         INTEGER NOT NULL,
+        log_path    TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'running',
+        exit_code   INTEGER,
+        started_at  INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_background_jobs_thread
+        ON background_jobs (thread_id);
 
       CREATE TABLE IF NOT EXISTS pr_threads (
         pr_number       TEXT NOT NULL,
@@ -458,6 +493,77 @@ export class DatabaseManager {
   hasActiveRun(threadId: string): boolean {
     const row = this.db.prepare(`SELECT 1 FROM active_runs WHERE thread_id = ? LIMIT 1`).get(threadId);
     return !!row;
+  }
+
+  // ── Background jobs ──────────────────────────────────────────────────────
+
+  private rowToBackgroundJob(row: any): BackgroundJob {
+    return {
+      jobId: row.job_id,
+      threadId: row.thread_id,
+      channelId: row.channel_id,
+      workDir: row.work_dir,
+      command: row.command,
+      label: row.label ?? undefined,
+      pid: row.pid,
+      logPath: row.log_path,
+      status: row.status,
+      exitCode: row.exit_code ?? null,
+      startedAt: row.started_at,
+    };
+  }
+
+  createBackgroundJob(job: BackgroundJob): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO background_jobs
+         (job_id, thread_id, channel_id, work_dir, command, label, pid, log_path, status, exit_code, started_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        job.jobId,
+        job.threadId,
+        job.channelId,
+        job.workDir,
+        job.command,
+        job.label ?? null,
+        job.pid,
+        job.logPath,
+        job.status,
+        job.exitCode ?? null,
+        job.startedAt
+      );
+  }
+
+  listBackgroundJobs(threadId?: string): BackgroundJob[] {
+    const rows = threadId
+      ? (this.db
+          .prepare(`SELECT * FROM background_jobs WHERE thread_id = ? ORDER BY started_at ASC`)
+          .all(threadId) as any[])
+      : (this.db
+          .prepare(`SELECT * FROM background_jobs ORDER BY started_at ASC`)
+          .all() as any[]);
+    return rows.map((r) => this.rowToBackgroundJob(r));
+  }
+
+  getBackgroundJob(jobId: string): BackgroundJob | null {
+    const row = this.db.prepare(`SELECT * FROM background_jobs WHERE job_id = ?`).get(jobId) as any;
+    return row ? this.rowToBackgroundJob(row) : null;
+  }
+
+  // Mark a job finished and record its exit code (null = died without a code).
+  markBackgroundJobFinished(jobId: string, exitCode: number | null): void {
+    this.db
+      .prepare(`UPDATE background_jobs SET status = 'finished', exit_code = ? WHERE job_id = ?`)
+      .run(exitCode, jobId);
+  }
+
+  deleteBackgroundJob(jobId: string): void {
+    this.db.prepare(`DELETE FROM background_jobs WHERE job_id = ?`).run(jobId);
+  }
+
+  deleteBackgroundJobsForThread(threadId: string): void {
+    this.db.prepare(`DELETE FROM background_jobs WHERE thread_id = ?`).run(threadId);
   }
 
   // ── PR threads ───────────────────────────────────────────────────────────

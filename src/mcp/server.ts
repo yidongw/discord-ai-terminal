@@ -6,6 +6,7 @@ import { PermissionManager } from './permission-manager.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
 import type { DatabaseManager } from '../db/database.js';
 import { parseInterval, formatInterval, MIN_INTERVAL_SECONDS } from '../bot/scheduler.js';
+import type { BackgroundJobManager } from '../bot/background-jobs.js';
 
 export class MCPPermissionServer {
   private app: express.Application;
@@ -14,6 +15,7 @@ export class MCPPermissionServer {
   private permissionManager: PermissionManager;
   private discordBot: any = null;
   private db: DatabaseManager | null = null;
+  private bgJobs: BackgroundJobManager | null = null;
 
   constructor(port: number = 3001) {
     this.port = port;
@@ -29,6 +31,14 @@ export class MCPPermissionServer {
    */
   setDb(db: DatabaseManager): void {
     this.db = db;
+  }
+
+  /**
+   * Provide the background-job manager so the run_in_background tool can start
+   * detached commands that re-invoke cc on completion.
+   */
+  setBackgroundJobManager(bgJobs: BackgroundJobManager): void {
+    this.bgJobs = bgJobs;
   }
 
   /**
@@ -560,6 +570,83 @@ export class MCPPermissionServer {
       }
       this.db.deleteScheduledTask(id);
       res.json({ ok: true, id });
+    });
+
+    // ── Background jobs (called by mcp-bridge.cjs) ───────────────────────────
+
+    // Run a long command detached; the bot re-invokes cc in THIS thread with the
+    // output when it finishes (see BackgroundJobManager).
+    this.app.post('/tool/run_in_background', (req, res) => {
+      console.log('HTTP run_in_background request:', req.body);
+
+      const discordContext = this.extractDiscordContext(req) || req.body.discord_context;
+      if (!this.db || !this.bgJobs || !discordContext) {
+        res.json({ error: 'Background jobs not available (no DB/manager or Discord context).' });
+        return;
+      }
+
+      const threadId = discordContext.channelId;
+      const session = this.db.getThreadSession(threadId);
+      if (!session) {
+        res.json({ error: 'No session found for this thread; cannot run a background job.' });
+        return;
+      }
+
+      const { command, label } = req.body ?? {};
+      if (!command || typeof command !== 'string') {
+        res.json({ error: 'A non-empty "command" string is required.' });
+        return;
+      }
+
+      try {
+        const { jobId } = this.bgJobs.startJob({
+          threadId,
+          channelId: session.channelId,
+          workDir: session.workDir,
+          command,
+          label: typeof label === 'string' && label ? label : undefined,
+        });
+        res.json({
+          ok: true,
+          jobId,
+          note:
+            'Started in the background. End your turn now — you will be re-invoked in ' +
+            'this thread with the command output when it finishes (this survives bot restarts).',
+        });
+      } catch (error) {
+        console.error('HTTP run_in_background error:', error);
+        res.json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
+    this.app.post('/tool/list_background_jobs', (req, res) => {
+      const discordContext = this.extractDiscordContext(req) || req.body.discord_context;
+      if (!this.bgJobs || !discordContext) {
+        res.json({ error: 'Background jobs not available.' });
+        return;
+      }
+      const jobs = this.bgJobs.list(discordContext.channelId).map((j) => ({
+        id: j.jobId,
+        command: j.command,
+        label: j.label,
+        status: j.status,
+        runningForSeconds: Math.round((Date.now() - j.startedAt) / 1000),
+      }));
+      res.json({ jobs });
+    });
+
+    this.app.post('/tool/cancel_background_job', (req, res) => {
+      if (!this.bgJobs) {
+        res.json({ error: 'Background jobs not available.' });
+        return;
+      }
+      const id = req.body?.id;
+      if (!id || typeof id !== 'string') {
+        res.json({ error: 'A job "id" string is required.' });
+        return;
+      }
+      const ok = this.bgJobs.cancelJob(id);
+      res.json(ok ? { ok: true, id } : { error: `No background job with id "${id}".` });
     });
   }
 
