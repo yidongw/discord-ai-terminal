@@ -10,6 +10,7 @@ import { SessionManager } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
 import { parseAgentInvocations, starterMessageText, threadName, firstLine } from "./parser.js";
 import { resolveThreadWorkDir } from "../utils/path-resolver.js";
+import { setThreadStatus } from "../utils/thread-status.js";
 import {
   ensureAttachmentDir,
   getTempPath,
@@ -87,11 +88,21 @@ export class DiscordBot {
       this.cleanupThread(thread.id, null, "deleted");
     });
 
-    // A thread closing (archived) also triggers cleanup. Re-sending a message
-    // un-archives it before anything is touched, so this only reaps idle threads.
+    // Monitor thread lifecycle transitions and reflect them in the thread name.
+    //
+    //   locked  → "done for now": KEEP the worktree + branch, just mark it 🔒.
+    //   closed  → "done for good": archived, so clean up the worktree and mark 🗑️.
+    //
+    // Closing wins over locking when both flip at once. Re-sending a message
+    // un-archives a thread before anything is touched, so the closed branch only
+    // reaps genuinely idle threads.
     this.client.on("threadUpdate", (oldThread, newThread) => {
       if (!oldThread.archived && newThread.archived) {
         this.cleanupThread(newThread.id, newThread, "closed");
+      } else if (!oldThread.locked && newThread.locked) {
+        // Locked but not (newly) closed: keep everything, just mark it. If the
+        // thread is already archived, preserve that so the rename doesn't reopen it.
+        void setThreadStatus(newThread, "locked", newThread.archived ? { archived: true } : undefined);
       }
     });
 
@@ -118,12 +129,23 @@ export class DiscordBot {
   // still reachable) so nothing is silently lost — clear it later with /cleanup.
   private cleanupThread(threadId: string, thread: ThreadChannel | null, reason: string): void {
     const result = this.sessionManager.cleanupThreadWorktree(threadId);
-    if (!result) return;
+    // A deleted thread is gone — no rename is possible regardless of outcome.
+    const archived = reason === "closed";
+
+    if (!result) {
+      // Nothing to clean (no managed worktree), but the thread still closed.
+      if (archived && thread) void setThreadStatus(thread, "closed", { archived: true });
+      return;
+    }
     if (result.removed) {
       console.log(`[cleanup] thread ${threadId} ${reason}: worktree removed`);
+      if (archived && thread) void setThreadStatus(thread, "closed", { archived: true });
     } else {
       console.log(`[cleanup] thread ${threadId} ${reason}: kept (${result.reason})`);
       if (thread) {
+        // Closed but the worktree was deliberately kept (uncommitted/unmerged
+        // work) — that's the "locked" state, not a clean close.
+        if (archived) void setThreadStatus(thread, "locked", { archived: true });
         thread
           .send(
             `🌲 Worktree kept — it still has ${result.reason}, so it was not removed. Run \`/cleanup force:true\` to discard it.`
