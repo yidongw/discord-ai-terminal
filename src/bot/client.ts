@@ -10,7 +10,7 @@ import { SessionManager } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
 import { parseAgentInvocations, starterMessageText, threadName, firstLine } from "./parser.js";
 import { resolveThreadWorkDir } from "../utils/path-resolver.js";
-import { setThreadStatus } from "../utils/thread-status.js";
+import { setThreadStatus, renamingClosedThreads } from "../utils/thread-status.js";
 import {
   ensureAttachmentDir,
   getTempPath,
@@ -97,6 +97,14 @@ export class DiscordBot {
     // un-archives a thread before anything is touched, so the closed branch only
     // reaps genuinely idle threads.
     this.client.on("threadUpdate", (oldThread, newThread) => {
+      // Ignore archive transitions we triggered ourselves while renaming a closed
+      // thread (reopen → rename → re-archive). Without this, our own re-archive
+      // would look like a fresh user close and re-run cleanup. Consume the guard
+      // once the thread settles back into the archived state.
+      if (renamingClosedThreads.has(newThread.id)) {
+        if (newThread.archived) renamingClosedThreads.delete(newThread.id);
+        return;
+      }
       if (!oldThread.archived && newThread.archived) {
         this.cleanupThread(newThread.id, newThread, "closed");
       } else if (!oldThread.locked && newThread.locked) {

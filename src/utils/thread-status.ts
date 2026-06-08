@@ -26,6 +26,15 @@ export const STATUS_EMOJI: Record<ThreadStatus, string> = {
 const ALL_EMOJI = Object.values(STATUS_EMOJI);
 const THREAD_NAME_LIMIT = 100;
 
+/**
+ * Thread IDs we're mid-rename on while restoring the archived state. Renaming a
+ * closed thread requires reopen → rename → re-archive (Discord rejects edits to
+ * an archived thread), and that re-archive emits its own `threadUpdate` "close".
+ * The lifecycle handler consults this set to ignore those self-induced events so
+ * it doesn't treat our own edit as a fresh user close.
+ */
+export const renamingClosedThreads = new Set<string>();
+
 /** Remove any leading status emoji (and the space after it) from a thread name. */
 export function stripStatusEmoji(name: string): string {
   for (const e of ALL_EMOJI) {
@@ -46,10 +55,15 @@ export function applyStatusEmoji(name: string, status: ThreadStatus): string {
 /**
  * Set a thread's status emoji prefix. Best-effort: never throws (Discord rename
  * failures are logged and swallowed) so it can be fire-and-forgotten from hot
- * paths. `extraEdit` is merged into the underlying edit — used for the "closed"/
- * "locked" states to set the name while keeping the thread archived in a single
- * call, so the rename doesn't accidentally re-open it. No-ops when the emoji is
- * already applied (and there's no extra edit), avoiding a pointless rename.
+ * paths. No-ops when the emoji is already applied, avoiding a pointless rename.
+ *
+ * Discord rejects edits to an ARCHIVED thread — even a plain rename — with
+ * "Thread is archived" (400). So when the thread is already closed we can't
+ * rename it in place: we reopen it, rename, then re-archive. `extraEdit` is
+ * merged into the rename (the "closed"/"locked" callers pass `{ archived: true }`),
+ * and we always restore the archived state afterwards so the thread stays closed.
+ * The re-archive emits its own `threadUpdate`; we register the id in
+ * `renamingClosedThreads` so the lifecycle handler ignores that self-induced event.
  */
 export async function setThreadStatus(
   thread: any,
@@ -60,8 +74,21 @@ export async function setThreadStatus(
   try {
     const current: string = thread.name ?? "";
     const next = applyStatusEmoji(current, status);
-    if (next === current && !extraEdit) return;
-    if (extraEdit && typeof thread.edit === "function") {
+    if (next === current) return; // emoji already applied — nothing to do
+
+    if (thread.archived && typeof thread.edit === "function") {
+      // Reopen so Discord accepts the rename, then rename + restore the archived
+      // state. The id is consumed by the lifecycle handler when the re-archive
+      // event lands; on failure we drop it here so it can't leak.
+      if (thread.id) renamingClosedThreads.add(thread.id);
+      try {
+        await thread.edit({ archived: false });
+        await thread.edit({ name: next, ...extraEdit, archived: true });
+      } catch (err) {
+        if (thread.id) renamingClosedThreads.delete(thread.id);
+        throw err;
+      }
+    } else if (extraEdit && typeof thread.edit === "function") {
       await thread.edit({ name: next, ...extraEdit });
     } else {
       await thread.setName(next);

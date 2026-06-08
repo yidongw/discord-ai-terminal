@@ -69,6 +69,29 @@ describe("setThreadStatus", () => {
     expect(thread.setName).not.toHaveBeenCalled();
   });
 
+  it("reopens, renames, then re-archives a closed thread (Discord rejects renaming archived threads)", async () => {
+    const edits: any[] = [];
+    const thread = {
+      id: "123",
+      name: "cc • fix the bug",
+      archived: true,
+      setName: vi.fn().mockResolvedValue(undefined),
+      edit: vi.fn().mockImplementation((opts: any) => {
+        edits.push(opts);
+        return Promise.resolve(undefined);
+      }),
+    };
+    await setThreadStatus(thread, "closed", { archived: true });
+    // First reopen so Discord will accept the edit...
+    expect(edits[0]).toEqual({ archived: false });
+    // ...then rename and restore the archived state in one call.
+    expect(edits[1]).toEqual({
+      name: `${STATUS_EMOJI.closed} cc • fix the bug`,
+      archived: true,
+    });
+    expect(thread.setName).not.toHaveBeenCalled();
+  });
+
   it("never throws when the Discord call rejects", async () => {
     const thread = {
       name: "cc • fix the bug",
