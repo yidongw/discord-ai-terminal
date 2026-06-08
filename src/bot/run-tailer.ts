@@ -52,19 +52,20 @@ export class RunTailer {
   }
 
   start(): void {
-    try {
-      this.fd = fs.openSync(this.opts.logPath, "r");
-    } catch (err) {
-      // No log file (never created, or already cleaned up) — nothing to stream.
-      console.error(`[tailer] cannot open ${this.opts.logPath}:`, err);
-      void this.finalize();
-      return;
-    }
     const interval = this.opts.pollIntervalMs ?? POLL_INTERVAL_MS;
     this.timer = setInterval(() => this.tick(), interval);
     // Tick immediately so an already-finished run (common on re-attach to a run
     // that completed while the bot was down) finalizes without waiting a poll.
     this.tick();
+  }
+
+  // Open the log lazily. A freshly-spawned detached agent may not have created
+  // the file yet when we start tailing in the same tick, so we retry on later
+  // ticks instead of giving up. Returns true once the fd is open.
+  private ensureOpen(): boolean {
+    if (this.fd !== undefined) return true;
+    try { this.fd = fs.openSync(this.opts.logPath, "r"); return true; }
+    catch { return false; }
   }
 
   // Stop tailing WITHOUT finalizing. Used on graceful shutdown: the agent keeps
@@ -78,7 +79,7 @@ export class RunTailer {
       this.timer = undefined;
     }
     try {
-      this.drainAvailable();
+      if (this.ensureOpen()) this.drainAvailable();
     } catch (err) {
       console.error(`[tailer] final drain failed on ${this.opts.logPath}:`, err);
     }
@@ -95,13 +96,14 @@ export class RunTailer {
   private tick(): void {
     if (this.stopped || this.finalizing) return;
     try {
-      this.drainAvailable();
+      if (this.ensureOpen()) this.drainAvailable();
     } catch (err) {
       console.error(`[tailer] read error on ${this.opts.logPath}:`, err);
     }
     // Finalize only once the process is gone AND we've consumed everything it
     // wrote — so a run that exits with a burst of trailing output still streams
-    // it before we mark the thread idle.
+    // it before we mark the thread idle. With the fd still unopened, atEof() is
+    // true, so a dead process whose log never appeared also finalizes here.
     if (!this.opts.isAlive() && this.atEof()) {
       void this.finalize();
     }

@@ -153,6 +153,37 @@ describe("RunTailer", () => {
     tailer.stop();
   });
 
+  it("waits for a not-yet-created log file and streams once it appears", async () => {
+    // Reproduces the fresh-run race: the detached child hasn't created the
+    // redirect target yet when the tailer starts. The tailer must NOT give up —
+    // it should pick the file up once it exists.
+    const lines: string[] = [];
+    let finalized = false;
+    let alive = true;
+    const tailer = new RunTailer({
+      logPath, // does not exist yet
+      startOffset: 0,
+      pollIntervalMs: 10,
+      isAlive: () => alive,
+      onLine: (l) => lines.push(l),
+      onOffset: () => {},
+      onFinalize: () => { finalized = true; },
+    });
+    tailer.start();
+    await wait(30);
+    expect(finalized).toBe(false); // still alive, file missing → keep waiting
+    expect(lines).toEqual([]);
+
+    fs.writeFileSync(logPath, "late\n"); // child finally creates + writes
+    await wait(40);
+    expect(lines).toEqual(["late"]);
+
+    alive = false;
+    await wait(30);
+    expect(finalized).toBe(true);
+    tailer.stop();
+  });
+
   it("finalizes immediately when the log file does not exist", async () => {
     let finalized = false;
     const tailer = new RunTailer({
