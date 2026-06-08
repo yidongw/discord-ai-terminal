@@ -10,6 +10,7 @@ import {
 } from "discord.js";
 import { SessionManager } from "./session-manager.js";
 import { DEFAULT_HIDDEN_TOOLS, KNOWN_TOOLS, toolIsHidden } from "../db/database.js";
+import { setThreadStatus } from "../utils/thread-status.js";
 import type { PermissionMode, ClaudeModel } from "../db/database.js";
 
 export class CommandHandler {
@@ -162,10 +163,14 @@ export class CommandHandler {
       return;
     }
     if (result.removed) {
+      // Worktree + branch gone — this thread is "closed".
+      void setThreadStatus(i.channel, "closed");
       await i.reply({
         embeds: [embed("🧹 Cleaned up", "Worktree and branch removed.", 0x00ff00)],
       });
     } else {
+      // Kept deliberately (uncommitted/unmerged work) — that's the "locked" state.
+      void setThreadStatus(i.channel, "locked");
       await i.reply({
         embeds: [
           embed(

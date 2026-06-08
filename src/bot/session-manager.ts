@@ -4,6 +4,7 @@ import { formatForDiscord } from "../utils/discord-format.js";
 import { getAgent, type AgentEvent } from "../agents/index.js";
 import { DatabaseManager, toolIsHidden } from "../db/database.js";
 import { mainRepoOf, removeWorktree, type RemoveResult } from "../utils/path-resolver.js";
+import { setThreadStatus } from "../utils/thread-status.js";
 import type { DiscordContext } from "../utils/shell.js";
 
 const TIMEOUT_MS = 30 * 60 * 1000;
@@ -134,6 +135,9 @@ export class SessionManager {
     this.outboxes.delete(threadId);
     this.typing.get(threadId)?.stop();
     this.typing.delete(threadId);
+    // Intentionally leave the "working" emoji in place when a turn finishes —
+    // it marks the thread as in-progress until it's explicitly locked or closed.
+    // Clearing it here would cost an extra rename against Discord's tight limit.
   }
 
   async runAgent(
@@ -189,6 +193,11 @@ export class SessionManager {
     // Show "agent is typing…" right away — the agent is going to send messages —
     // and keep it alive until the thread is fully idle.
     this.getTyping(threadId, thread).start();
+
+    // Mark the thread as "working". No-ops if it's already marked, so a run that
+    // follows an earlier one in the same thread costs no rename. Fire-and-forget
+    // so a (rate-limited) rename never delays the run itself.
+    void setThreadStatus(thread, "working");
 
     if (!existing) {
       this.db.createThreadSession({
