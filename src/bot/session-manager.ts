@@ -269,7 +269,7 @@ export class SessionManager {
         outbox.enqueue(async () => {
           const tracked = toolCalls.get(result.tool_use_id);
           if (!tracked?.message) return;
-          const firstLine = String(result.content ?? "").split("\n")[0].trim().slice(0, 100);
+          const firstLine = toolResultText(result.content).split("\n")[0].trim().slice(0, 100);
           const current = tracked.message.embeds[0].data.description ?? "";
           const updated = current.replace("⏳", result.is_error ? "❌" : "✅");
           await tracked.message.edit({
@@ -390,6 +390,23 @@ function splitText(text: string, max: number): string[] {
     rem = rem.slice(i).trim();
   }
   return chunks;
+}
+
+// A tool_result's `content` is either a plain string or an array of content
+// blocks (e.g. [{type:"text", text:"..."}]). MCP tools return the array form, so
+// String(content) would render "[object Object]". Flatten to the text we can
+// preview.
+function toolResultText(content: any): string {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((c) => (typeof c === "string" ? c : c?.type === "text" ? c.text ?? "" : ""))
+      .filter(Boolean)
+      .join(" ");
+  }
+  if (typeof content === "object" && content.type === "text") return content.text ?? "";
+  return "";
 }
 
 function formatToolCall(tool: any, workDir: string): string {
