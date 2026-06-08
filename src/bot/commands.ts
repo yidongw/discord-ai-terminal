@@ -9,7 +9,6 @@ import {
   type ThreadChannel,
 } from "discord.js";
 import { SessionManager } from "./session-manager.js";
-import { listWorktrees, pruneWorktrees } from "../utils/path-resolver.js";
 import type { PermissionMode, ClaudeModel } from "../db/database.js";
 
 export class CommandHandler {
@@ -28,6 +27,16 @@ export class CommandHandler {
       new SlashCommandBuilder()
         .setName("clear")
         .setDescription("Clear the session for this thread (forget history)"),
+
+      new SlashCommandBuilder()
+        .setName("cleanup")
+        .setDescription("Remove this thread's worktree + branch")
+        .addBooleanOption((o) =>
+          o
+            .setName("force")
+            .setDescription("Discard even if there are uncommitted or unmerged changes")
+            .setRequired(false)
+        ),
 
       new SlashCommandBuilder()
         .setName("status")
@@ -62,16 +71,6 @@ export class CommandHandler {
               { name: "haiku — fastest", value: "haiku" }
             )
         ),
-
-      new SlashCommandBuilder()
-        .setName("worktree")
-        .setDescription("Manage git worktrees for this channel's repo")
-        .addSubcommand((sub) =>
-          sub.setName("list").setDescription("List all worktrees for this repo")
-        )
-        .addSubcommand((sub) =>
-          sub.setName("prune").setDescription("Remove stale worktree refs")
-        ),
     ];
   }
 
@@ -94,10 +93,10 @@ export class CommandHandler {
 
     if (commandName === "stop") return this.handleStop(interaction);
     if (commandName === "clear") return this.handleClear(interaction);
+    if (commandName === "cleanup") return this.handleCleanup(interaction);
     if (commandName === "status") return this.handleStatus(interaction);
     if (commandName === "mode") return this.handleMode(interaction);
     if (commandName === "model") return this.handleModel(interaction);
-    if (commandName === "worktree") return this.handleWorktree(interaction);
   }
 
   // ── Command handlers ────────────────────────────────────────────────────
@@ -115,6 +114,33 @@ export class CommandHandler {
   private async handleClear(i: ChatInputCommandInteraction): Promise<void> {
     this.sessionManager.clearSession(i.channelId);
     await i.reply({ embeds: [embed("🗑️ Cleared", "Session history cleared.", 0x00ff00)] });
+  }
+
+  private async handleCleanup(i: ChatInputCommandInteraction): Promise<void> {
+    const force = i.options.getBoolean("force") ?? false;
+    const result = this.sessionManager.cleanupThreadWorktree(i.channelId, force);
+
+    if (!result) {
+      await i.reply({
+        embeds: [embed("ℹ️ Nothing to clean", "This thread has no managed worktree.", 0x888888)],
+      });
+      return;
+    }
+    if (result.removed) {
+      await i.reply({
+        embeds: [embed("🧹 Cleaned up", "Worktree and branch removed.", 0x00ff00)],
+      });
+    } else {
+      await i.reply({
+        embeds: [
+          embed(
+            "🛑 Kept",
+            `Not removed — ${result.reason}. Re-run with \`force: true\` to discard it anyway.`,
+            0xffa500
+          ),
+        ],
+      });
+    }
   }
 
   private async handleStatus(i: ChatInputCommandInteraction): Promise<void> {
@@ -155,25 +181,6 @@ export class CommandHandler {
     });
   }
 
-  private async handleWorktree(i: ChatInputCommandInteraction): Promise<void> {
-    const sub = i.options.getSubcommand();
-    const channelName =
-      i.channel && "name" in i.channel ? (i.channel as any).name : null;
-
-    if (!channelName) {
-      await i.reply({ content: "Cannot determine channel name.", ephemeral: true });
-      return;
-    }
-
-    if (sub === "list") {
-      const trees = listWorktrees(channelName, this.baseFolder);
-      const desc = trees.length ? trees.map((t) => `\`${t}\``).join("\n") : "*No worktrees found.*";
-      await i.reply({ embeds: [embed("🌲 Worktrees", desc, 0x5865f2)] });
-    } else if (sub === "prune") {
-      const result = pruneWorktrees(channelName, this.baseFolder);
-      await i.reply({ embeds: [embed("🌲 Prune", result, 0x00ff00)] });
-    }
-  }
 }
 
 function embed(title: string, description: string, color: number) {

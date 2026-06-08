@@ -10,6 +10,10 @@ export interface ThreadSession {
   agent: string;
   sessionId?: string;
   workDir: string;
+  // The git branch backing this thread's worktree (per-thread isolation).
+  branch?: string;
+  // True when workDir is a bot-managed worktree we may remove on cleanup.
+  isWorktree: boolean;
   createdAt: number;
 }
 
@@ -38,6 +42,7 @@ export class DatabaseManager {
     const finalPath = dbPath || path.join(process.cwd(), "sessions.db");
     this.db = new Database(finalPath);
     this.initializeTables();
+    this.migrate();
   }
 
   private initializeTables(): void {
@@ -48,6 +53,8 @@ export class DatabaseManager {
         agent       TEXT NOT NULL,
         session_id  TEXT,
         work_dir    TEXT NOT NULL,
+        branch      TEXT,
+        is_worktree INTEGER NOT NULL DEFAULT 0,
         created_at  INTEGER NOT NULL
       );
 
@@ -81,7 +88,30 @@ export class DatabaseManager {
 
       CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due
         ON scheduled_tasks (enabled, next_run_at);
+
+      CREATE TABLE IF NOT EXISTS pr_threads (
+        pr_number       TEXT NOT NULL,
+        repo            TEXT NOT NULL,
+        maker_thread_id TEXT,
+        test_thread_id  TEXT,
+        created_at      INTEGER NOT NULL,
+        PRIMARY KEY (pr_number, repo)
+      );
     `);
+  }
+
+  // Add columns to tables that predate them. ALTER TABLE ADD COLUMN is a no-op
+  // error if the column already exists, so we guard on the table's column list.
+  private migrate(): void {
+    const cols = (this.db.prepare(`PRAGMA table_info(thread_sessions)`).all() as any[]).map(
+      (c) => c.name as string
+    );
+    if (!cols.includes("branch")) {
+      this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN branch TEXT`);
+    }
+    if (!cols.includes("is_worktree")) {
+      this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN is_worktree INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 
   // ── Thread sessions ──────────────────────────────────────────────────────
@@ -90,10 +120,19 @@ export class DatabaseManager {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO thread_sessions
-         (thread_id, channel_id, agent, session_id, work_dir, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+         (thread_id, channel_id, agent, session_id, work_dir, branch, is_worktree, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(ts.threadId, ts.channelId, ts.agent, ts.sessionId ?? null, ts.workDir, ts.createdAt);
+      .run(
+        ts.threadId,
+        ts.channelId,
+        ts.agent,
+        ts.sessionId ?? null,
+        ts.workDir,
+        ts.branch ?? null,
+        ts.isWorktree ? 1 : 0,
+        ts.createdAt
+      );
   }
 
   getThreadSession(threadId: string): ThreadSession | null {
@@ -107,6 +146,8 @@ export class DatabaseManager {
       agent: row.agent,
       sessionId: row.session_id ?? undefined,
       workDir: row.work_dir,
+      branch: row.branch ?? undefined,
+      isWorktree: !!row.is_worktree,
       createdAt: row.created_at,
     };
   }
@@ -257,5 +298,51 @@ export class DatabaseManager {
 
   deleteScheduledTasksForThread(threadId: string): void {
     this.db.prepare(`DELETE FROM scheduled_tasks WHERE thread_id = ?`).run(threadId);
+  }
+
+  // ── PR threads ───────────────────────────────────────────────────────────
+
+  getPrThreads(prNumber: string, repo: string): { makerThreadId?: string; testThreadId?: string } | null {
+    const row = this.db
+      .prepare(`SELECT * FROM pr_threads WHERE pr_number = ? AND repo = ?`)
+      .get(prNumber, repo) as any;
+    if (!row) return null;
+    return {
+      makerThreadId: row.maker_thread_id ?? undefined,
+      testThreadId: row.test_thread_id ?? undefined,
+    };
+  }
+
+  setPrMakerThread(prNumber: string, repo: string, makerThreadId: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO pr_threads (pr_number, repo, maker_thread_id, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (pr_number, repo) DO UPDATE SET maker_thread_id = excluded.maker_thread_id`
+      )
+      .run(prNumber, repo, makerThreadId, Date.now());
+  }
+
+  setPrTestThread(prNumber: string, repo: string, testThreadId: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO pr_threads (pr_number, repo, test_thread_id, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (pr_number, repo) DO UPDATE SET test_thread_id = excluded.test_thread_id`
+      )
+      .run(prNumber, repo, testThreadId, Date.now());
+  }
+
+  // Find the most recent CC session whose work_dir matches a repo name.
+  // Used to link a newly opened PR back to the Discord thread that created it.
+  findMakerThreadForRepo(repoName: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT thread_id FROM thread_sessions
+         WHERE work_dir LIKE ? AND agent = 'cc'
+         ORDER BY created_at DESC LIMIT 1`
+      )
+      .get(`%/${repoName}%`) as any;
+    return row?.thread_id ?? null;
   }
 }

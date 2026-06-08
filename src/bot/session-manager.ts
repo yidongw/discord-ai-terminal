@@ -3,6 +3,7 @@ import { EmbedBuilder } from "discord.js";
 import { formatForDiscord } from "../utils/discord-format.js";
 import { getAgent, type AgentEvent } from "../agents/index.js";
 import { DatabaseManager } from "../db/database.js";
+import { mainRepoOf, removeWorktree, type RemoveResult } from "../utils/path-resolver.js";
 import type { DiscordContext } from "../utils/shell.js";
 
 const TIMEOUT_MS = 30 * 60 * 1000;
@@ -20,14 +21,13 @@ interface ActiveSession {
   thread: any;
   toolCalls: Map<string, { message: any }>;
   workDir: string;
-  // Serialized, batched outbound message queue for this thread.
   outbox: Outbox;
-  // Agent reported a terminal event (done/error) itself.
   done: boolean;
-  // We initiated a stop (user /stop, timeout, or done cleanup). Suppresses the
-  // "Process Failed" embed for the non-zero exit code that SIGTERM produces.
   stopping: boolean;
   killTimer?: ReturnType<typeof setTimeout>;
+  // Accumulated plain-text output; used by onDone for GitHub PR summaries.
+  textOutput: string;
+  onDone?: (text: string) => void;
 }
 
 export class SessionManager {
@@ -63,6 +63,28 @@ export class SessionManager {
   clearSession(threadId: string): void {
     this.killProcess(threadId);
     this.db.deleteThreadSession(threadId);
+  }
+
+  // Remove a thread's isolated worktree + branch and forget the session.
+  // Refuses (keeping everything) when the worktree has uncommitted or unmerged
+  // work, unless `force` is set. Returns null when the thread had no worktree.
+  cleanupThreadWorktree(threadId: string, force = false): RemoveResult | null {
+    const session = this.db.getThreadSession(threadId);
+    if (!session || !session.isWorktree) return null;
+
+    this.killProcess(threadId);
+
+    const repoPath = mainRepoOf(session.workDir);
+    if (!repoPath) {
+      return { removed: false, reason: "could not locate the parent repo" };
+    }
+
+    const result = removeWorktree(repoPath, session.workDir, session.branch, force);
+    if (result.removed) {
+      this.db.deleteThreadSession(threadId);
+      this.db.deleteScheduledTasksForThread(threadId);
+    }
+    return result;
   }
 
   private stopProcess(session: ActiveSession): void {
@@ -118,7 +140,8 @@ export class SessionManager {
     agentKey: string,
     workDir: string,
     prompt: string,
-    discordContext: DiscordContext
+    discordContext: DiscordContext | undefined,
+    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; onDone?: (text: string) => void }
   ): Promise<void> {
     const agent = getAgent(agentKey);
     if (!agent) throw new Error(`Unknown agent: ${agentKey}`);
@@ -134,6 +157,7 @@ export class SessionManager {
       mode,
       model,
       discordContext,
+      prNumber: opts?.prNumber,
     });
 
     console.log(`[${agentKey}] CMD: ${command}`);
@@ -152,6 +176,8 @@ export class SessionManager {
       outbox: this.getOutbox(threadId, thread),
       done: false,
       stopping: false,
+      textOutput: "",
+      onDone: opts?.onDone,
     };
     this.active.set(threadId, session);
 
@@ -160,7 +186,15 @@ export class SessionManager {
     this.getTyping(threadId, thread).start();
 
     if (!existing) {
-      this.db.createThreadSession({ threadId, channelId, agent: agentKey, workDir, createdAt: Date.now() });
+      this.db.createThreadSession({
+        threadId,
+        channelId,
+        agent: agentKey,
+        workDir,
+        branch: opts?.branch,
+        isWorktree: !!opts?.isWorktree,
+        createdAt: Date.now(),
+      });
     }
 
     const timeout = setTimeout(() => {
@@ -251,6 +285,7 @@ export class SessionManager {
     }
 
     if (event.kind === "text") {
+      session.textOutput += event.content;
       outbox.pushText(event.content);
       return;
     }
@@ -285,8 +320,11 @@ export class SessionManager {
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("✅ Done", parts.length ? `*${parts.join(" · ")}*` : "Complete.", 0x00ff00)] })
       );
-      // Some agents (SDK) keep the process alive after "done"; stop it so the
-      // close handler can drain the outbox and free the thread.
+      if (session.onDone) {
+        const cb = session.onDone;
+        const text = session.textOutput;
+        outbox.enqueue(async () => { try { cb(text); } catch {} });
+      }
       this.stopProcess(session);
       return;
     }
@@ -296,6 +334,11 @@ export class SessionManager {
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("❌ Failed", event.message, 0xff0000)] })
       );
+      if (session.onDone) {
+        const cb = session.onDone;
+        const text = session.textOutput;
+        outbox.enqueue(async () => { try { cb(text); } catch {} });
+      }
       this.stopProcess(session);
       return;
     }
@@ -304,7 +347,10 @@ export class SessionManager {
     const raw = event as any;
     if (raw.kind === "_sdk_assistant") {
       this.db.updateSessionId(threadId, raw.sessionId);
-      if (raw.content?.trim()) outbox.pushText(raw.content);
+      if (raw.content?.trim()) {
+        session.textOutput += raw.content;
+        outbox.pushText(raw.content);
+      }
       for (const tool of (raw.tools ?? [])) {
         const label = formatToolCall(tool, session.workDir);
         outbox.enqueue(async () => {
