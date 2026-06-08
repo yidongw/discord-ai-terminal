@@ -4,6 +4,17 @@ import * as path from "path";
 export type PermissionMode = "auto" | "plan" | "approve";
 export type ClaudeModel = "opus" | "sonnet" | "haiku";
 
+// Tool-call messages hidden in every channel unless a per-channel override says
+// otherwise. Other tools are shown by default. Toggle with the /tools command.
+export const DEFAULT_HIDDEN_TOOLS = ["Bash", "Read", "Edit"];
+
+// Resolve whether a tool's messages are hidden, given a channel's overrides.
+// An explicit override wins; otherwise fall back to the default-hidden list.
+export function toolIsHidden(toolName: string, overrides: Record<string, boolean>): boolean {
+  if (toolName in overrides) return overrides[toolName]!;
+  return DEFAULT_HIDDEN_TOOLS.includes(toolName);
+}
+
 export interface ThreadSession {
   threadId: string;
   channelId: string;
@@ -68,6 +79,13 @@ export class DatabaseManager {
         model       TEXT NOT NULL DEFAULT 'sonnet'
       );
 
+      CREATE TABLE IF NOT EXISTS channel_hidden_tools (
+        channel_id  TEXT NOT NULL,
+        tool_name   TEXT NOT NULL,
+        hidden      INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, tool_name)
+      );
+
       CREATE TABLE IF NOT EXISTS scheduled_tasks (
         id               TEXT PRIMARY KEY,
         thread_id        TEXT NOT NULL,
@@ -112,6 +130,9 @@ export class DatabaseManager {
     if (!cols.includes("is_worktree")) {
       this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN is_worktree INTEGER NOT NULL DEFAULT 0`);
     }
+    // Drop the obsolete all-or-nothing tool-visibility table (replaced by the
+    // per-tool channel_hidden_tools table).
+    this.db.exec(`DROP TABLE IF EXISTS channel_tool_visibility`);
   }
 
   // ── Thread sessions ──────────────────────────────────────────────────────
@@ -193,6 +214,27 @@ export class DatabaseManager {
     this.db
       .prepare(`INSERT OR REPLACE INTO channel_models (channel_id, model) VALUES (?, ?)`)
       .run(channelId, model);
+  }
+
+  // ── Tool-message visibility ──────────────────────────────────────────────
+
+  // Per-channel overrides: { toolName: hidden }. Combine with DEFAULT_HIDDEN_TOOLS
+  // via toolIsHidden() to get the effective visibility for a tool.
+  getToolOverrides(channelId: string): Record<string, boolean> {
+    const rows = this.db
+      .prepare(`SELECT tool_name, hidden FROM channel_hidden_tools WHERE channel_id = ?`)
+      .all(channelId) as any[];
+    const out: Record<string, boolean> = {};
+    for (const r of rows) out[r.tool_name] = !!r.hidden;
+    return out;
+  }
+
+  setToolHidden(channelId: string, toolName: string, hidden: boolean): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO channel_hidden_tools (channel_id, tool_name, hidden) VALUES (?, ?, ?)`
+      )
+      .run(channelId, toolName, hidden ? 1 : 0);
   }
 
   // ── Scheduled tasks ──────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import {
   type ThreadChannel,
 } from "discord.js";
 import { SessionManager } from "./session-manager.js";
+import { DEFAULT_HIDDEN_TOOLS, toolIsHidden } from "../db/database.js";
 import type { PermissionMode, ClaudeModel } from "../db/database.js";
 
 export class CommandHandler {
@@ -71,6 +72,29 @@ export class CommandHandler {
               { name: "haiku — fastest", value: "haiku" }
             )
         ),
+
+      new SlashCommandBuilder()
+        .setName("tools")
+        .setDescription("Show or hide specific tool-call messages for this channel")
+        .addSubcommand((s) =>
+          s
+            .setName("hide")
+            .setDescription("Hide a tool's messages in this channel")
+            .addStringOption((o) =>
+              o.setName("tool").setDescription("Tool name, e.g. Bash, Write, Grep").setRequired(true)
+            )
+        )
+        .addSubcommand((s) =>
+          s
+            .setName("show")
+            .setDescription("Show a tool's messages in this channel")
+            .addStringOption((o) =>
+              o.setName("tool").setDescription("Tool name, e.g. Bash, Write, Grep").setRequired(true)
+            )
+        )
+        .addSubcommand((s) =>
+          s.setName("list").setDescription("List which tools are hidden/shown in this channel")
+        ),
     ];
   }
 
@@ -97,6 +121,7 @@ export class CommandHandler {
     if (commandName === "status") return this.handleStatus(interaction);
     if (commandName === "mode") return this.handleMode(interaction);
     if (commandName === "model") return this.handleModel(interaction);
+    if (commandName === "tools") return this.handleTools(interaction);
   }
 
   // ── Command handlers ────────────────────────────────────────────────────
@@ -178,6 +203,37 @@ export class CommandHandler {
     this.sessionManager.getDb().setModel(i.channelId, model);
     await i.reply({
       embeds: [embed("✅ Model Set", `Claude model set to **${model}** for this channel.`, 0x00ff00)],
+    });
+  }
+
+  private async handleTools(i: ChatInputCommandInteraction): Promise<void> {
+    const db = this.sessionManager.getDb();
+    const sub = i.options.getSubcommand();
+
+    if (sub === "list") {
+      const overrides = db.getToolOverrides(i.channelId);
+      const names = new Set<string>([...DEFAULT_HIDDEN_TOOLS, ...Object.keys(overrides)]);
+      const hidden = [...names].filter((t) => toolIsHidden(t, overrides));
+      const shownOverrides = [...names].filter((t) => t in overrides && !overrides[t]);
+      const desc =
+        `**Hidden:** ${hidden.length ? hidden.map((t) => `\`${t}\``).join(", ") : "none"}\n` +
+        `**Shown (overridden):** ${shownOverrides.length ? shownOverrides.map((t) => `\`${t}\``).join(", ") : "none"}\n` +
+        `\n*Defaults hidden: ${DEFAULT_HIDDEN_TOOLS.map((t) => `\`${t}\``).join(", ")}. All other tools show by default.*`;
+      await i.reply({ embeds: [embed("🔧 Tool Visibility", desc, 0x5865f2)] });
+      return;
+    }
+
+    const tool = i.options.getString("tool", true).trim();
+    const hidden = sub === "hide";
+    db.setToolHidden(i.channelId, tool, hidden);
+    await i.reply({
+      embeds: [
+        embed(
+          "✅ Tool Visibility",
+          `\`${tool}\` messages will be **${hidden ? "hidden" : "shown"}** in this channel.`,
+          0x00ff00
+        ),
+      ],
     });
   }
 

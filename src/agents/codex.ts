@@ -20,7 +20,9 @@ export const codexAgent: AgentRunner = {
 
     if (msg.type === "item.started" && msg.item?.type === "command_execution") {
       const cmd = String(msg.item.command ?? "").replace(workDir + "/", "./").slice(0, 400);
-      return { kind: "tool_start", id: msg.item.id, label: `🔧 **Command**\n\`\`\`bash\n${cmd}\n\`\`\`` };
+      // Treat codex's shell command as "Bash" so /tools visibility (and the
+      // default-hidden list) applies to it the same way it does for cc.
+      return { kind: "tool_start", id: msg.item.id, name: "Bash", label: `🔧 **Command**\n\`\`\`bash\n${cmd}\n\`\`\`` };
     }
 
     if (msg.type === "item.completed") {

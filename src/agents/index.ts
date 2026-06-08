@@ -14,7 +14,7 @@ export interface AgentRunOptions {
 export type AgentEvent =
   | { kind: "init";       sessionId: string; model: string; cwd: string }
   | { kind: "text";       content: string }
-  | { kind: "tool_start"; id: string; label: string }
+  | { kind: "tool_start"; id: string; label: string; name?: string }
   | { kind: "tool_done";  id: string; preview: string; isError: boolean }
   | { kind: "done";       turns: number | null; cost: number | null; tokens: string | null }
   | { kind: "error";      message: string };

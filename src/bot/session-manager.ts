@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "child_process";
 import { EmbedBuilder } from "discord.js";
 import { formatForDiscord } from "../utils/discord-format.js";
 import { getAgent, type AgentEvent } from "../agents/index.js";
-import { DatabaseManager } from "../db/database.js";
+import { DatabaseManager, toolIsHidden } from "../db/database.js";
 import { mainRepoOf, removeWorktree, type RemoveResult } from "../utils/path-resolver.js";
 import type { DiscordContext } from "../utils/shell.js";
 
@@ -21,6 +21,9 @@ interface ActiveSession {
   thread: any;
   toolCalls: Map<string, { message: any }>;
   workDir: string;
+  // Per-channel tool-message visibility overrides ({ toolName: hidden }); see
+  // toolIsHidden() and DEFAULT_HIDDEN_TOOLS.
+  toolOverrides: Record<string, boolean>;
   outbox: Outbox;
   done: boolean;
   stopping: boolean;
@@ -151,6 +154,7 @@ export class SessionManager {
     const existing = this.db.getThreadSession(threadId);
     const mode = this.db.getMode(channelId);
     const model = this.db.getModel(channelId);
+    const toolOverrides = this.db.getToolOverrides(channelId);
 
     const command = agent.buildCommand(workDir, prompt, {
       sessionId: existing?.sessionId,
@@ -173,6 +177,7 @@ export class SessionManager {
       thread,
       toolCalls: new Map(),
       workDir,
+      toolOverrides,
       outbox: this.getOutbox(threadId, thread),
       done: false,
       stopping: false,
@@ -291,6 +296,9 @@ export class SessionManager {
     }
 
     if (event.kind === "tool_start") {
+      // Skip hidden tools — we never create the embed, so the matching
+      // tool_done no-ops (its toolCalls lookup misses).
+      if (event.name && toolIsHidden(event.name, session.toolOverrides)) return;
       outbox.enqueue(async () => {
         const msg = await thread.send({ embeds: [new EmbedBuilder().setDescription(`⏳ ${event.label}`).setColor(0x0099ff)] });
         toolCalls.set(event.id, { message: msg });
@@ -352,6 +360,7 @@ export class SessionManager {
         outbox.pushText(raw.content);
       }
       for (const tool of (raw.tools ?? [])) {
+        if (toolIsHidden(tool.name, session.toolOverrides)) continue;
         const label = formatToolCall(tool, session.workDir);
         outbox.enqueue(async () => {
           const msg = await thread.send({ embeds: [new EmbedBuilder().setDescription(`⏳ ${label}`).setColor(0x0099ff)] });
