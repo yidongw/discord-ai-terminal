@@ -1,5 +1,6 @@
 import { DiscordBot } from "./bot/client.js";
 import { SessionManager } from "./bot/session-manager.js";
+import { Scheduler } from "./bot/scheduler.js";
 import { validateConfig } from "./utils/config.js";
 import { MCPPermissionServer } from "./mcp/server.js";
 
@@ -11,12 +12,20 @@ async function main() {
   await mcpServer.start();
 
   const sessionManager = new SessionManager();
-  const bot = new DiscordBot(sessionManager, config.allowedUserIds, config.baseFolder);
+  // Share the one DB instance so schedule_task tools persist into the same
+  // sessions the scheduler and bot read from.
+  mcpServer.setDb(sessionManager.getDb());
 
+  const bot = new DiscordBot(sessionManager, config.allowedUserIds, config.baseFolder);
   bot.setMCPServer(mcpServer);
+
+  // The scheduler is the durable timer that replays recurring tasks: it survives
+  // between (disposable) agent runs and re-invokes them through runAgent().
+  const scheduler = new Scheduler(bot.client, sessionManager, sessionManager.getDb());
 
   const shutdown = async () => {
     console.log("Shutting down...");
+    try { scheduler.stop(); } catch {}
     try { await mcpServer.stop(); } catch {}
     try { sessionManager.destroy(); } catch {}
     process.exit(0);
@@ -26,6 +35,7 @@ async function main() {
   process.on("SIGTERM", shutdown);
 
   await bot.login(config.discordToken);
+  scheduler.start();
   console.log("Agent Discord Bot started.");
 }
 

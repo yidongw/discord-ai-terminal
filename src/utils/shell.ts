@@ -21,7 +21,14 @@ const DISCORD_SYSTEM_PROMPT =
   "The built-in AskUserQuestion tool does NOT work in this environment. " +
   "Whenever you need to ask the user a question with choices, call " +
   "mcp__discord-permissions__ask_user_question instead — it sends Discord " +
-  "buttons and waits for the user to click one.";
+  "buttons and waits for the user to click one. " +
+  "You run as a one-shot process that exits when this turn finishes, so you " +
+  "CANNOT do recurring/interval work by sleeping or looping yourself. If the " +
+  "user asks for something to happen repeatedly (e.g. 'every 10 minutes', " +
+  "'check X hourly'), call mcp__discord-permissions__schedule_task with a " +
+  "standalone prompt and an interval — the bot will re-invoke you in this same " +
+  "thread on that schedule. Use mcp__discord-permissions__list_scheduled_tasks " +
+  "and mcp__discord-permissions__cancel_scheduled_task to manage existing ones.";
 
 export function buildClaudeCommand(
   workingDir: string,
