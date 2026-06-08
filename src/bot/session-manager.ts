@@ -11,6 +11,9 @@ const MAX_EMBED = 4000;
 // runaway agent that ignores SIGTERM from streaming "already produced" output
 // forever after a /stop.
 const SIGKILL_GRACE_MS = 3000;
+// Discord's typing indicator lasts ~10s; refresh a little sooner so it stays
+// visible continuously while a run is active or its outbox is still draining.
+const TYPING_REFRESH_MS = 8000;
 
 interface ActiveSession {
   process: ChildProcess;
@@ -30,6 +33,11 @@ interface ActiveSession {
 export class SessionManager {
   private db: DatabaseManager;
   private active = new Map<string, ActiveSession>();
+  // Delivery state keyed by thread, persisted ACROSS runs so overlapping runs
+  // (e.g. a new run starting while a previous one is still draining) share a
+  // single ordered queue and a single typing indicator instead of racing.
+  private outboxes = new Map<string, Outbox>();
+  private typing = new Map<string, TypingIndicator>();
 
   constructor() {
     this.db = new DatabaseManager();
@@ -64,6 +72,43 @@ export class SessionManager {
     session.killTimer = setTimeout(() => {
       try { session.process.kill("SIGKILL"); } catch {}
     }, SIGKILL_GRACE_MS);
+  }
+
+  // The outbox belongs to the THREAD, not to a single run, so a run that starts
+  // while a previous one is still draining reuses the same ordered queue (its
+  // messages land after the leftovers instead of interleaving with them).
+  private getOutbox(threadId: string, thread: any): Outbox {
+    let outbox = this.outboxes.get(threadId);
+    if (!outbox) {
+      outbox = new Outbox(thread);
+      this.outboxes.set(threadId, outbox);
+    } else {
+      outbox.updateThread(thread);
+    }
+    return outbox;
+  }
+
+  // Typing is also thread-scoped: start() is idempotent, so an overlapping run
+  // keeps the indicator running seamlessly.
+  private getTyping(threadId: string, thread: any): TypingIndicator {
+    let typing = this.typing.get(threadId);
+    if (!typing) {
+      typing = new TypingIndicator(thread);
+      this.typing.set(threadId, typing);
+    } else {
+      typing.updateThread(thread);
+    }
+    return typing;
+  }
+
+  // Tear down per-thread delivery state once a thread is fully idle (process
+  // closed AND outbox drained). Only the last/current session for the thread
+  // calls this, so it won't clobber a newer run that has taken over.
+  private releaseThread(threadId: string): void {
+    this.active.delete(threadId);
+    this.outboxes.delete(threadId);
+    this.typing.get(threadId)?.stop();
+    this.typing.delete(threadId);
   }
 
   async runAgent(
@@ -104,11 +149,15 @@ export class SessionManager {
       thread,
       toolCalls: new Map(),
       workDir,
-      outbox: new Outbox(thread),
+      outbox: this.getOutbox(threadId, thread),
       done: false,
       stopping: false,
     };
     this.active.set(threadId, session);
+
+    // Show "agent is typing…" right away — the agent is going to send messages —
+    // and keep it alive until the thread is fully idle.
+    this.getTyping(threadId, thread).start();
 
     if (!existing) {
       this.db.createThreadSession({ threadId, channelId, agent: agentKey, workDir, createdAt: Date.now() });
@@ -173,7 +222,7 @@ export class SessionManager {
       // Deliver everything already queued before marking the thread idle.
       await session.outbox.drain();
       // Guard against a newer run having replaced this session in the map.
-      if (this.active.get(threadId) === session) this.active.delete(threadId);
+      if (this.active.get(threadId) === session) this.releaseThread(threadId);
     });
 
     proc.on("error", async (err) => {
@@ -183,7 +232,7 @@ export class SessionManager {
         thread.send({ embeds: [embed("❌ Process Error", err.message, 0xff0000)] })
       );
       await session.outbox.drain();
-      if (this.active.get(threadId) === session) this.active.delete(threadId);
+      if (this.active.get(threadId) === session) this.releaseThread(threadId);
     });
   }
 
@@ -285,7 +334,10 @@ export class SessionManager {
       if (session.killTimer) clearTimeout(session.killTimer);
       try { session.process.kill("SIGKILL"); } catch {}
     }
+    for (const [, typing] of this.typing) typing.stop();
     this.active.clear();
+    this.outboxes.clear();
+    this.typing.clear();
   }
 }
 
@@ -301,6 +353,9 @@ export class Outbox {
   private idleWaiters: Array<() => void> = [];
 
   constructor(private thread: any) {}
+
+  // Point the outbox at the latest thread object when a new run reuses it.
+  updateThread(thread: any): void { this.thread = thread; }
 
   private get busy(): boolean {
     return this.running || this.queue.length > 0;
@@ -358,6 +413,39 @@ export class Outbox {
 type OutItem =
   | { type: "text"; content: string }
   | { type: "op"; run: () => Promise<unknown> };
+
+/**
+ * Keeps Discord's "<bot> is typing…" indicator alive in a thread while a run is
+ * active. Discord's indicator expires after ~10s, so we re-trigger it on an
+ * interval. start() is idempotent so overlapping runs don't stack timers.
+ */
+export class TypingIndicator {
+  private timer?: ReturnType<typeof setInterval>;
+
+  constructor(private thread: any, private intervalMs: number = TYPING_REFRESH_MS) {}
+
+  updateThread(thread: any): void { this.thread = thread; }
+
+  start(): void {
+    if (this.timer) return;
+    this.fire();
+    this.timer = setInterval(() => this.fire(), this.intervalMs);
+  }
+
+  stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  private fire(): void {
+    try {
+      const p = this.thread?.sendTyping?.();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    } catch {}
+  }
+}
 
 async function sendChunked(thread: any, content: string): Promise<void> {
   const text = formatForDiscord(content);
