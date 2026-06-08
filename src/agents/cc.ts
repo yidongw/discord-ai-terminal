@@ -1,5 +1,5 @@
 import type { AgentRunner, AgentRunOptions, AgentEvent } from "./index.js";
-import { buildClaudeCommand } from "../utils/shell.js";
+import { buildClaudeCommand, buildClaudeCommandForGitHub } from "../utils/shell.js";
 import { parseSdkLine } from "./sdk-parser.js";
 
 export const ccAgent: AgentRunner = {
@@ -8,6 +8,9 @@ export const ccAgent: AgentRunner = {
   color: 0x7289DA,
 
   buildCommand(workDir, prompt, opts) {
+    if (!opts.discordContext) {
+      return buildClaudeCommandForGitHub(workDir, prompt, { prNumber: opts.prNumber, model: opts.model });
+    }
     return buildClaudeCommand(workDir, prompt, opts.sessionId, opts.discordContext, opts.mode ?? "auto", opts.model ?? "sonnet");
   },
 

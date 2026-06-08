@@ -9,7 +9,7 @@ import {
 import { SessionManager } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
 import { parseAgentInvocations, starterMessageText, threadName } from "./parser.js";
-import { resolveWorkDir } from "../utils/path-resolver.js";
+import { resolveThreadWorkDir } from "../utils/path-resolver.js";
 import {
   ensureAttachmentDir,
   getTempPath,
@@ -81,6 +81,20 @@ export class DiscordBot {
       }
     });
 
+    // A deleted thread is gone for good — clean up its worktree (refusing if it
+    // still holds uncommitted/unmerged work, which we then leave on disk).
+    this.client.on("threadDelete", (thread) => {
+      this.cleanupThread(thread.id, null, "deleted");
+    });
+
+    // A thread closing (archived) also triggers cleanup. Re-sending a message
+    // un-archives it before anything is touched, so this only reaps idle threads.
+    this.client.on("threadUpdate", (oldThread, newThread) => {
+      if (!oldThread.archived && newThread.archived) {
+        this.cleanupThread(newThread.id, newThread, "closed");
+      }
+    });
+
     this.client.on("messageReactionAdd", async (reaction, user) => {
       if ((user as any).bot) return;
       if (!this.allowedUserIds.includes((user as any).id)) return;
@@ -99,10 +113,29 @@ export class DiscordBot {
     });
   }
 
+  // Auto-cleanup a thread's worktree when it closes or is deleted. Never forces:
+  // a worktree with unsaved/unmerged work is kept (and noted, if the thread is
+  // still reachable) so nothing is silently lost — clear it later with /cleanup.
+  private cleanupThread(threadId: string, thread: ThreadChannel | null, reason: string): void {
+    const result = this.sessionManager.cleanupThreadWorktree(threadId);
+    if (!result) return;
+    if (result.removed) {
+      console.log(`[cleanup] thread ${threadId} ${reason}: worktree removed`);
+    } else {
+      console.log(`[cleanup] thread ${threadId} ${reason}: kept (${result.reason})`);
+      if (thread) {
+        thread
+          .send(
+            `🌲 Worktree kept — it still has ${result.reason}, so it was not removed. Run \`/cleanup force:true\` to discard it.`
+          )
+          .catch(() => {});
+      }
+    }
+  }
+
   private async handleChannelMessage(msg: Message): Promise<void> {
     const channel = msg.channel as TextChannel;
     const channelName = channel.name;
-    const resolved = resolveWorkDir(channelName, this.baseFolder) ?? { workDir: this.baseFolder, repo: channelName };
 
     const invocations = parseAgentInvocations(msg.content);
     if (invocations.length === 0) {
@@ -142,6 +175,12 @@ export class DiscordBot {
         messageId: msg.id,
       };
 
+      // Each thread runs in its own worktree on its own branch (off the repo's
+      // default branch), so concurrent threads in this channel never conflict.
+      const resolved =
+        resolveThreadWorkDir(channelName, thread.id, tName, this.baseFolder) ??
+        { workDir: this.baseFolder, repo: channelName };
+
       try {
         await this.sessionManager.runAgent(
           thread.id,
@@ -150,7 +189,8 @@ export class DiscordBot {
           agent,
           resolved.workDir,
           fullPrompt,
-          discordContext
+          discordContext,
+          { branch: resolved.branch, isWorktree: !!resolved.worktree }
         );
       } catch (err: any) {
         await thread.send(`❌ Failed to start **${agent}**: ${err.message}`);

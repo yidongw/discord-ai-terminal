@@ -3,6 +3,8 @@ import { SessionManager } from "./bot/session-manager.js";
 import { Scheduler } from "./bot/scheduler.js";
 import { validateConfig } from "./utils/config.js";
 import { MCPPermissionServer } from "./mcp/server.js";
+import { GitHubHandler } from "./github/handler.js";
+import { GitHubWebhookServer } from "./github/webhook.js";
 
 async function main() {
   const config = validateConfig();
@@ -36,6 +38,14 @@ async function main() {
 
   await bot.login(config.discordToken);
   scheduler.start();
+
+  if (process.env.GITHUB_WEBHOOK_SECRET || process.env.GITHUB_TOKEN) {
+    const githubHandler = new GitHubHandler(bot.client, sessionManager, config.baseFolder);
+    const webhookServer = new GitHubWebhookServer(githubHandler);
+    const webhookPort = parseInt(process.env.GITHUB_WEBHOOK_PORT ?? "3002");
+    webhookServer.start(webhookPort);
+  }
+
   console.log("Agent Discord Bot started.");
 }
 

@@ -6,6 +6,8 @@ export interface AgentRunOptions {
   mode?: PermissionMode;
   model?: ClaudeModel;
   discordContext?: DiscordContext;
+  // Set for GitHub fix runs — CC uses --from-pr instead of --resume
+  prNumber?: number;
 }
 
 // Normalized events that session-manager handles regardless of agent

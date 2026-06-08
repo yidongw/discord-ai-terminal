@@ -118,6 +118,36 @@ export function buildCodexCommand(
   return commandParts.join(" ");
 }
 
+export function buildClaudeCommandForGitHub(
+  workingDir: string,
+  prompt: string,
+  opts: { prNumber?: number; model?: string }
+): string {
+  const escapedPrompt = escapeShellString(prompt);
+  const model = opts.model ?? "sonnet";
+
+  const commandParts = [
+    `cd ${workingDir}`,
+    "&&",
+    "claude",
+    "--output-format",
+    "stream-json",
+    "--model",
+    model,
+    "-p",
+    escapedPrompt,
+    "--verbose",
+    "--dangerously-skip-permissions",
+  ];
+
+  if (opts.prNumber !== undefined) {
+    // splice after "claude" to put --from-pr before other flags
+    commandParts.splice(3, 0, "--from-pr", String(opts.prNumber));
+  }
+
+  return commandParts.join(" ");
+}
+
 /**
  * Create a session-specific MCP config file with hardcoded Discord context
  */
