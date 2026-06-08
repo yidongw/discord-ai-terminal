@@ -132,3 +132,107 @@ describe("Outbox", () => {
     errSpy.mockRestore();
   });
 });
+
+// A thread whose send() returns an editable message, so we can assert the hidden
+// summary updates one message in place rather than spamming new ones.
+function makeEditableThread() {
+  const sends: any[] = [];
+  const messages: any[] = [];
+  const thread = {
+    sends,
+    messages,
+    send: vi.fn((payload: any) => {
+      sends.push(payload);
+      const msg: any = {
+        id: `msg-${sends.length}`,
+        embeds: payload.embeds,
+        edits: [] as any[],
+        edit: vi.fn((p: any) => { msg.edits.push(p); msg.embeds = p.embeds; return Promise.resolve(msg); }),
+      };
+      messages.push(msg);
+      return Promise.resolve(msg);
+    }),
+  };
+  return thread;
+}
+
+// Read a description off whatever embeds a message currently holds (post-edit).
+const msgDesc = (msg: any) => msg.embeds[0].data.description as string;
+
+describe("Outbox hidden-tool summary", () => {
+  it("collapses a run of hidden tools into one updating summary message", async () => {
+    const thread = makeEditableThread();
+    const outbox = new Outbox(thread);
+
+    outbox.pushHiddenTool("Bash");
+    await outbox.drain();
+    outbox.pushHiddenTool("Bash");
+    await outbox.drain();
+    outbox.pushHiddenTool("Edit");
+    await outbox.drain();
+
+    // One message, edited in place — never a second summary.
+    expect(thread.messages).toHaveLength(1);
+    expect(msgDesc(thread.messages[0])).toBe("🙈 2 Bash, 1 Edit messages hidden");
+  });
+
+  it("coalesces hidden tools queued together", async () => {
+    const thread = makeEditableThread();
+    const outbox = new Outbox(thread);
+
+    outbox.pushHiddenTool("Bash");
+    outbox.pushHiddenTool("Bash");
+    outbox.pushHiddenTool("Bash");
+    outbox.pushHiddenTool("Edit");
+    await outbox.drain();
+
+    expect(thread.messages).toHaveLength(1);
+    expect(msgDesc(thread.messages[0])).toBe("🙈 3 Bash, 1 Edit messages hidden");
+  });
+
+  it("uses singular 'message' for a single hidden tool", async () => {
+    const thread = makeEditableThread();
+    const outbox = new Outbox(thread);
+
+    outbox.pushHiddenTool("Read");
+    await outbox.drain();
+
+    expect(msgDesc(thread.messages[0])).toBe("🙈 1 Read message hidden");
+  });
+
+  it("seals the summary on a text message and starts a fresh one after", async () => {
+    const thread = makeEditableThread();
+    const outbox = new Outbox(thread);
+
+    outbox.pushHiddenTool("Bash");
+    await outbox.drain();
+    outbox.pushText("here is what I found");
+    await outbox.drain();
+    outbox.pushHiddenTool("Edit");
+    await outbox.drain();
+
+    // summary #1, text, summary #2 — the text reset the count.
+    expect(thread.messages).toHaveLength(3);
+    expect(msgDesc(thread.messages[0])).toBe("🙈 1 Bash message hidden");
+    expect(msgDesc(thread.messages[1])).toContain("here is what I found");
+    expect(msgDesc(thread.messages[2])).toBe("🙈 1 Edit message hidden");
+  });
+
+  it("seals the summary on an enqueued op (a visible tool/status embed)", async () => {
+    const thread = makeEditableThread();
+    const outbox = new Outbox(thread);
+
+    outbox.pushHiddenTool("Bash");
+    await outbox.drain();
+    outbox.enqueue(async () => { await thread.send({ embeds: [{ data: { description: "🔧 visible" } }] }); });
+    await outbox.drain();
+    outbox.pushHiddenTool("Bash");
+    await outbox.drain();
+
+    expect(thread.messages).toHaveLength(3);
+    expect(msgDesc(thread.messages[0])).toBe("🙈 1 Bash message hidden");
+    expect(msgDesc(thread.messages[2])).toBe("🙈 1 Bash message hidden");
+    // The two summaries are distinct messages, not one edited twice.
+    expect(thread.messages[0].id).not.toBe(thread.messages[2].id);
+  });
+});
