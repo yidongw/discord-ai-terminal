@@ -131,7 +131,7 @@ export class GitHubHandler {
 
   private async getOrCreateTestThread(repoName: string, prNumber: number): Promise<ThreadChannel | null> {
     const db = this.sessionManager.getDb();
-    const existing = db.getPrThreads(String(prNumber), `*/${repoName}`);
+    const existing = db.getPrThreads(String(prNumber), repoName);
 
     // Try a cached test thread ID first
     if (existing?.testThreadId) {
@@ -139,26 +139,35 @@ export class GitHubHandler {
       if (cached?.isThread()) return cached as ThreadChannel;
     }
 
-    // Find the Discord channel matching the repo name
-    const guild = this.client.guilds.cache.first();
-    if (!guild) return null;
+    // Fetch the guild freshly if not cached (bot may have just started)
+    let guild = this.client.guilds.cache.first();
+    if (!guild) {
+      console.error("[github] No guild in cache — bot not ready?");
+      return null;
+    }
+
+    // Ensure channels are fetched (cache may be stale on first use)
+    if (guild.channels.cache.size === 0) {
+      await guild.channels.fetch();
+    }
 
     const channel = guild.channels.cache.find(
       (c) => c.name === repoName && c.type === ChannelType.GuildText
     ) as TextChannel | undefined;
 
     if (!channel) {
-      console.error(`[github] No Discord channel named "${repoName}" found`);
+      console.error(`[github] No Discord channel named "${repoName}" (searched ${guild.channels.cache.size} channels)`);
       return null;
     }
 
+    console.log(`[github] Creating test thread "PR #${prNumber} — tests" in #${repoName}`);
     const thread = await channel.threads.create({
       name: `PR #${prNumber} — tests`,
       autoArchiveDuration: 1440,
     }) as ThreadChannel;
 
-    // Find the real repo key (could be just repoName)
     db.setPrTestThread(String(prNumber), repoName, thread.id);
+    console.log(`[github] Test thread created: ${thread.id}`);
     return thread;
   }
 }
