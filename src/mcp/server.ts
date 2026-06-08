@@ -4,6 +4,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { PermissionManager } from './permission-manager.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import type { DatabaseManager } from '../db/database.js';
+import { parseInterval, formatInterval, MIN_INTERVAL_SECONDS } from '../bot/scheduler.js';
 
 export class MCPPermissionServer {
   private app: express.Application;
@@ -11,6 +13,7 @@ export class MCPPermissionServer {
   private server?: any;
   private permissionManager: PermissionManager;
   private discordBot: any = null;
+  private db: DatabaseManager | null = null;
 
   constructor(port: number = 3001) {
     this.port = port;
@@ -19,6 +22,13 @@ export class MCPPermissionServer {
     this.permissionManager = new PermissionManager();
 
     this.setupRoutes();
+  }
+
+  /**
+   * Provide the shared database so scheduling tools can persist tasks.
+   */
+  setDb(db: DatabaseManager): void {
+    this.db = db;
   }
 
   /**
@@ -437,6 +447,119 @@ export class MCPPermissionServer {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    });
+
+    // ── Scheduled tasks (called by mcp-bridge.cjs) ───────────────────────────
+
+    // Create a recurring task that re-runs the given prompt in THIS thread on an
+    // interval. The agent's own thread/agent/work_dir are looked up from the
+    // session so the task is self-contained for later replay by the scheduler.
+    this.app.post('/tool/schedule_task', (req, res) => {
+      console.log('HTTP schedule_task request:', req.body);
+
+      const discordContext = this.extractDiscordContext(req) || req.body.discord_context;
+      if (!this.db || !discordContext) {
+        res.json({ error: 'Scheduling not available (no DB or Discord context)' });
+        return;
+      }
+
+      const threadId = discordContext.channelId;
+      const session = this.db.getThreadSession(threadId);
+      if (!session) {
+        res.json({ error: 'No session found for this thread; cannot schedule.' });
+        return;
+      }
+
+      const { prompt, interval, label, max_runs } = req.body ?? {};
+      if (!prompt || typeof prompt !== 'string') {
+        res.json({ error: 'A non-empty "prompt" string is required.' });
+        return;
+      }
+
+      const parsed = parseInterval(interval);
+      if (parsed === null) {
+        res.json({ error: `Could not parse interval "${interval}". Use e.g. "10m", "2h", "30s", "1d".` });
+        return;
+      }
+      const intervalSeconds = Math.max(parsed, MIN_INTERVAL_SECONDS);
+
+      const id = `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const now = Date.now();
+      const nextRunAt = now + intervalSeconds * 1000;
+
+      try {
+        this.db.createScheduledTask({
+          id,
+          threadId,
+          channelId: session.channelId,
+          agent: session.agent,
+          workDir: session.workDir,
+          userId: discordContext.userId,
+          prompt,
+          label: typeof label === 'string' && label ? label : undefined,
+          intervalSeconds,
+          nextRunAt,
+          enabled: true,
+          runCount: 0,
+          maxRuns: typeof max_runs === 'number' && max_runs > 0 ? Math.floor(max_runs) : undefined,
+          createdAt: now,
+        });
+
+        res.json({
+          ok: true,
+          id,
+          intervalSeconds,
+          interval: formatInterval(intervalSeconds),
+          nextRunAt,
+          nextRunInSeconds: Math.round((nextRunAt - now) / 1000),
+          note: `Scheduled. The first run happens in ~${formatInterval(intervalSeconds)}; it then repeats until cancelled with cancel_scheduled_task.`,
+        });
+      } catch (error) {
+        console.error('HTTP schedule_task error:', error);
+        res.json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
+    // List scheduled tasks for this thread (or all threads if scope="all").
+    this.app.post('/tool/list_scheduled_tasks', (req, res) => {
+      const discordContext = this.extractDiscordContext(req) || req.body.discord_context;
+      if (!this.db) {
+        res.json({ error: 'Scheduling not available (no DB).' });
+        return;
+      }
+      const scope = req.body?.scope;
+      const threadId = scope === 'all' ? undefined : discordContext?.channelId;
+      const tasks = this.db.listScheduledTasks(threadId).map((t) => ({
+        id: t.id,
+        prompt: t.prompt,
+        label: t.label,
+        interval: formatInterval(t.intervalSeconds),
+        enabled: t.enabled,
+        runCount: t.runCount,
+        maxRuns: t.maxRuns,
+        nextRunInSeconds: Math.round((t.nextRunAt - Date.now()) / 1000),
+      }));
+      res.json({ tasks });
+    });
+
+    // Cancel (delete) a scheduled task by id.
+    this.app.post('/tool/cancel_scheduled_task', (req, res) => {
+      if (!this.db) {
+        res.json({ error: 'Scheduling not available (no DB).' });
+        return;
+      }
+      const id = req.body?.id;
+      if (!id || typeof id !== 'string') {
+        res.json({ error: 'A task "id" string is required.' });
+        return;
+      }
+      const existing = this.db.getScheduledTask(id);
+      if (!existing) {
+        res.json({ error: `No scheduled task with id "${id}".` });
+        return;
+      }
+      this.db.deleteScheduledTask(id);
+      res.json({ ok: true, id });
     });
   }
 

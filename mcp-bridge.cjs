@@ -136,6 +136,62 @@ const TOOLS = [
       required: ['tool_name', 'input'],
     },
   },
+  {
+    name: 'schedule_task',
+    description:
+      'Schedule a prompt to be re-run automatically in THIS Discord thread on a ' +
+      'recurring interval. Use this for any "do X every N minutes/hours" request. ' +
+      'You (the agent) exit after each turn, so you cannot sleep-and-loop yourself; ' +
+      'instead register the task here and the bot will re-invoke you with this ' +
+      'prompt when each interval elapses, posting the result back to this thread. ' +
+      'The task repeats until cancelled with cancel_scheduled_task (or until ' +
+      'max_runs is reached). Minimum interval is 60 seconds.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description:
+            'The instruction to run on each interval, written as a fresh standalone ' +
+            'prompt (the future run only sees this text, not the current conversation).',
+        },
+        interval: {
+          type: 'string',
+          description: 'How often to repeat, e.g. "10m", "2h", "30s", "1d". Minimum 60s.',
+        },
+        label: { type: 'string', description: 'Optional short name shown when the task runs.' },
+        max_runs: {
+          type: 'number',
+          description: 'Optional: auto-stop after this many runs. Omit for unlimited.',
+        },
+      },
+      required: ['prompt', 'interval'],
+    },
+  },
+  {
+    name: 'list_scheduled_tasks',
+    description:
+      'List recurring tasks scheduled for this thread (their ids, prompts, ' +
+      'intervals, and time until next run). Pass scope:"all" to list every ' +
+      "thread's tasks.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: { type: 'string', description: 'Omit for this thread, or "all" for every thread.' },
+      },
+    },
+  },
+  {
+    name: 'cancel_scheduled_task',
+    description: 'Cancel/stop a recurring task by its id (from list_scheduled_tasks).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The task id to cancel.' },
+      },
+      required: ['id'],
+    },
+  },
 ];
 
 function send(message) {
