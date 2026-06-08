@@ -175,6 +175,15 @@ export class DatabaseManager {
     if (!cols.includes("is_worktree")) {
       this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN is_worktree INTEGER NOT NULL DEFAULT 0`);
     }
+    // active_runs shipped before completion_json existed, so a DB created by that
+    // build has the table but not the column. initializeTables() runs first, so
+    // the table always exists here — just add the column when it's missing.
+    const runCols = (this.db.prepare(`PRAGMA table_info(active_runs)`).all() as any[]).map(
+      (c) => c.name as string
+    );
+    if (!runCols.includes("completion_json")) {
+      this.db.exec(`ALTER TABLE active_runs ADD COLUMN completion_json TEXT`);
+    }
     // Drop the obsolete all-or-nothing tool-visibility table (replaced by the
     // per-tool channel_hidden_tools table).
     this.db.exec(`DROP TABLE IF EXISTS channel_tool_visibility`);
