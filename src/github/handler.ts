@@ -53,9 +53,17 @@ export class GitHubHandler {
     previewUrl: string,
     agentKey: string
   ): Promise<void> {
+    // Verify the PR actually exists before spending an agent run on it. A
+    // webhook can carry a stale, deleted, or fabricated PR number (e.g. a test
+    // payload) — getPr returns null on a 404, and we bail instead of testing a
+    // phantom preview URL and posting a summary to a PR that isn't there.
     const pr = await getPr(repo, prNumber);
-    const prTitle = pr?.title ?? `PR #${prNumber}`;
-    const prBody = pr?.body ?? "";
+    if (!pr) {
+      console.error(`[github] PR #${prNumber} not found in ${repo} — skipping test run`);
+      return;
+    }
+    const prTitle = pr.title ?? `PR #${prNumber}`;
+    const prBody = pr.body ?? "";
 
     const thread = await this.getOrCreateTestThread(repo, prNumber);
     if (!thread) {
