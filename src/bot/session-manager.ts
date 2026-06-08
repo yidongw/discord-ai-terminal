@@ -54,6 +54,10 @@ interface ActiveSession {
   finalized: boolean;
   thread: any;
   toolCalls: Map<string, { message: any }>;
+  // Tool-use ids we deliberately hid (Bash/Read/Edit by default). Their
+  // tool_done / tool_result events are dropped without enqueuing anything, so a
+  // hidden tool's result can't seal the running "N hidden" summary embed.
+  hiddenToolIds: Set<string>;
   workDir: string;
   // Per-channel tool-message visibility overrides ({ toolName: hidden }); see
   // toolIsHidden() and DEFAULT_HIDDEN_TOOLS.
@@ -304,6 +308,7 @@ export class SessionManager {
       finalized: false,
       thread,
       toolCalls: new Map(),
+      hiddenToolIds: new Set(),
       workDir,
       toolOverrides,
       outbox: this.getOutbox(threadId, thread),
@@ -512,6 +517,7 @@ export class SessionManager {
       finalized: false,
       thread,
       toolCalls: new Map(),
+      hiddenToolIds: new Set(),
       workDir: run.workDir,
       toolOverrides: this.db.getToolOverrides(run.channelId),
       outbox: this.getOutbox(run.threadId, thread),
@@ -563,9 +569,14 @@ export class SessionManager {
     }
 
     if (event.kind === "tool_start") {
-      // Skip hidden tools — we never create the embed, so the matching
-      // tool_done no-ops (its toolCalls lookup misses).
-      if (event.name && toolIsHidden(event.name, session.toolOverrides)) return;
+      // Hidden tools don't get their own embed; instead they bump the running
+      // "N hidden" summary. Remember the id so the matching tool_done is dropped
+      // (it must not seal the summary).
+      if (event.name && toolIsHidden(event.name, session.toolOverrides)) {
+        session.hiddenToolIds.add(event.id);
+        outbox.pushHiddenTool(event.name);
+        return;
+      }
       outbox.enqueue(async () => {
         const msg = await thread.send({ embeds: [new EmbedBuilder().setDescription(`⏳ ${event.label}`).setColor(0x0099ff)] });
         toolCalls.set(event.id, { message: msg });
@@ -574,6 +585,9 @@ export class SessionManager {
     }
 
     if (event.kind === "tool_done") {
+      // Hidden tool → no embed to update, and we must not enqueue anything that
+      // would seal the running summary.
+      if (session.hiddenToolIds.has(event.id)) return;
       outbox.enqueue(async () => {
         const tracked = toolCalls.get(event.id);
         if (!tracked?.message) return;
@@ -617,7 +631,11 @@ export class SessionManager {
         outbox.pushText(raw.content);
       }
       for (const tool of (raw.tools ?? [])) {
-        if (toolIsHidden(tool.name, session.toolOverrides)) continue;
+        if (toolIsHidden(tool.name, session.toolOverrides)) {
+          session.hiddenToolIds.add(tool.id);
+          outbox.pushHiddenTool(tool.name);
+          continue;
+        }
         const label = formatToolCall(tool, session.workDir);
         outbox.enqueue(async () => {
           const msg = await thread.send({ embeds: [new EmbedBuilder().setDescription(`⏳ ${label}`).setColor(0x0099ff)] });
@@ -627,6 +645,9 @@ export class SessionManager {
     }
     if (raw.kind === "_sdk_tool_results") {
       for (const result of (raw.results ?? [])) {
+        // Drop results for hidden tools entirely — enqueuing a no-op op would
+        // seal the running summary between two batches of hidden calls.
+        if (session.hiddenToolIds.has(result.tool_use_id)) continue;
         outbox.enqueue(async () => {
           const tracked = toolCalls.get(result.tool_use_id);
           if (!tracked?.message) return;
@@ -685,6 +706,12 @@ export class Outbox {
   private queue: OutItem[] = [];
   private running = false;
   private idleWaiters: Array<() => void> = [];
+  // The live "N hidden" summary embed and its accumulated per-tool counts. While
+  // open, consecutive hidden tool calls edit this one message; the next visible
+  // message (text, a shown tool, a status embed) seals it, so the following
+  // hidden run starts a fresh summary in the correct stream position.
+  private hiddenMessage: any = null;
+  private hiddenCounts: Map<string, number> | null = null;
 
   constructor(private thread: any) {}
 
@@ -713,6 +740,17 @@ export class Outbox {
     void this.pump();
   }
 
+  // Record one hidden tool call. Consecutive hidden calls coalesce into a single
+  // queued item (and ultimately a single edited summary embed) the same way text
+  // does; a visible message between them seals the summary and resets the count.
+  pushHiddenTool(name: string): void {
+    if (!name) return;
+    const last = this.queue[this.queue.length - 1];
+    if (last && last.type === "hidden") last.counts.set(name, (last.counts.get(name) ?? 0) + 1);
+    else this.queue.push({ type: "hidden", counts: new Map([[name, 1]]) });
+    void this.pump();
+  }
+
   // Resolves once the queue is fully drained.
   drain(): Promise<void> {
     if (!this.busy) return Promise.resolve();
@@ -726,8 +764,15 @@ export class Outbox {
       while (this.queue.length > 0) {
         const item = this.queue.shift()!;
         try {
-          if (item.type === "text") await sendChunked(this.thread, item.content);
-          else await item.run();
+          if (item.type === "hidden") {
+            await this.flushHidden(item.counts);
+          } else {
+            // Any visible message ends the current hidden run: drop the summary
+            // reference so the next hidden tool opens a new embed below this one.
+            this.sealHidden();
+            if (item.type === "text") await sendChunked(this.thread, item.content);
+            else await item.run();
+          }
         } catch (err) {
           console.error("[outbox] send failed:", err);
         }
@@ -742,11 +787,31 @@ export class Outbox {
     this.idleWaiters = [];
     for (const w of waiters) w();
   }
+
+  // Close the current hidden-tool summary so the next hidden call starts a fresh
+  // embed. The already-sent message keeps its final count.
+  private sealHidden(): void {
+    this.hiddenMessage = null;
+    this.hiddenCounts = null;
+  }
+
+  // Create the summary embed for the first hidden call in a run, or merge the new
+  // counts into the open one and edit it in place.
+  private async flushHidden(counts: Map<string, number>): Promise<void> {
+    if (!this.hiddenMessage) {
+      this.hiddenCounts = new Map(counts);
+      this.hiddenMessage = await this.thread.send({ embeds: [hiddenEmbed(this.hiddenCounts)] });
+      return;
+    }
+    for (const [name, n] of counts) this.hiddenCounts!.set(name, (this.hiddenCounts!.get(name) ?? 0) + n);
+    await this.hiddenMessage.edit({ embeds: [hiddenEmbed(this.hiddenCounts!)] });
+  }
 }
 
 type OutItem =
   | { type: "text"; content: string }
-  | { type: "op"; run: () => Promise<unknown> };
+  | { type: "op"; run: () => Promise<unknown> }
+  | { type: "hidden"; counts: Map<string, number> };
 
 /**
  * Keeps Discord's "<bot> is typing…" indicator alive in a thread while a run is
@@ -798,6 +863,19 @@ async function sendChunked(thread: any, content: string): Promise<void> {
 
 function embed(title: string, description: string, color: number) {
   return new EmbedBuilder().setTitle(title).setDescription(description).setColor(color);
+}
+
+// The collapsed summary embed for a run of hidden tool calls, e.g.
+// "🙈 10 Bash, 3 Edit messages hidden". Muted color so it reads as a marker
+// rather than real output.
+function hiddenEmbed(counts: Map<string, number>) {
+  return new EmbedBuilder().setDescription(hiddenSummaryText(counts)).setColor(0x99aab5);
+}
+
+function hiddenSummaryText(counts: Map<string, number>): string {
+  const parts = [...counts.entries()].map(([name, n]) => `${n} ${escapeMd(name)}`);
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  return `🙈 ${parts.join(", ")} ${total === 1 ? "message" : "messages"} hidden`;
 }
 
 // Parse a persisted CompletionAction back from its JSON, tolerating null/garbage.
