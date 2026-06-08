@@ -256,6 +256,10 @@ export class SessionManager {
     // tailing this file from the persisted offset.
     const runId = `${threadId}-${Date.now()}`;
     const logPath = path.join(this.runsDir, `${runId}.jsonl`);
+    // Pre-create the (empty) log so the tailer can open it right away — the
+    // detached child won't have created the redirect target yet when we start
+    // tailing in this same tick. bash's `>>` then appends to it.
+    try { fs.closeSync(fs.openSync(logPath, "a")); } catch {}
     // Redirect at the shell. Bun's child_process can't reliably pass a raw fd via
     // `stdio`, and we already launch through bash — so bash owns the fd and keeps
     // it open after we exit. stderr is merged in (non-JSON lines just fail to
