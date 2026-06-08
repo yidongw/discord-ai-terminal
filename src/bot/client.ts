@@ -8,7 +8,7 @@ import {
 } from "discord.js";
 import { SessionManager } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
-import { parseAgentInvocations, starterMessageText, threadName } from "./parser.js";
+import { parseAgentInvocations, starterMessageText, threadName, firstLine } from "./parser.js";
 import { resolveThreadWorkDir } from "../utils/path-resolver.js";
 import {
   ensureAttachmentDir,
@@ -177,8 +177,10 @@ export class DiscordBot {
 
       // Each thread runs in its own worktree on its own branch (off the repo's
       // default branch), so concurrent threads in this channel never conflict.
+      // The branch/dir slug comes from the prompt's first line only (no agent
+      // prefix), keeping names like `discord/fix-the-login-bug-456789`.
       const resolved =
-        resolveThreadWorkDir(channelName, thread.id, tName, this.baseFolder) ??
+        resolveThreadWorkDir(channelName, thread.id, firstLine(prompt), this.baseFolder) ??
         { workDir: this.baseFolder, repo: channelName };
 
       try {

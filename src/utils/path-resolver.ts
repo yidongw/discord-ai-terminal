@@ -71,7 +71,7 @@ function slugify(name: string): string {
 export function resolveThreadWorkDir(
   channelName: string,
   threadId: string,
-  threadName: string,
+  label: string,
   baseFolder: string
 ): ResolvedPath | null {
   const repoPath = repoPathFor(channelName, baseFolder);
@@ -83,8 +83,9 @@ export function resolveThreadWorkDir(
 
   const base = defaultBranch(repoPath);
   const shortId = threadId.slice(-6);
-  const branch = `discord/${slugify(threadName)}-${shortId}`;
-  const wtDir = `${slugify(threadName)}-${shortId}`;
+  const slug = slugify(label);
+  const branch = `discord/${slug}-${shortId}`;
+  const wtDir = `${slug}-${shortId}`;
   const wtPath = path.join(baseFolder, "worktrees", channelName, wtDir);
 
   if (fs.existsSync(wtPath)) {

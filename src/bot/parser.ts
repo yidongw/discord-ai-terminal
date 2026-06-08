@@ -26,30 +26,45 @@ export function parseAgentInvocations(content: string): ParsedInvocation[] {
 
   if (mentionedAgents.length === 0) return [];
 
-  // Strip ALL @agent mentions to build the clean prompt
+  // Strip ALL @agent mentions to build the clean prompt. Collapse only
+  // horizontal whitespace and tidy spaces around newlines — newlines are kept
+  // so the agent sees the real multi-line message and firstLine() (used for the
+  // thread/worktree name) can take just the first line.
   const allAgentPattern = new RegExp(
     `@(${Array.from(knownAgents).join("|")})`,
     "gi"
   );
-  const cleanPrompt = content.replace(allAgentPattern, "").replace(/\s+/g, " ").trim();
+  const cleanPrompt = content
+    .replace(allAgentPattern, "")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .trim();
 
   return mentionedAgents.map((agent) => ({ agent, prompt: cleanPrompt }));
+}
+
+/** The first line of a message (text before the first newline), trimmed. */
+export function firstLine(text: string): string {
+  const idx = text.indexOf("\n");
+  return (idx === -1 ? text : text.slice(0, idx)).trim();
 }
 
 /** Build the starter message text for a given agent invocation */
 export function starterMessageText(agent: string, prompt: string): string {
   const THREAD_NAME_LIMIT = 100;
-  const full = `🌲 **${agent}** — ${prompt}`;
+  const line = firstLine(prompt);
+  const full = `🌲 **${agent}** — ${line}`;
   if (full.length <= THREAD_NAME_LIMIT) return full;
   const maxPrompt = THREAD_NAME_LIMIT - `🌲 **${agent}** — `.length - 1;
-  return `🌲 **${agent}** — ${prompt.slice(0, maxPrompt)}…`;
+  return `🌲 **${agent}** — ${line.slice(0, maxPrompt)}…`;
 }
 
-/** Build the thread name for a given agent + prompt */
+/** Build the thread name for a given agent + prompt (first line only) */
 export function threadName(agent: string, prompt: string): string {
   const THREAD_NAME_LIMIT = 100;
   const prefix = `${agent} • `;
+  const line = firstLine(prompt);
   const max = THREAD_NAME_LIMIT - prefix.length;
-  const truncated = prompt.length > max ? prompt.slice(0, max - 1) + "…" : prompt;
+  const truncated = line.length > max ? line.slice(0, max - 1) + "…" : line;
   return `${prefix}${truncated}`;
 }
