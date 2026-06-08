@@ -57,7 +57,7 @@ export class GitHubHandler {
     const prTitle = pr?.title ?? `PR #${prNumber}`;
     const prBody = pr?.body ?? "";
 
-    const thread = await this.getOrCreateTestThread(repoName, prNumber);
+    const thread = await this.getOrCreateTestThread(repo, prNumber);
     if (!thread) {
       console.error(`[github] Could not find/create test thread for PR #${prNumber}`);
       return;
@@ -97,7 +97,7 @@ export class GitHubHandler {
 
     // Fall back to the test thread if maker thread is gone
     if (!thread) {
-      thread = await this.getOrCreateTestThread(repoName, prNumber);
+      thread = await this.getOrCreateTestThread(repo, prNumber);
     }
 
     if (!thread) {
@@ -129,9 +129,14 @@ export class GitHubHandler {
     );
   }
 
-  private async getOrCreateTestThread(repoName: string, prNumber: number): Promise<ThreadChannel | null> {
+  // `repo` is the full GitHub name (e.g. "owner/carbon") and is the pr_threads
+  // key, kept consistent with how handlePrOpened/runFix store the maker thread
+  // so both threads live in one row. The short name is only used to locate the
+  // matching Discord channel (channels are named after the short repo name).
+  private async getOrCreateTestThread(repo: string, prNumber: number): Promise<ThreadChannel | null> {
+    const repoName = repo.split("/")[1] ?? repo;
     const db = this.sessionManager.getDb();
-    const existing = db.getPrThreads(String(prNumber), repoName);
+    const existing = db.getPrThreads(String(prNumber), repo);
 
     // Try a cached test thread ID first
     if (existing?.testThreadId) {
@@ -166,7 +171,7 @@ export class GitHubHandler {
       autoArchiveDuration: 1440,
     }) as ThreadChannel;
 
-    db.setPrTestThread(String(prNumber), repoName, thread.id);
+    db.setPrTestThread(String(prNumber), repo, thread.id);
     console.log(`[github] Test thread created: ${thread.id}`);
     return thread;
   }
