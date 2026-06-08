@@ -1,6 +1,7 @@
 import { DiscordBot } from "./bot/client.js";
 import { SessionManager } from "./bot/session-manager.js";
 import { Scheduler } from "./bot/scheduler.js";
+import { BackgroundJobManager } from "./bot/background-jobs.js";
 import { validateConfig } from "./utils/config.js";
 import { MCPPermissionServer } from "./mcp/server.js";
 import { GitHubHandler } from "./github/handler.js";
@@ -25,12 +26,18 @@ async function main() {
   // between (disposable) agent runs and re-invokes them through runAgent().
   const scheduler = new Scheduler(bot.client, sessionManager, sessionManager.getDb());
 
+  // Watches detached background commands and re-invokes cc with their output when
+  // they finish (completion-driven sibling of the scheduler).
+  const bgJobs = new BackgroundJobManager(bot.client, sessionManager, sessionManager.getDb());
+  mcpServer.setBackgroundJobManager(bgJobs);
+
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return; // a second SIGTERM during drain shouldn't re-enter
     shuttingDown = true;
     console.log("Shutting down...");
     try { scheduler.stop(); } catch {}
+    try { bgJobs.stop(); } catch {}
     try { await mcpServer.stop(); } catch {}
     // Leave in-flight agents RUNNING (detached). detachAndExit drains whatever is
     // already queued, flushes offsets, and returns; the next boot re-attaches.
@@ -65,6 +72,9 @@ async function main() {
   await sessionManager.reattachRuns(bot.client);
 
   scheduler.start();
+  // Resumes watching any background jobs that were running before a restart;
+  // ones that finished while the bot was down get detected and wake cc now.
+  bgJobs.start();
 
   if (githubHandler) {
     const webhookServer = new GitHubWebhookServer(githubHandler);

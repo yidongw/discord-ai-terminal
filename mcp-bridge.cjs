@@ -169,6 +169,48 @@ const TOOLS = [
     },
   },
   {
+    name: 'run_in_background',
+    description:
+      'Run a long-running shell command (a build, a test suite, a deploy, ' +
+      'anything taking more than ~1–2 minutes) in the background. You (the agent) ' +
+      'exit as a one-shot process after this turn, so you CANNOT block and wait ' +
+      'for a long command yourself — do NOT run it with your own Bash tool and ' +
+      'wait. Instead call this: the bot runs the command detached and re-invokes ' +
+      'you in THIS thread with the command output once it finishes (even across ' +
+      'bot restarts). After calling this, end your turn — tell the user the job ' +
+      'started and that you will report back when it completes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: {
+          type: 'string',
+          description: 'The shell command to run (executed in this thread\'s working directory).',
+        },
+        label: { type: 'string', description: 'Optional short name shown when the job finishes.' },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'list_background_jobs',
+    description: 'List background commands still running for this thread (ids, commands, status).',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'cancel_background_job',
+    description: 'Cancel/kill a running background command by its id (from list_background_jobs).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The job id to cancel.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'list_scheduled_tasks',
     description:
       'List recurring tasks scheduled for this thread (their ids, prompts, ' +
