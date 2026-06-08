@@ -417,6 +417,13 @@ function formatToolCall(tool: any, workDir: string): string {
   if (tool.name === "Write" && tool.input?.file_path) return `🔧 **Write** \`${clean(String(tool.input.file_path))}\``;
   if (tool.name === "Glob"  && tool.input?.pattern)   return `🔧 **Glob** \`${tool.input.pattern}\``;
   if (tool.name === "Grep"  && tool.input?.pattern)   return `🔧 **Grep** \`${tool.input.pattern}\``;
-  const inputs = Object.entries(tool.input ?? {}).map(([k, v]) => `${k}=\`${String(v).slice(0, 60)}\``).join(", ");
-  return `🔧 **${tool.name}**${inputs ? ` (${inputs})` : ""}`;
+  const inputs = Object.entries(tool.input ?? {}).map(([k, v]) => `${escapeMd(k)}=\`${String(v).slice(0, 60)}\``).join(", ");
+  return `🔧 **${escapeMd(tool.name)}**${inputs ? ` (${inputs})` : ""}`;
+}
+
+// Escape Discord markdown so tool names/keys with underscores or asterisks
+// (e.g. mcp__discord-permissions__schedule_task) render literally instead of
+// being interpreted as underline/bold/italic.
+function escapeMd(text: string): string {
+  return String(text).replace(/[\\_*~`|]/g, "\\$&");
 }
