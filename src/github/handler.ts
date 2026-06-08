@@ -126,6 +126,11 @@ export class GitHubHandler {
   async runCompletionAction(action: CompletionAction, text: string): Promise<void> {
     if (action.kind === "pr_test") {
       await postPrComment(action.repo, action.prNumber, buildPrTestSummary(action.agentKey, action.prNumber, text));
+      // On FAIL the agent ends its report with a "/cc fix: <bugs>" line. Post it
+      // as its OWN comment (not buried in the summary) so the webhook dispatch's
+      // body.startsWith("/cc fix:") check matches and a fix run is triggered.
+      const fix = extractFixCommand(text);
+      if (fix) await postPrComment(action.repo, action.prNumber, fix);
     } else if (action.kind === "pr_fix") {
       await postPrComment(action.repo, action.prNumber, buildPrFixSummary(action.prNumber, text));
     }
@@ -172,6 +177,16 @@ export class GitHubHandler {
     console.log(`[github] Test thread created: ${thread.id}`);
     return thread;
   }
+}
+
+// Pull a standalone "/cc fix: <bugs>" trigger out of the test agent's output.
+// Returns everything from the "/cc fix:" line to the end (the bug report may
+// span multiple lines), or null if there's no actionable fix request.
+function extractFixCommand(text: string): string | null {
+  const idx = text.search(/^\/cc fix:/m);
+  if (idx === -1) return null;
+  const cmd = text.slice(idx).trim();
+  return cmd.length > "/cc fix:".length ? cmd : null;
 }
 
 function buildTestPrompt(prNumber: number, previewUrl: string, prTitle: string, prBody: string): string {
