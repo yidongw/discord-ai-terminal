@@ -124,6 +124,16 @@ export class CommandHandler {
     if (commandName === "tools") return this.handleTools(interaction);
   }
 
+  // Channel-level settings (mode/model/tools) are keyed by the parent channel,
+  // because agent runs always read them with the parent channel's id. Resolve a
+  // thread to its parent so these commands work whether run in the channel or a
+  // thread inside it.
+  private channelKey(i: ChatInputCommandInteraction): string {
+    const ch = i.channel;
+    if (ch && ch.isThread()) return ch.parentId ?? i.channelId;
+    return i.channelId;
+  }
+
   // ── Command handlers ────────────────────────────────────────────────────
 
   private async handleStop(i: ChatInputCommandInteraction): Promise<void> {
@@ -192,7 +202,7 @@ export class CommandHandler {
 
   private async handleMode(i: ChatInputCommandInteraction): Promise<void> {
     const mode = i.options.getString("mode", true) as PermissionMode;
-    this.sessionManager.getDb().setMode(i.channelId, mode);
+    this.sessionManager.getDb().setMode(this.channelKey(i), mode);
     await i.reply({
       embeds: [embed("✅ Mode Set", `Permission mode set to **${mode}** for this channel.`, 0x00ff00)],
     });
@@ -200,7 +210,7 @@ export class CommandHandler {
 
   private async handleModel(i: ChatInputCommandInteraction): Promise<void> {
     const model = i.options.getString("model", true) as ClaudeModel;
-    this.sessionManager.getDb().setModel(i.channelId, model);
+    this.sessionManager.getDb().setModel(this.channelKey(i), model);
     await i.reply({
       embeds: [embed("✅ Model Set", `Claude model set to **${model}** for this channel.`, 0x00ff00)],
     });
@@ -208,10 +218,11 @@ export class CommandHandler {
 
   private async handleTools(i: ChatInputCommandInteraction): Promise<void> {
     const db = this.sessionManager.getDb();
+    const channelId = this.channelKey(i);
     const sub = i.options.getSubcommand();
 
     if (sub === "list") {
-      const overrides = db.getToolOverrides(i.channelId);
+      const overrides = db.getToolOverrides(channelId);
       // Curated known tools first, then any tool this channel has an override
       // for (e.g. an MCP tool) that isn't in the known list.
       const names = [
@@ -231,7 +242,7 @@ export class CommandHandler {
 
     const tool = i.options.getString("tool", true).trim();
     const hidden = sub === "hide";
-    db.setToolHidden(i.channelId, tool, hidden);
+    db.setToolHidden(channelId, tool, hidden);
     await i.reply({
       embeds: [
         embed(
