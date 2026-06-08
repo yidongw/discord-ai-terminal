@@ -279,7 +279,17 @@ export class SessionManager {
     const proc = spawn("/bin/bash", ["-c", fullCommand], {
       detached: true,
       stdio: ["ignore", "ignore", "ignore"],
-      env: { ...process.env, SHELL: "/bin/bash" },
+      env: {
+        ...process.env,
+        SHELL: "/bin/bash",
+        // Let Claude Code's Bash tool block on long FOREGROUND commands instead
+        // of cutting them at its 2-min default / 10-min ceiling. The model still
+        // chooses to foreground and request a long timeout (steered via the
+        // system prompt); these just raise the ceiling so it actually can. The
+        // 30-min run timeout (TIMEOUT_MS) stays the overall backstop. Tune via .env.
+        BASH_DEFAULT_TIMEOUT_MS: process.env.BASH_DEFAULT_TIMEOUT_MS ?? "300000",
+        BASH_MAX_TIMEOUT_MS: process.env.BASH_MAX_TIMEOUT_MS ?? "1500000",
+      },
     });
     proc.unref();
 

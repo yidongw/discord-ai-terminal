@@ -28,7 +28,15 @@ const DISCORD_SYSTEM_PROMPT =
   "'check X hourly'), call mcp__discord-permissions__schedule_task with a " +
   "standalone prompt and an interval — the bot will re-invoke you in this same " +
   "thread on that schedule. Use mcp__discord-permissions__list_scheduled_tasks " +
-  "and mcp__discord-permissions__cancel_scheduled_task to manage existing ones.";
+  "and mcp__discord-permissions__cancel_scheduled_task to manage existing ones. " +
+  "When the user asks you to run a single long-running command and report its " +
+  "result (a build, a test suite, a deploy, etc.), run it in the FOREGROUND and " +
+  "block until it finishes: pass a generous Bash `timeout` (up to the maximum " +
+  "allowed) and do NOT set run_in_background. Backgrounding only makes sense for " +
+  "a process you'll keep polling within this same turn — a backgrounded command " +
+  "you simply wait on would be orphaned when your turn ends, so you'd never see " +
+  "its result. The bot keeps your run alive across its own restarts, so a long " +
+  "foreground command is safe to wait on.";
 
 export function buildClaudeCommand(
   workingDir: string,
