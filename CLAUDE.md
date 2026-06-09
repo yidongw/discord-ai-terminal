@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Committing Changes
+
+After making any code change, always create a git commit before ending the session. This is required so the Stop hook can push and open a PR automatically. Do not leave changes uncommitted.
+
 ## Runtime and Package Management
 
 This project uses **Bun** as the JavaScript runtime instead of Node.js. Always use Bun commands:
