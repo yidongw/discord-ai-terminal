@@ -21,8 +21,8 @@ export class GitHubHandler {
     private baseFolder: string
   ) {}
 
-  // Called when pull_request.opened fires.
-  // Links the PR to the maker thread and auto-triggers tests if the PR has a Test plan.
+  // Called when pull_request.opened fires. Links the PR to the maker thread.
+  // Tests are triggered later via handlePreviewUrl once the preview URL is ready.
   async handlePrOpened(repo: string, prNumber: number): Promise<void> {
     const repoName = repo.split("/")[1] ?? repo;
 
@@ -33,19 +33,6 @@ export class GitHubHandler {
     } else {
       console.log(`[github] PR #${prNumber}: no maker thread found for ${repoName}`);
     }
-
-    const pr = await getPr(repo, prNumber);
-    if (!pr) return;
-
-    const testPlan = parseTestPlanFromBody(pr.body ?? "");
-    if (!testPlan || testPlan.length === 0) {
-      console.log(`[github] PR #${prNumber}: no Test plan in description, skipping auto-test`);
-      return;
-    }
-
-    const items = testPlan.map((t) => `- ${t}`).join("\n");
-    await postPrComment(repo, prNumber, `/cc test:\n${items}`);
-    console.log(`[github] PR #${prNumber}: auto-posted /cc test: with ${testPlan.length} items`);
   }
 
   // Called when issue_comment.created fires with a /cc or /cx command.
@@ -91,6 +78,10 @@ export class GitHubHandler {
     }
 
     const pr = await getPr(repo, prNumber);
+    if (pr?.merged) {
+      console.log(`[github] PR #${prNumber}: already merged, skipping test`);
+      return;
+    }
     const prTitle = pr?.title ?? `PR #${prNumber}`;
     const prBody = pr?.body ?? "";
 
@@ -120,6 +111,12 @@ export class GitHubHandler {
     prNumber: number,
     bugItems: string[]
   ): Promise<void> {
+    const pr = await getPr(repo, prNumber);
+    if (pr?.merged) {
+      console.log(`[github] PR #${prNumber}: already merged, skipping fix`);
+      return;
+    }
+
     const makerThreadId = this.sessionManager
       .getDb()
       .getPrThreads(String(prNumber), repo)?.makerThreadId;
@@ -205,16 +202,36 @@ export class GitHubHandler {
       byName?.testThreadId ?? byFull?.testThreadId ??
       byName?.makerThreadId ?? byFull?.makerThreadId;
 
-    if (!threadId) {
+    if (threadId) {
+      const thread = await this.client.channels.fetch(threadId).catch(() => null);
+      if (thread?.isThread()) {
+        await thread.send(`🔗 Preview URL ready: ${previewUrl}`);
+        console.log(`[github] PR #${prNumber}: posted preview URL to thread ${threadId}`);
+      }
+    } else {
       console.log(`[github] PR #${prNumber}: no thread found to post preview URL`);
+    }
+
+    // Guard against duplicate test triggers (e.g. both /preview-ready and bot comment webhook fire).
+    const existingUrl = byName?.previewUrl ?? byFull?.previewUrl;
+    if (existingUrl === previewUrl) {
+      console.log(`[github] PR #${prNumber}: preview URL already processed, skipping test trigger`);
+      return;
+    }
+    db.setPrPreviewUrl(String(prNumber), repoName, previewUrl);
+
+    // Fetch PR to check merged state and extract test plan.
+    const pr = await getPr(repo, prNumber);
+    if (!pr || pr.merged) return;
+
+    const testPlan = parseTestPlanFromBody(pr.body ?? "");
+    if (!testPlan || testPlan.length === 0) {
+      console.log(`[github] PR #${prNumber}: no test plan in description, skipping test trigger`);
       return;
     }
 
-    const thread = await this.client.channels.fetch(threadId).catch(() => null);
-    if (!thread?.isThread()) return;
-
-    await thread.send(`🔗 Preview URL ready: ${previewUrl}`);
-    console.log(`[github] PR #${prNumber}: posted preview URL to thread ${threadId}`);
+    console.log(`[github] PR #${prNumber}: triggering test with ${testPlan.length} items and real preview URL`);
+    await this.runTest(repo, repoName, prNumber, previewUrl, "cc", testPlan);
   }
 
   async handleSkipTests(repo: string, prNumber: number): Promise<void> {

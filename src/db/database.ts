@@ -232,6 +232,9 @@ export class DatabaseManager {
     if (!prCols.includes("tests_skipped")) {
       this.db.exec(`ALTER TABLE pr_threads ADD COLUMN tests_skipped INTEGER NOT NULL DEFAULT 0`);
     }
+    if (!prCols.includes("preview_url")) {
+      this.db.exec(`ALTER TABLE pr_threads ADD COLUMN preview_url TEXT`);
+    }
   }
 
   // ── Thread sessions ──────────────────────────────────────────────────────
@@ -578,7 +581,7 @@ export class DatabaseManager {
 
   // ── PR threads ───────────────────────────────────────────────────────────
 
-  getPrThreads(prNumber: string, repo: string): { makerThreadId?: string; testThreadId?: string; testsSkipped?: boolean } | null {
+  getPrThreads(prNumber: string, repo: string): { makerThreadId?: string; testThreadId?: string; testsSkipped?: boolean; previewUrl?: string } | null {
     const row = this.db
       .prepare(`SELECT * FROM pr_threads WHERE pr_number = ? AND repo = ?`)
       .get(prNumber, repo) as any;
@@ -587,7 +590,18 @@ export class DatabaseManager {
       makerThreadId: row.maker_thread_id ?? undefined,
       testThreadId: row.test_thread_id ?? undefined,
       testsSkipped: row.tests_skipped === 1,
+      previewUrl: row.preview_url ?? undefined,
     };
+  }
+
+  setPrPreviewUrl(prNumber: string, repo: string, previewUrl: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO pr_threads (pr_number, repo, preview_url, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (pr_number, repo) DO UPDATE SET preview_url = excluded.preview_url`
+      )
+      .run(prNumber, repo, previewUrl, Date.now());
   }
 
   setPrMakerThread(prNumber: string, repo: string, makerThreadId: string): void {
