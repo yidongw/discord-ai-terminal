@@ -194,6 +194,29 @@ export class GitHubHandler {
     }
   }
 
+  async handlePreviewUrl(repo: string, prNumber: number, previewUrl: string): Promise<void> {
+    const repoName = repo.split("/")[1] ?? repo;
+    const db = this.sessionManager.getDb();
+
+    // testThreadId is stored under repoName; makerThreadId under repo (full name)
+    const byName = db.getPrThreads(String(prNumber), repoName);
+    const byFull = db.getPrThreads(String(prNumber), repo);
+    const threadId =
+      byName?.testThreadId ?? byFull?.testThreadId ??
+      byName?.makerThreadId ?? byFull?.makerThreadId;
+
+    if (!threadId) {
+      console.log(`[github] PR #${prNumber}: no thread found to post preview URL`);
+      return;
+    }
+
+    const thread = await this.client.channels.fetch(threadId).catch(() => null);
+    if (!thread?.isThread()) return;
+
+    await thread.send(`🔗 Preview URL ready: ${previewUrl}`);
+    console.log(`[github] PR #${prNumber}: posted preview URL to thread ${threadId}`);
+  }
+
   async handleSkipTests(repo: string, prNumber: number): Promise<void> {
     this.sessionManager.getDb().setPrTestsSkipped(String(prNumber), repo, true);
     await postPrComment(
