@@ -259,6 +259,33 @@ export class GitHubHandler {
     await this.runTest(repo, repoName, prNumber, previewUrl, "cc", testPlan);
   }
 
+  // Called when a bare /cc comment is posted. Looks up the last test plan
+  // from previous PR comments and re-posts it as /cc test:\n- items so the
+  // normal webhook path picks it up and runs the test.
+  async handleRetrigger(repo: string, prNumber: number): Promise<void> {
+    const comments = await getPrComments(repo, prNumber);
+    for (let i = comments.length - 1; i >= 0; i--) {
+      const plan = extractTestPlanFromComment(comments[i]!.body);
+      if (plan && plan.length > 0) {
+        const items = plan.map((t) => `- ${t}`).join("\n");
+        await postPrComment(repo, prNumber, `/cc test:\n${items}`);
+        console.log(`[github] PR #${prNumber}: /cc retrigger — posted /cc test: with ${plan.length} items`);
+        return;
+      }
+    }
+    // Fall back to the PR description test plan
+    const pr = await getPr(repo, prNumber);
+    if (!pr) return;
+    const plan = parseTestPlanFromBody(pr.body ?? "");
+    if (!plan || plan.length === 0) {
+      console.log(`[github] PR #${prNumber}: /cc retrigger — no test plan found`);
+      return;
+    }
+    const items = plan.map((t) => `- ${t}`).join("\n");
+    await postPrComment(repo, prNumber, `/cc test:\n${items}`);
+    console.log(`[github] PR #${prNumber}: /cc retrigger — posted /cc test: with ${plan.length} items from PR description`);
+  }
+
   async handleSkipTests(repo: string, prNumber: number): Promise<void> {
     this.sessionManager.getDb().setPrTestsSkipped(String(prNumber), repo, true);
     await postPrComment(

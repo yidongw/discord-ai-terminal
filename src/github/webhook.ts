@@ -105,6 +105,12 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
       return;
     }
 
+    // bare /cc — re-trigger test using the last posted test plan
+    if (body === "/cc") {
+      await handler.handleRetrigger(repo, prNumber);
+      return;
+    }
+
     // /cc fix:\n- bug1\n- bug2
     const fixMatch = /^\/cc fix:\n([\s\S]+)/.exec(body);
     if (fixMatch) {
