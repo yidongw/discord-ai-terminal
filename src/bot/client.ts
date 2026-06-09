@@ -115,6 +115,12 @@ export class DiscordBot {
         // Locked but not (newly) closed: keep everything, just mark it. If the
         // thread is already archived, preserve that so the rename doesn't reopen it.
         void setThreadStatus(newThread, "locked", newThread.archived ? { archived: true } : undefined);
+      } else if (oldThread.archived && !newThread.archived) {
+        // Thread was reopened by the user: restore the working indicator.
+        void setThreadStatus(newThread, "working");
+      } else if (oldThread.locked && !newThread.locked) {
+        // Thread was unlocked by the user: restore the working indicator.
+        void setThreadStatus(newThread, "working");
       }
     });
 
