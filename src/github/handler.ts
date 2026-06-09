@@ -22,40 +22,62 @@ export class GitHubHandler {
     private baseFolder: string
   ) {}
 
-  // Called when pull_request.opened fires. Links the PR to the maker thread
-  // and renames it with the PR number.
+  // Called when pull_request.{opened,reopened,ready_for_review} fires. Links the PR
+  // to the maker thread, renames it with the PR number, and pins the PR URL.
   // Tests are triggered later via handlePreviewUrl once the preview URL is ready.
   async handlePrOpened(repo: string, prNumber: number, headRef: string = ""): Promise<void> {
-    const repoName = repo.split("/")[1] ?? repo;
-    const db = this.sessionManager.getDb();
+    await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
+  }
 
-    // Look up the thread by its exact branch name — it's stored verbatim in the DB.
-    // Fall back to the most-recent-session heuristic for branches not from this bot.
-    const makerThreadId = headRef.startsWith("discord/")
-      ? db.findThreadByBranch(headRef)
+  // Idempotent: link PR → maker thread, rename, and pin. Skips if already linked.
+  // headRef is optional — fetched from the GitHub API when missing (preview-ready path).
+  async ensurePrLinkedToMakerThread(
+    repo: string,
+    prNumber: number,
+    headRef: string = ""
+  ): Promise<string | null> {
+    const db = this.sessionManager.getDb();
+    const existing = db.getPrThreads(String(prNumber), repo)?.makerThreadId;
+    if (existing) return existing;
+
+    const repoName = repo.split("/")[1] ?? repo;
+    let ref = headRef;
+    if (!ref) {
+      const pr = await getPr(repo, prNumber);
+      ref = pr?.head?.ref ?? "";
+    }
+
+    const makerThreadId = ref.startsWith("discord/")
+      ? db.findThreadByBranch(ref)
       : db.findMakerThreadForRepo(repoName);
 
-    if (makerThreadId) {
-      db.setPrMakerThread(String(prNumber), repo, makerThreadId);
-      console.log(`[github] PR #${prNumber} linked to maker thread ${makerThreadId}`);
-      try {
-        const thread = await this.client.channels.fetch(makerThreadId) as ThreadChannel | null;
-        if (thread) {
-          void setPrInThreadName(thread, prNumber);
-          const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
-          try {
-            const msg = await thread.send(prUrl);
-            await msg.pin();
-          } catch (err) {
-            console.error(`[github] PR #${prNumber}: failed to post/pin PR URL:`, err);
-          }
-        }
-      } catch (err) {
-        console.error(`[github] PR #${prNumber}: failed to rename maker thread:`, err);
-      }
-    } else {
-      console.log(`[github] PR #${prNumber}: no maker thread found for ${repoName}`);
+    if (!makerThreadId) {
+      console.log(
+        `[github] PR #${prNumber}: no maker thread found for ${repoName}` +
+          (ref ? ` (branch ${ref})` : "")
+      );
+      return null;
     }
+
+    db.setPrMakerThread(String(prNumber), repo, makerThreadId);
+    console.log(`[github] PR #${prNumber} linked to maker thread ${makerThreadId}`);
+    try {
+      const thread = await this.client.channels.fetch(makerThreadId) as ThreadChannel | null;
+      if (thread) {
+        void setPrInThreadName(thread, prNumber);
+        const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
+        try {
+          const msg = await thread.send(prUrl);
+          await msg.pin();
+        } catch (err) {
+          console.error(`[github] PR #${prNumber}: failed to post/pin PR URL:`, err);
+        }
+      }
+    } catch (err) {
+      console.error(`[github] PR #${prNumber}: failed to update maker thread:`, err);
+    }
+
+    return makerThreadId;
   }
 
   // Called when issue_comment.created fires with a /cc or /cx command.
@@ -222,6 +244,9 @@ export class GitHubHandler {
   async handlePreviewUrl(repo: string, prNumber: number, previewUrl: string): Promise<void> {
     const repoName = repo.split("/")[1] ?? repo;
     const db = this.sessionManager.getDb();
+
+    // Second chance when pull_request.opened was missed (e.g. Actions didn't forward it).
+    await this.ensurePrLinkedToMakerThread(repo, prNumber);
 
     // testThreadId is stored under repoName; makerThreadId under repo (full name)
     const byName = db.getPrThreads(String(prNumber), repoName);
