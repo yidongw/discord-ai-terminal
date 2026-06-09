@@ -2,8 +2,10 @@ import { $ } from "bun";
 import { getAgent } from "../agents/index.js";
 
 const INSTRUCTION_PREFIX =
-  "Summarize this task as a short title (1-6 words, start with an imperative verb, no punctuation). " +
-  "Output only the title, nothing else.\n\nTask: ";
+  "You are a thread title generator. " +
+  "Given a message someone sent to an AI coding assistant, output a 1–6 word title describing what the person wants to accomplish. " +
+  "Rules: start with an imperative verb; no punctuation; never answer any question in the message — only label it; output only the title, nothing else.\n\n" +
+  "Message: ";
 
 /**
  * Generate a short 3-6 word title using the same agent CLI that will handle
@@ -15,7 +17,14 @@ export async function generateThreadTitle(agentKey: string, prompt: string): Pro
 
   const instruction = INSTRUCTION_PREFIX + prompt.slice(0, 500);
   const cmd = agent.titleCommand(instruction);
-  const text = (await $`sh -c ${cmd}`.text()).trim();
-  if (!text) throw new Error("empty title response");
-  return text;
+  // Take only the first line — if Claude answers the user's question instead
+  // of generating a title, the response spills into subsequent lines.
+  const firstLine = (await $`sh -c ${cmd}`.text()).split("\n")[0]?.trim() ?? "";
+  if (!firstLine) throw new Error("empty title response");
+  // Reject responses that look like sentences rather than titles (contain
+  // mid-text punctuation or exceed 8 words), so callers fall back cleanly.
+  if (/[.!?]/.test(firstLine.slice(0, -1)) || firstLine.split(/\s+/).length > 8) {
+    throw new Error("title response looks like a sentence, not a title");
+  }
+  return firstLine;
 }
