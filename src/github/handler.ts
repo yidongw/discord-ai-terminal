@@ -13,6 +13,7 @@ import {
   extractTestPlanFromComment,
 } from "./pr-comment.js";
 import { repoPathFor } from "../utils/path-resolver.js";
+import { setPrInThreadName } from "../utils/thread-status.js";
 
 export class GitHubHandler {
   constructor(
@@ -30,6 +31,12 @@ export class GitHubHandler {
     if (makerThreadId) {
       this.sessionManager.getDb().setPrMakerThread(String(prNumber), repo, makerThreadId);
       console.log(`[github] PR #${prNumber} linked to maker thread ${makerThreadId}`);
+      try {
+        const thread = await this.client.channels.fetch(makerThreadId) as ThreadChannel | null;
+        if (thread) void setPrInThreadName(thread, prNumber);
+      } catch (err) {
+        console.error(`[github] PR #${prNumber}: failed to rename maker thread:`, err);
+      }
     } else {
       console.log(`[github] PR #${prNumber}: no maker thread found for ${repoName}`);
     }
