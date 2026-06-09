@@ -1,5 +1,9 @@
 import type { AgentRunner, AgentRunOptions, AgentEvent } from "./index.js";
-import { buildCodexCommand, escapeShellString } from "../utils/shell.js";
+import {
+  buildCodexCommand,
+  escapeShellString,
+  CODEX_MODEL_DISPLAY_NAME,
+} from "../utils/shell.js";
 
 export const codexAgent: AgentRunner = {
   key: "cx",
@@ -15,7 +19,12 @@ export const codexAgent: AgentRunner = {
     try { msg = JSON.parse(line); } catch { return null; }
 
     if (msg.type === "thread.started") {
-      return { kind: "init", sessionId: msg.thread_id, model: msg.model ?? "Codex", cwd: workDir };
+      return {
+        kind: "init",
+        sessionId: msg.thread_id,
+        model: msg.model ?? CODEX_MODEL_DISPLAY_NAME,
+        cwd: workDir,
+      };
     }
 
     if (msg.type === "item.started" && msg.item?.type === "command_execution") {

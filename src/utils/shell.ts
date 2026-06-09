@@ -16,6 +16,9 @@ export interface DiscordContext {
 
 export type PermissionMode = "auto" | "plan" | "approve";
 
+export const CODEX_MODEL = "gpt-5.4-mini";
+export const CODEX_MODEL_DISPLAY_NAME = "GPT-5.4-Mini";
+
 const DISCORD_SYSTEM_PROMPT =
   "You are running inside a Discord bot. " +
   "The built-in AskUserQuestion tool does NOT work in this environment. " +
@@ -94,7 +97,7 @@ export function buildCodexCommand(
   skipGitCheck: boolean = false
 ): string {
   const escapedPrompt = escapeShellString(prompt);
-  const model = "gpt-5.4-mini";
+  const model = CODEX_MODEL;
 
   if (sessionId) {
     const resumeParts = [
