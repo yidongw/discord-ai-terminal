@@ -29,12 +29,10 @@ export class GitHubHandler {
     const repoName = repo.split("/")[1] ?? repo;
     const db = this.sessionManager.getDb();
 
-    // Extract the 6-char short ID from the branch name (e.g. "discord/fix-bug-a1b2c3" → "a1b2c3")
-    // and use it to find the exact thread that opened this PR. Fall back to the
-    // most-recent-session heuristic for branches not following the discord/ pattern.
-    const shortIdMatch = headRef.match(/discord\/.*-([a-z0-9]{6})$/i);
-    const makerThreadId = shortIdMatch
-      ? db.findThreadByBranchSuffix(shortIdMatch[1]!)
+    // Look up the thread by its exact branch name — it's stored verbatim in the DB.
+    // Fall back to the most-recent-session heuristic for branches not from this bot.
+    const makerThreadId = headRef.startsWith("discord/")
+      ? db.findThreadByBranch(headRef)
       : db.findMakerThreadForRepo(repoName);
 
     if (makerThreadId) {

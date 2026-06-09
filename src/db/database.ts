@@ -633,15 +633,10 @@ export class DatabaseManager {
     return row?.thread_id ?? null;
   }
 
-  // Find the thread whose branch ends with the given 6-char short ID
-  // (the last 6 chars of the Discord thread snowflake embedded in branch names).
-  findThreadByBranchSuffix(shortId: string): string | null {
+  findThreadByBranch(branch: string): string | null {
     const row = this.db
-      .prepare(
-        `SELECT thread_id FROM thread_sessions
-         WHERE branch LIKE ? ORDER BY created_at DESC LIMIT 1`
-      )
-      .get(`%-${shortId}`) as any;
+      .prepare(`SELECT thread_id FROM thread_sessions WHERE branch = ? LIMIT 1`)
+      .get(branch) as any;
     return row?.thread_id ?? null;
   }
 }
