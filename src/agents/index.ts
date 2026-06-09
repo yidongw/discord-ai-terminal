@@ -25,6 +25,8 @@ export interface AgentRunner {
   readonly color: number;
   buildCommand(workDir: string, prompt: string, opts: AgentRunOptions): string;
   parseLine(line: string, workDir: string): AgentEvent | null;
+  /** Shell command that runs the agent in one-shot mode and prints plain text to stdout. */
+  titleCommand(prompt: string): string;
 }
 
 const registry = new Map<string, AgentRunner>();

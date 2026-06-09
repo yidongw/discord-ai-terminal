@@ -12,8 +12,8 @@
     "test:run": "vitest run"
   },
   "dependencies": {
-    "discord.js": "^14.19.3",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "discord.js": "^14.19.3",
     "express": "^4.21.0",
     "zod": "^3.24.1"
   },

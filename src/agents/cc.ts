@@ -1,5 +1,5 @@
 import type { AgentRunner, AgentRunOptions, AgentEvent } from "./index.js";
-import { buildClaudeCommand, buildClaudeCommandForGitHub } from "../utils/shell.js";
+import { buildClaudeCommand, buildClaudeCommandForGitHub, escapeShellString } from "../utils/shell.js";
 import { parseSdkLine } from "./sdk-parser.js";
 
 export const ccAgent: AgentRunner = {
@@ -15,4 +15,8 @@ export const ccAgent: AgentRunner = {
   },
 
   parseLine(line, workDir) { return parseSdkLine(line, workDir); },
+
+  titleCommand(prompt) {
+    return `claude -p ${escapeShellString(prompt)}`;
+  },
 };
