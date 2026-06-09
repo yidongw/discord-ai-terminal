@@ -275,7 +275,7 @@ export class CommandHandler {
   }
 
   private async handleWorktreeForceClose(interaction: ButtonInteraction): Promise<void> {
-    const result = this.sessionManager.cleanupThreadWorktree(interaction.channelId, true);
+    const result = this.sessionManager.cleanupThreadWorktree(interaction.channelId, true, true);
     if (result?.removed) {
       void setThreadStatus(interaction.channel, "closed", { archived: true });
       await interaction.update({ content: "🧹 Worktree forcibly removed.", components: [] });
