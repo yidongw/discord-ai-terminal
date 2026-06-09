@@ -217,14 +217,6 @@ export class GitHubHandler {
       console.log(`[github] PR #${prNumber}: no thread found to post preview URL`);
     }
 
-    // Guard against duplicate test triggers (e.g. both /preview-ready and bot comment webhook fire).
-    const existingUrl = byName?.previewUrl ?? byFull?.previewUrl;
-    if (existingUrl === previewUrl) {
-      console.log(`[github] PR #${prNumber}: preview URL already processed, skipping test trigger`);
-      return;
-    }
-    db.setPrPreviewUrl(String(prNumber), repoName, previewUrl);
-
     // Fetch PR to check merged state and extract test plan.
     const pr = await getPr(repo, prNumber);
     if (!pr || pr.merged) return;
