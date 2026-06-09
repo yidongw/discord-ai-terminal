@@ -285,7 +285,7 @@ export class CommandHandler {
   }
 
   private async handleWorktreeCancel(interaction: ButtonInteraction): Promise<void> {
-    await interaction.update({ content: "🔒 Worktree kept. Thread remains locked.", components: [] });
+    await interaction.update({ content: "🌲 Worktree kept. No changes made.", components: [] });
   }
 
 }
