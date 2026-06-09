@@ -58,6 +58,8 @@ interface ActiveSession {
   // tool_done / tool_result events are dropped without enqueuing anything, so a
   // hidden tool's result can't seal the running "N hidden" summary embed.
   hiddenToolIds: Set<string>;
+  // Live task list built from TaskCreate/TaskUpdate calls, keyed by task ID.
+  taskList: Map<number, { subject: string; status: string }>;
   workDir: string;
   // Per-channel tool-message visibility overrides ({ toolName: hidden }); see
   // toolIsHidden() and DEFAULT_HIDDEN_TOOLS.
@@ -309,6 +311,7 @@ export class SessionManager {
       thread,
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
+      taskList: new Map(),
       workDir,
       toolOverrides,
       outbox: this.getOutbox(threadId, thread),
@@ -518,6 +521,7 @@ export class SessionManager {
       thread,
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
+      taskList: new Map(),
       workDir: run.workDir,
       toolOverrides: this.db.getToolOverrides(run.channelId),
       outbox: this.getOutbox(run.threadId, thread),
@@ -572,7 +576,10 @@ export class SessionManager {
       // Hidden tools don't get their own embed; instead they bump the running
       // "N hidden" summary. Remember the id so the matching tool_done is dropped
       // (it must not seal the summary).
-      if (event.name === "TodoRead" || event.name === "TodoWrite") {
+      if (event.name === "TodoRead" || event.name === "TodoWrite" ||
+          event.name === "TaskCreate" || event.name === "TaskUpdate" ||
+          event.name === "TaskList" || event.name === "TaskGet" ||
+          event.name === "TaskOutput" || event.name === "TaskStop") {
         session.hiddenToolIds.add(event.id);
         return;
       }
@@ -645,6 +652,33 @@ export class SessionManager {
           outbox.enqueue(async () => {
             await thread.send({ embeds: [buildTodoEmbed(todos)] });
           });
+          continue;
+        }
+        if (tool.name === "TaskCreate" && tool.input?.subject) {
+          session.hiddenToolIds.add(tool.id);
+          const taskId = session.taskList.size + 1;
+          session.taskList.set(taskId, { subject: String(tool.input.subject), status: "pending" });
+          const snapshot = new Map(session.taskList);
+          outbox.enqueue(async () => {
+            await thread.send({ embeds: [buildTaskEmbed(snapshot)] });
+          });
+          continue;
+        }
+        if (tool.name === "TaskUpdate" && tool.input?.taskId != null) {
+          session.hiddenToolIds.add(tool.id);
+          const task = session.taskList.get(Number(tool.input.taskId));
+          if (task && tool.input?.status) {
+            task.status = String(tool.input.status);
+            const snapshot = new Map(session.taskList);
+            outbox.enqueue(async () => {
+              await thread.send({ embeds: [buildTaskEmbed(snapshot)] });
+            });
+          }
+          continue;
+        }
+        if (tool.name === "TaskList" || tool.name === "TaskGet" ||
+            tool.name === "TaskOutput" || tool.name === "TaskStop") {
+          session.hiddenToolIds.add(tool.id);
           continue;
         }
         if (toolIsHidden(tool.name, session.toolOverrides)) {
@@ -949,6 +983,20 @@ function formatToolCall(tool: any, workDir: string): string {
 // being interpreted as underline/bold/italic.
 function escapeMd(text: string): string {
   return String(text).replace(/[\\_*~`|]/g, "\\$&");
+}
+
+function buildTaskEmbed(taskList: Map<number, { subject: string; status: string }>): EmbedBuilder {
+  const lines = [...taskList.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, task]) => {
+      if (task.status === "completed") return `✅ ~~${task.subject}~~`;
+      if (task.status === "in_progress") return `🔄 **${task.subject}**`;
+      return `⬜ ${task.subject}`;
+    });
+  return new EmbedBuilder()
+    .setTitle("📋 Todo List")
+    .setDescription(lines.join("\n"))
+    .setColor(0x5865F2);
 }
 
 function buildTodoEmbed(todos: Array<{ id: string; content: string; status: string; priority?: string }>): EmbedBuilder {
