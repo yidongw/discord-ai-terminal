@@ -1,6 +1,6 @@
 import type { GitHubHandler } from "./handler.js";
 
-const PREVIEW_URL_RE = /https?:\/\/[^\s]+/;
+const PREVIEW_URL_RE = /https?:\/\/[^\s)>]+/;
 
 export class GitHubWebhookServer {
   private server?: ReturnType<typeof Bun.serve>;
@@ -90,14 +90,7 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
     if (!payload.issue?.pull_request || !prNumber) return;
 
     const body: string = (payload.comment?.body ?? "").trim();
-    const isBot = payload.comment?.user?.type === "Bot";
-
-    // When a deployment bot posts a preview URL, forward it to the Discord thread.
-    if (isBot) {
-      const url = extractPreviewUrl(body);
-      if (url) await handler.handlePreviewUrl(repo, prNumber, url);
-      return;
-    }
+    if (payload.comment?.user?.type === "Bot") return;
 
     const previewUrlFromComment = extractPreviewUrl(body);
 
@@ -153,7 +146,8 @@ function buildPreviewUrl(repo: string, prNumber: number): string {
 
 function extractPreviewUrl(body: string): string | null {
   const match = PREVIEW_URL_RE.exec(body);
-  return match ? match[0]! : null;
+  if (!match) return null;
+  return match[0]!.replace(/[.,;:!?]+$/, "");
 }
 
 async function verifySignature(body: string, sig: string): Promise<boolean> {
