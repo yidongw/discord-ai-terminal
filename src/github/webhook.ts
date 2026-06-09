@@ -81,7 +81,8 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
 
   if (event === "pull_request" && payload.action === "opened") {
     const prNumber: number = payload.pull_request?.number;
-    if (prNumber) await handler.handlePrOpened(repo, prNumber);
+    const headRef: string = payload.pull_request?.head?.ref ?? "";
+    if (prNumber) await handler.handlePrOpened(repo, prNumber, headRef);
     return;
   }
 

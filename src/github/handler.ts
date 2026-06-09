@@ -22,14 +22,23 @@ export class GitHubHandler {
     private baseFolder: string
   ) {}
 
-  // Called when pull_request.opened fires. Links the PR to the maker thread.
+  // Called when pull_request.opened fires. Links the PR to the maker thread
+  // and renames it with the PR number.
   // Tests are triggered later via handlePreviewUrl once the preview URL is ready.
-  async handlePrOpened(repo: string, prNumber: number): Promise<void> {
+  async handlePrOpened(repo: string, prNumber: number, headRef: string = ""): Promise<void> {
     const repoName = repo.split("/")[1] ?? repo;
+    const db = this.sessionManager.getDb();
 
-    const makerThreadId = this.sessionManager.getDb().findMakerThreadForRepo(repoName);
+    // Extract the 6-char short ID from the branch name (e.g. "discord/fix-bug-a1b2c3" → "a1b2c3")
+    // and use it to find the exact thread that opened this PR. Fall back to the
+    // most-recent-session heuristic for branches not following the discord/ pattern.
+    const shortIdMatch = headRef.match(/discord\/.*-([a-z0-9]{6})$/i);
+    const makerThreadId = shortIdMatch
+      ? db.findThreadByBranchSuffix(shortIdMatch[1]!)
+      : db.findMakerThreadForRepo(repoName);
+
     if (makerThreadId) {
-      this.sessionManager.getDb().setPrMakerThread(String(prNumber), repo, makerThreadId);
+      db.setPrMakerThread(String(prNumber), repo, makerThreadId);
       console.log(`[github] PR #${prNumber} linked to maker thread ${makerThreadId}`);
       try {
         const thread = await this.client.channels.fetch(makerThreadId) as ThreadChannel | null;
