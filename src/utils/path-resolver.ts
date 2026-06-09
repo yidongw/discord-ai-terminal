@@ -92,10 +92,14 @@ export function resolveThreadWorkDir(
     return { workDir: wtPath, repo: channelName, worktree: true, branch };
   }
 
+  // Fetch latest from remote so the new worktree starts from up-to-date commits.
+  spawnSync("git", ["-C", repoPath, "fetch", "origin"], { encoding: "utf8" });
+  const worktreeBase = `origin/${base}`;
+
   fs.mkdirSync(path.dirname(wtPath), { recursive: true });
   const result = spawnSync(
     "git",
-    ["-C", repoPath, "worktree", "add", "-b", branch, wtPath, base],
+    ["-C", repoPath, "worktree", "add", "-b", branch, wtPath, worktreeBase],
     { encoding: "utf8" }
   );
   if (result.status !== 0) {
