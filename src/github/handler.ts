@@ -13,6 +13,7 @@ import {
   extractTestPlanFromComment,
 } from "./pr-comment.js";
 import { repoPathFor } from "../utils/path-resolver.js";
+import { setPrInThreadName } from "../utils/thread-status.js";
 
 export class GitHubHandler {
   constructor(
@@ -21,15 +22,28 @@ export class GitHubHandler {
     private baseFolder: string
   ) {}
 
-  // Called when pull_request.opened fires. Links the PR to the maker thread.
+  // Called when pull_request.opened fires. Links the PR to the maker thread
+  // and renames it with the PR number.
   // Tests are triggered later via handlePreviewUrl once the preview URL is ready.
-  async handlePrOpened(repo: string, prNumber: number): Promise<void> {
+  async handlePrOpened(repo: string, prNumber: number, headRef: string = ""): Promise<void> {
     const repoName = repo.split("/")[1] ?? repo;
+    const db = this.sessionManager.getDb();
 
-    const makerThreadId = this.sessionManager.getDb().findMakerThreadForRepo(repoName);
+    // Look up the thread by its exact branch name — it's stored verbatim in the DB.
+    // Fall back to the most-recent-session heuristic for branches not from this bot.
+    const makerThreadId = headRef.startsWith("discord/")
+      ? db.findThreadByBranch(headRef)
+      : db.findMakerThreadForRepo(repoName);
+
     if (makerThreadId) {
-      this.sessionManager.getDb().setPrMakerThread(String(prNumber), repo, makerThreadId);
+      db.setPrMakerThread(String(prNumber), repo, makerThreadId);
       console.log(`[github] PR #${prNumber} linked to maker thread ${makerThreadId}`);
+      try {
+        const thread = await this.client.channels.fetch(makerThreadId) as ThreadChannel | null;
+        if (thread) void setPrInThreadName(thread, prNumber);
+      } catch (err) {
+        console.error(`[github] PR #${prNumber}: failed to rename maker thread:`, err);
+      }
     } else {
       console.log(`[github] PR #${prNumber}: no maker thread found for ${repoName}`);
     }

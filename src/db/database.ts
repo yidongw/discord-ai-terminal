@@ -632,4 +632,11 @@ export class DatabaseManager {
       .get(`%/${repoName}%`) as any;
     return row?.thread_id ?? null;
   }
+
+  findThreadByBranch(branch: string): string | null {
+    const row = this.db
+      .prepare(`SELECT thread_id FROM thread_sessions WHERE branch = ? LIMIT 1`)
+      .get(branch) as any;
+    return row?.thread_id ?? null;
+  }
 }
