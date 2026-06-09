@@ -91,6 +91,11 @@ export class GitHubHandler {
       return;
     }
 
+    if (this.sessionManager.getDb().hasActiveRun(thread.id)) {
+      console.log(`[github] PR #${prNumber}: test already in progress, ignoring new trigger`);
+      return;
+    }
+
     const prompt = buildTestPrompt(prNumber, previewUrl, prTitle, prBody, testItems);
 
     await this.sessionManager.runAgent(
