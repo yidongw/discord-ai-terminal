@@ -10,6 +10,7 @@ import { SessionManager } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
 import { parseAgentInvocations, starterMessageText, threadName, firstLine } from "./parser.js";
 import { resolveThreadWorkDir } from "../utils/path-resolver.js";
+import { generateThreadTitle } from "../utils/title-summarizer.js";
 import { setThreadStatus, renamingClosedThreads } from "../utils/thread-status.js";
 import {
   ensureAttachmentDir,
@@ -178,9 +179,14 @@ export class DiscordBot {
     const attachments = await this.downloadMsgAttachments(msg);
 
     for (let i = 0; i < invocations.length; i++) {
-      const { agent, prompt } = invocations[i];
+      const { agent, prompt } = invocations[i]!;
       const fullPrompt = buildPromptWithAttachments(prompt, attachments);
-      const tName = threadName(agent, prompt);
+
+      // Ask the same agent CLI for a concise title; fall back to first line.
+      const titleLabel = await generateThreadTitle(agent, prompt).catch(
+        () => firstLine(prompt)
+      );
+      const tName = threadName(agent, titleLabel);
 
       // Single agent: thread from the user's own message (cleaner, no extra bot message).
       // Multiple agents: post a starter message per agent (Discord only allows one thread per message).
@@ -207,10 +213,10 @@ export class DiscordBot {
 
       // Each thread runs in its own worktree on its own branch (off the repo's
       // default branch), so concurrent threads in this channel never conflict.
-      // The branch/dir slug comes from the prompt's first line only (no agent
-      // prefix), keeping names like `discord/fix-the-login-bug-456789`.
+      // The branch/dir slug comes from the AI-generated title (no agent prefix),
+      // keeping names like `discord/fix-login-password-reset-456789`.
       const resolved =
-        resolveThreadWorkDir(channelName, thread.id, firstLine(prompt), this.baseFolder) ??
+        resolveThreadWorkDir(channelName, thread.id, titleLabel, this.baseFolder) ??
         { workDir: this.baseFolder, repo: channelName };
 
       try {

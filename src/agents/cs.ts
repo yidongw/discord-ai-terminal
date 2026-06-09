@@ -25,4 +25,9 @@ export const cursorAgent: AgentRunner = {
   },
 
   parseLine(line, workDir) { return parseSdkLine(line, workDir); },
+
+  titleCommand(prompt) {
+    // --print without --output-format stream-json gives plain text output.
+    return `cursor agent --print --yolo --trust --model auto ${escapeShellString(prompt)}`;
+  },
 };

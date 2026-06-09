@@ -59,12 +59,11 @@ export function starterMessageText(agent: string, prompt: string): string {
   return `🌲 **${agent}** — ${line.slice(0, maxPrompt)}…`;
 }
 
-/** Build the thread name for a given agent + prompt (first line only) */
-export function threadName(agent: string, prompt: string): string {
+/** Build the thread name for a given agent + pre-computed title label. */
+export function threadName(agent: string, title: string): string {
   const THREAD_NAME_LIMIT = 100;
   const prefix = `${agent} • `;
-  const line = firstLine(prompt);
   const max = THREAD_NAME_LIMIT - prefix.length;
-  const truncated = line.length > max ? line.slice(0, max - 1) + "…" : line;
+  const truncated = title.length > max ? title.slice(0, max - 1) + "…" : title;
   return `${prefix}${truncated}`;
 }

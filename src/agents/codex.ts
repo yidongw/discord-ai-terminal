@@ -1,5 +1,5 @@
 import type { AgentRunner, AgentRunOptions, AgentEvent } from "./index.js";
-import { buildCodexCommand } from "../utils/shell.js";
+import { buildCodexCommand, escapeShellString } from "../utils/shell.js";
 
 export const codexAgent: AgentRunner = {
   key: "cx",
@@ -62,5 +62,10 @@ export const codexAgent: AgentRunner = {
     }
 
     return null;
+  },
+
+  titleCommand(prompt) {
+    // Omit --json so codex outputs plain text instead of streaming JSON.
+    return `codex exec --dangerously-bypass-approvals-and-sandbox ${escapeShellString(prompt)}`;
   },
 };
