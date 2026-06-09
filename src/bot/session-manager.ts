@@ -153,6 +153,10 @@ export class SessionManager {
     this.db.deleteActiveRunsForThread(threadId);
   }
 
+  hasPrDetected(threadId: string): boolean {
+    return this.active.get(threadId)?.prDetected ?? false;
+  }
+
   clearSession(threadId: string): void {
     this.killProcess(threadId);
     this.db.deleteThreadSession(threadId);
