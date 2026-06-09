@@ -2,7 +2,7 @@ import { $ } from "bun";
 import { getAgent } from "../agents/index.js";
 
 const INSTRUCTION_PREFIX =
-  "Summarize this task as a short title (3-6 words, start with an imperative verb, no punctuation). " +
+  "Summarize this task as a short title (1-6 words, start with an imperative verb, no punctuation). " +
   "Output only the title, nothing else.\n\nTask: ";
 
 /**
