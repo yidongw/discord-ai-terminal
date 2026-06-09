@@ -81,7 +81,6 @@ export function resolveThreadWorkDir(
     return { workDir: repoPath, repo: channelName };
   }
 
-  const base = defaultBranch(repoPath);
   const shortId = threadId.slice(-6);
   const slug = slugify(label);
   const branch = `discord/${slug}-${shortId}`;
@@ -92,8 +91,11 @@ export function resolveThreadWorkDir(
     return { workDir: wtPath, repo: channelName, worktree: true, branch };
   }
 
-  // Fetch latest from remote so the new worktree starts from up-to-date commits.
+  // Fetch and refresh origin/HEAD before computing the base branch, so repos
+  // whose remote default changed after cloning (e.g. main→dev) get the right base.
   spawnSync("git", ["-C", repoPath, "fetch", "origin"], { encoding: "utf8" });
+  spawnSync("git", ["-C", repoPath, "remote", "set-head", "origin", "--auto"], { encoding: "utf8" });
+  const base = defaultBranch(repoPath);
   const worktreeBase = `origin/${base}`;
 
   fs.mkdirSync(path.dirname(wtPath), { recursive: true });
