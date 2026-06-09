@@ -107,7 +107,8 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
 
     // bare /cc — re-trigger test using the last posted test plan
     if (body === "/cc") {
-      await handler.handleRetrigger(repo, prNumber);
+      const previewUrl = previewUrlFromComment ?? buildPreviewUrl(repo, prNumber);
+      await handler.handleRetrigger(repo, prNumber, previewUrl);
       return;
     }
 
