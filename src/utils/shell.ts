@@ -94,10 +94,10 @@ export function buildCodexCommand(
   workingDir: string,
   prompt: string,
   sessionId?: string,
-  skipGitCheck: boolean = false
+  skipGitCheck: boolean = false,
+  model: string = CODEX_MODEL
 ): string {
   const escapedPrompt = escapeShellString(prompt);
-  const model = CODEX_MODEL;
 
   if (sessionId) {
     const resumeParts = [

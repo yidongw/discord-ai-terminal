@@ -1,10 +1,11 @@
 import type { DiscordContext } from "../utils/shell.js";
-import type { PermissionMode, ClaudeModel } from "../db/database.js";
+import type { PermissionMode, ClaudeModel, CodexModel } from "../db/database.js";
 
 export interface AgentRunOptions {
   sessionId?: string;
   mode?: PermissionMode;
   model?: ClaudeModel;
+  codexModel?: CodexModel;
   discordContext?: DiscordContext;
   // Set for GitHub fix runs — CC uses --from-pr instead of --resume
   prNumber?: number;

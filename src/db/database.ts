@@ -3,6 +3,19 @@ import * as path from "path";
 
 export type PermissionMode = "auto" | "plan" | "approve";
 export type ClaudeModel = "opus" | "sonnet" | "haiku";
+export type CodexModel = "gpt-5.4-mini" | "gpt-5.4" | "gpt-5.5";
+
+export const CC_MODEL_CHOICES = [
+  { name: "sonnet — balanced (default)", value: "sonnet" },
+  { name: "opus — most capable", value: "opus" },
+  { name: "haiku — fastest", value: "haiku" },
+] as const;
+
+export const CODEX_MODEL_CHOICES = [
+  { name: "gpt-5.4-mini — fast & affordable (default)", value: "gpt-5.4-mini" },
+  { name: "gpt-5.4 — capable", value: "gpt-5.4" },
+  { name: "gpt-5.5 — most capable", value: "gpt-5.5" },
+] as const;
 
 // The common built-in tools, shown in `/tools list` so the user sees the full
 // picture. Not exhaustive (MCP tools are dynamic) — any tool a channel has an
@@ -124,6 +137,11 @@ export class DatabaseManager {
       CREATE TABLE IF NOT EXISTS channel_models (
         channel_id  TEXT PRIMARY KEY,
         model       TEXT NOT NULL DEFAULT 'sonnet'
+      );
+
+      CREATE TABLE IF NOT EXISTS channel_codex_models (
+        channel_id  TEXT PRIMARY KEY,
+        model       TEXT NOT NULL DEFAULT 'gpt-5.4-mini'
       );
 
       CREATE TABLE IF NOT EXISTS channel_hidden_tools (
@@ -312,6 +330,19 @@ export class DatabaseManager {
   setModel(channelId: string, model: ClaudeModel): void {
     this.db
       .prepare(`INSERT OR REPLACE INTO channel_models (channel_id, model) VALUES (?, ?)`)
+      .run(channelId, model);
+  }
+
+  getCodexModel(channelId: string): CodexModel {
+    const row = this.db
+      .prepare(`SELECT model FROM channel_codex_models WHERE channel_id = ?`)
+      .get(channelId) as any;
+    return (row?.model as CodexModel) ?? "gpt-5.4-mini";
+  }
+
+  setCodexModel(channelId: string, model: CodexModel): void {
+    this.db
+      .prepare(`INSERT OR REPLACE INTO channel_codex_models (channel_id, model) VALUES (?, ?)`)
       .run(channelId, model);
   }
 

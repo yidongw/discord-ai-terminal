@@ -134,4 +134,9 @@ describe('buildCodexCommand', () => {
     const command = buildCodexCommand('/test/dir', 'hello world', 'session-123');
     expect(command).toBe("cd /test/dir && codex exec resume --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini session-123 'hello world'");
   });
+
+  it('should use the specified codex model', () => {
+    const command = buildCodexCommand('/test/dir', 'hello world', undefined, false, 'gpt-5.5');
+    expect(command).toBe("cd /test/dir && codex exec --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.5 -C /test/dir 'hello world'");
+  });
 });

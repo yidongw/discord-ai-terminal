@@ -256,12 +256,14 @@ export class SessionManager {
     const existing = this.db.getThreadSession(threadId);
     const mode = this.db.getMode(channelId);
     const model = this.db.getModel(channelId);
+    const codexModel = this.db.getCodexModel(channelId);
     const toolOverrides = this.db.getToolOverrides(channelId);
 
     const command = agent.buildCommand(workDir, prompt, {
       sessionId: existing?.sessionId,
       mode,
       model,
+      codexModel,
       discordContext,
       prNumber: opts?.prNumber,
     });

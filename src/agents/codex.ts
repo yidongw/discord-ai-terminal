@@ -11,7 +11,7 @@ export const codexAgent: AgentRunner = {
   color: 0x4B88FF,
 
   buildCommand(workDir, prompt, opts) {
-    return buildCodexCommand(workDir, prompt, opts.sessionId);
+    return buildCodexCommand(workDir, prompt, opts.sessionId, false, opts.codexModel ?? "gpt-5.4-mini");
   },
 
   parseLine(line, workDir): AgentEvent | null {
