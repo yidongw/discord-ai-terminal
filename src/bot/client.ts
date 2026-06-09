@@ -2,6 +2,9 @@ import {
   Client,
   GatewayIntentBits,
   ChannelType,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   type Message,
   type TextChannel,
   type ThreadChannel,
@@ -155,10 +158,21 @@ export class DiscordBot {
         // Closed but the worktree was deliberately kept (uncommitted/unmerged
         // work) — that's the "locked" state, not a clean close.
         if (archived) void setThreadStatus(thread, "locked", { archived: true });
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`worktree_force_close_${thread.id}`)
+            .setLabel("Force Close")
+            .setStyle(ButtonStyle.Danger),
+          new ButtonBuilder()
+            .setCustomId(`worktree_cancel_${thread.id}`)
+            .setLabel("Cancel")
+            .setStyle(ButtonStyle.Secondary)
+        );
         thread
-          .send(
-            `🌲 Worktree kept — it still has ${result.reason}, so it was not removed. Run \`/cleanup force:true\` to discard it.`
-          )
+          .send({
+            content: `🌲 Worktree kept — it still has ${result.reason}, so it was not removed.`,
+            components: [row],
+          })
           .catch(() => {});
       }
     }
