@@ -572,6 +572,10 @@ export class SessionManager {
       // Hidden tools don't get their own embed; instead they bump the running
       // "N hidden" summary. Remember the id so the matching tool_done is dropped
       // (it must not seal the summary).
+      if (event.name === "TodoRead" || event.name === "TodoWrite") {
+        session.hiddenToolIds.add(event.id);
+        return;
+      }
       if (event.name && toolIsHidden(event.name, session.toolOverrides)) {
         session.hiddenToolIds.add(event.id);
         outbox.pushHiddenTool(event.name);
@@ -631,6 +635,18 @@ export class SessionManager {
         outbox.pushText(raw.content);
       }
       for (const tool of (raw.tools ?? [])) {
+        if (tool.name === "TodoRead") {
+          session.hiddenToolIds.add(tool.id);
+          continue;
+        }
+        if (tool.name === "TodoWrite" && Array.isArray(tool.input?.todos)) {
+          session.hiddenToolIds.add(tool.id);
+          const todos = tool.input.todos;
+          outbox.enqueue(async () => {
+            await thread.send({ embeds: [buildTodoEmbed(todos)] });
+          });
+          continue;
+        }
         if (toolIsHidden(tool.name, session.toolOverrides)) {
           session.hiddenToolIds.add(tool.id);
           outbox.pushHiddenTool(tool.name);
@@ -933,4 +949,16 @@ function formatToolCall(tool: any, workDir: string): string {
 // being interpreted as underline/bold/italic.
 function escapeMd(text: string): string {
   return String(text).replace(/[\\_*~`|]/g, "\\$&");
+}
+
+function buildTodoEmbed(todos: Array<{ id: string; content: string; status: string; priority?: string }>): EmbedBuilder {
+  const lines = todos.map((todo) => {
+    if (todo.status === "completed") return `✅ ~~${todo.content}~~`;
+    if (todo.status === "in_progress") return `🔄 **${todo.content}**`;
+    return `⬜ ${todo.content}`;
+  });
+  return new EmbedBuilder()
+    .setTitle("📋 Todo List")
+    .setDescription(lines.join("\n"))
+    .setColor(0x5865F2);
 }
