@@ -6,7 +6,7 @@ import { formatForDiscord } from "../utils/discord-format.js";
 import { getAgent, type AgentEvent, type AgentRunner } from "../agents/index.js";
 import { DatabaseManager, toolIsHidden, type ActiveRun } from "../db/database.js";
 import { mainRepoOf, removeWorktree, type RemoveResult } from "../utils/path-resolver.js";
-import { setThreadStatus } from "../utils/thread-status.js";
+import { setThreadStatus, setPrInThreadName } from "../utils/thread-status.js";
 import { escapeShellString, type DiscordContext } from "../utils/shell.js";
 import { RunTailer, isPidAlive } from "./run-tailer.js";
 
@@ -68,6 +68,9 @@ interface ActiveSession {
   done: boolean;
   stopping: boolean;
   killTimer?: ReturnType<typeof setTimeout>;
+  // Set to true once we've acted on a GitHub PR URL in a tool result, so we
+  // don't rename or re-pin if the URL appears again in a later result.
+  prDetected: boolean;
   // Action to dispatch when the run finishes (e.g. post a PR summary). The text
   // it needs is re-read from the log at finalize, so it works after a restart.
   completion?: CompletionAction;
@@ -317,6 +320,7 @@ export class SessionManager {
       outbox: this.getOutbox(threadId, thread),
       done: false,
       stopping: false,
+      prDetected: false,
       completion: opts?.completion,
     };
     this.active.set(threadId, session);
@@ -527,6 +531,7 @@ export class SessionManager {
       outbox: this.getOutbox(run.threadId, thread),
       done: false,
       stopping: false,
+      prDetected: false,
       // The completion action was persisted, so a PR run that survives a restart
       // still posts its summary comment when it finishes — see finalizeRun.
       completion: parseCompletion(run.completionJson),
@@ -695,6 +700,27 @@ export class SessionManager {
     }
     if (raw.kind === "_sdk_tool_results") {
       for (const result of (raw.results ?? [])) {
+        // Scan every successful result for a GitHub PR URL regardless of whether
+        // the tool is hidden, so we catch `gh pr create` output in all modes.
+        if (!result.is_error && !session.prDetected) {
+          const text = toolResultText(result.content);
+          const prMatch = text.match(/https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/(\d+)/);
+          if (prMatch) {
+            session.prDetected = true;
+            const prUrl = prMatch[0] ?? "";
+            const prNumber = parseInt(prMatch[1] ?? "0", 10);
+            void setPrInThreadName(thread, prNumber);
+            outbox.enqueue(async () => {
+              try {
+                const msg = await thread.send(prUrl);
+                await msg.pin();
+              } catch (err) {
+                console.error("[pr-detect] failed to post/pin PR link:", err);
+              }
+            });
+          }
+        }
+
         // Drop results for hidden tools entirely — enqueuing a no-op op would
         // seal the running summary between two batches of hidden calls.
         if (session.hiddenToolIds.has(result.tool_use_id)) continue;
