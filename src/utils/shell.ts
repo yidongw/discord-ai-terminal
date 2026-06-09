@@ -94,6 +94,7 @@ export function buildCodexCommand(
   skipGitCheck: boolean = false
 ): string {
   const escapedPrompt = escapeShellString(prompt);
+  const model = "gpt-5.4-mini";
 
   if (sessionId) {
     const resumeParts = [
@@ -103,6 +104,8 @@ export function buildCodexCommand(
       "resume",
       "--json",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      model,
     ];
     if (skipGitCheck) {
       resumeParts.push("--skip-git-repo-check");
@@ -117,6 +120,8 @@ export function buildCodexCommand(
     "exec",
     "--json",
     "--dangerously-bypass-approvals-and-sandbox",
+    "--model",
+    model,
   ];
   if (skipGitCheck) {
     commandParts.push("--skip-git-repo-check");
