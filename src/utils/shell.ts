@@ -6,6 +6,7 @@ export function escapeShellString(str: string): string {
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { DEFAULT_CC_MODEL, DEFAULT_CODEX_MODEL } from "./models.js";
 
 export interface DiscordContext {
   channelId: string;
@@ -16,7 +17,7 @@ export interface DiscordContext {
 
 export type PermissionMode = "auto" | "plan" | "approve";
 
-export const CODEX_MODEL = "gpt-5.4-mini";
+export const CODEX_MODEL = DEFAULT_CODEX_MODEL;
 export const CODEX_MODEL_DISPLAY_NAME = "GPT-5.4-Mini";
 
 const DISCORD_SYSTEM_PROMPT =
@@ -47,7 +48,7 @@ export function buildClaudeCommand(
   sessionId?: string,
   discordContext?: DiscordContext,
   mode: PermissionMode = "auto",
-  model: string = "sonnet"
+  model: string = DEFAULT_CC_MODEL
 ): string {
   const escapedPrompt = escapeShellString(prompt);
   const sessionMcpConfigPath = createSessionMcpConfig(discordContext);
@@ -95,7 +96,7 @@ export function buildCodexCommand(
   prompt: string,
   sessionId?: string,
   skipGitCheck: boolean = false,
-  model: string = CODEX_MODEL
+  model: string = DEFAULT_CODEX_MODEL
 ): string {
   const escapedPrompt = escapeShellString(prompt);
 
@@ -140,7 +141,7 @@ export function buildClaudeCommandForGitHub(
   opts: { prNumber?: number; model?: string }
 ): string {
   const escapedPrompt = escapeShellString(prompt);
-  const model = opts.model ?? "sonnet";
+  const model = opts.model ?? DEFAULT_CC_MODEL;
 
   const commandParts = [
     `cd ${workingDir}`,

@@ -12,8 +12,8 @@ import {
 import { SessionManager } from "./session-manager.js";
 import { DEFAULT_HIDDEN_TOOLS, KNOWN_TOOLS, toolIsHidden } from "../db/database.js";
 import { setThreadStatus } from "../utils/thread-status.js";
-import type { PermissionMode, ClaudeModel, CodexModel } from "../db/database.js";
-import { CC_MODEL_CHOICES, CODEX_MODEL_CHOICES } from "../db/database.js";
+import type { PermissionMode, CcModel, CodexModel } from "../db/database.js";
+import { CC_MODEL_CHOICES, CODEX_MODEL_CHOICES } from "../utils/models.js";
 
 export class CommandHandler {
   constructor(
@@ -252,7 +252,7 @@ export class CommandHandler {
     const sub = i.options.getSubcommand();
 
     if (sub === "cc") {
-      const model = i.options.getString("model", true) as ClaudeModel;
+      const model = i.options.getString("model", true) as CcModel;
       db.setModel(channelId, model);
       await i.reply({
         embeds: [embed("✅ CC Model Set", `Claude Code model set to **${model}** for this channel.`, 0x00ff00)],

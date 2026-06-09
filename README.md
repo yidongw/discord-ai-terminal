@@ -161,14 +161,19 @@ Type any message in a channel that corresponds to a repository folder. The bot w
   - `auto` - Execute immediately without asking
   - `plan` - Create detailed plan before executing
   - `approve` - Ask permission (✅/❌) before each dangerous action
-- **/model cc**: Set the Claude Code model for the channel
-  - `opus` - Most capable, best for complex tasks
-  - `sonnet` - Balanced performance and cost (default)
-  - `haiku` - Fastest and most affordable
+- **/model cc**: Set the Claude Code model for the channel (pinned version IDs)
+  - `claude-sonnet-4-6` - Balanced default
+  - `claude-opus-4-8` - Most capable Opus
+  - `claude-opus-4-7`, `claude-opus-4-6` - Earlier Opus versions
+  - `claude-sonnet-4-5` - Earlier Sonnet
+  - `claude-haiku-4-5` - Fastest
+  - `claude-fable-5` - Long autonomous tasks
 - **/model codex**: Set the Codex model for the channel
+  - `gpt-5.5` - Most capable
   - `gpt-5.4-mini` - Fast and affordable (default)
   - `gpt-5.4` - Capable
-  - `gpt-5.5` - Most capable
+  - `gpt-5.3-codex-spark` - Near-instant (Pro)
+  - `gpt-5.3-codex`, `gpt-5.2-codex` - Legacy/API workflows
 - **/status**: Show current mode, models, and session info
 
 #### Project Commands

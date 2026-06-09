@@ -4,6 +4,7 @@ import {
   escapeShellString,
   CODEX_MODEL_DISPLAY_NAME,
 } from "../utils/shell.js";
+import { DEFAULT_CODEX_MODEL } from "../utils/models.js";
 
 export const codexAgent: AgentRunner = {
   key: "cx",
@@ -11,7 +12,7 @@ export const codexAgent: AgentRunner = {
   color: 0x4B88FF,
 
   buildCommand(workDir, prompt, opts) {
-    return buildCodexCommand(workDir, prompt, opts.sessionId, false, opts.codexModel ?? "gpt-5.4-mini");
+    return buildCodexCommand(workDir, prompt, opts.sessionId, false, opts.codexModel ?? DEFAULT_CODEX_MODEL);
   },
 
   parseLine(line, workDir): AgentEvent | null {

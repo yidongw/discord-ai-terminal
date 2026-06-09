@@ -1,21 +1,18 @@
 import { Database } from "bun:sqlite";
 import * as path from "path";
+import {
+  type CcModel,
+  type CodexModel,
+  DEFAULT_CC_MODEL,
+  DEFAULT_CODEX_MODEL,
+  normalizeCcModel,
+  normalizeCodexModel,
+} from "../utils/models.js";
 
 export type PermissionMode = "auto" | "plan" | "approve";
-export type ClaudeModel = "opus" | "sonnet" | "haiku";
-export type CodexModel = "gpt-5.4-mini" | "gpt-5.4" | "gpt-5.5";
-
-export const CC_MODEL_CHOICES = [
-  { name: "sonnet — balanced (default)", value: "sonnet" },
-  { name: "opus — most capable", value: "opus" },
-  { name: "haiku — fastest", value: "haiku" },
-] as const;
-
-export const CODEX_MODEL_CHOICES = [
-  { name: "gpt-5.4-mini — fast & affordable (default)", value: "gpt-5.4-mini" },
-  { name: "gpt-5.4 — capable", value: "gpt-5.4" },
-  { name: "gpt-5.5 — most capable", value: "gpt-5.5" },
-] as const;
+export type { CcModel, CodexModel };
+// Back-compat alias used by agent opts
+export type ClaudeModel = CcModel;
 
 // The common built-in tools, shown in `/tools list` so the user sees the full
 // picture. Not exhaustive (MCP tools are dynamic) — any tool a channel has an
@@ -136,7 +133,7 @@ export class DatabaseManager {
 
       CREATE TABLE IF NOT EXISTS channel_models (
         channel_id  TEXT PRIMARY KEY,
-        model       TEXT NOT NULL DEFAULT 'sonnet'
+        model       TEXT NOT NULL DEFAULT 'claude-sonnet-4-6'
       );
 
       CREATE TABLE IF NOT EXISTS channel_codex_models (
@@ -320,14 +317,14 @@ export class DatabaseManager {
       .run(channelId, mode);
   }
 
-  getModel(channelId: string): ClaudeModel {
+  getModel(channelId: string): CcModel {
     const row = this.db
       .prepare(`SELECT model FROM channel_models WHERE channel_id = ?`)
       .get(channelId) as any;
-    return (row?.model as ClaudeModel) ?? "sonnet";
+    return normalizeCcModel(row?.model);
   }
 
-  setModel(channelId: string, model: ClaudeModel): void {
+  setModel(channelId: string, model: CcModel): void {
     this.db
       .prepare(`INSERT OR REPLACE INTO channel_models (channel_id, model) VALUES (?, ?)`)
       .run(channelId, model);
@@ -337,7 +334,7 @@ export class DatabaseManager {
     const row = this.db
       .prepare(`SELECT model FROM channel_codex_models WHERE channel_id = ?`)
       .get(channelId) as any;
-    return (row?.model as CodexModel) ?? "gpt-5.4-mini";
+    return normalizeCodexModel(row?.model);
   }
 
   setCodexModel(channelId: string, model: CodexModel): void {
