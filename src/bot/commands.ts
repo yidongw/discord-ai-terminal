@@ -6,6 +6,7 @@ import {
   ChannelType,
   type Interaction,
   type ChatInputCommandInteraction,
+  type ButtonInteraction,
   type ThreadChannel,
 } from "discord.js";
 import { SessionManager } from "./session-manager.js";
@@ -108,6 +109,20 @@ export class CommandHandler {
   }
 
   async handleInteraction(interaction: Interaction): Promise<void> {
+    if (interaction.isButton()) {
+      if (!this.allowedUserIds.includes(interaction.user.id)) {
+        await interaction.reply({ content: "Not authorised.", ephemeral: true });
+        return;
+      }
+      if (interaction.customId.startsWith("worktree_force_close_")) {
+        return this.handleWorktreeForceClose(interaction);
+      }
+      if (interaction.customId.startsWith("worktree_cancel_")) {
+        return this.handleWorktreeCancel(interaction);
+      }
+      return;
+    }
+
     if (!interaction.isChatInputCommand()) return;
     if (!this.allowedUserIds.includes(interaction.user.id)) {
       await interaction.reply({ content: "Not authorised.", ephemeral: true });
@@ -257,6 +272,20 @@ export class CommandHandler {
         ),
       ],
     });
+  }
+
+  private async handleWorktreeForceClose(interaction: ButtonInteraction): Promise<void> {
+    const result = this.sessionManager.cleanupThreadWorktree(interaction.channelId, true);
+    if (result?.removed) {
+      void setThreadStatus(interaction.channel, "closed", { archived: true });
+      await interaction.update({ content: "🧹 Worktree forcibly removed.", components: [] });
+    } else {
+      await interaction.update({ content: "⚠️ Could not remove worktree.", components: [] });
+    }
+  }
+
+  private async handleWorktreeCancel(interaction: ButtonInteraction): Promise<void> {
+    await interaction.update({ content: "🔒 Worktree kept. Thread remains locked.", components: [] });
   }
 
 }
