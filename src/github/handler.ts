@@ -42,17 +42,12 @@ export class GitHubHandler {
         const thread = await this.client.channels.fetch(makerThreadId) as ThreadChannel | null;
         if (thread) {
           void setPrInThreadName(thread, prNumber);
-          // Post and pin the PR URL only if CC's output parser hasn't already done
-          // it. If the session is still active and prDetected is set, CC itself
-          // posted it. If no active session (stop hook case), we must post it here.
-          if (!this.sessionManager.hasPrDetected(makerThreadId)) {
-            const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
-            try {
-              const msg = await thread.send(prUrl);
-              await msg.pin();
-            } catch (err) {
-              console.error(`[github] PR #${prNumber}: failed to post/pin PR URL:`, err);
-            }
+          const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
+          try {
+            const msg = await thread.send(prUrl);
+            await msg.pin();
+          } catch (err) {
+            console.error(`[github] PR #${prNumber}: failed to post/pin PR URL:`, err);
           }
         }
       } catch (err) {
