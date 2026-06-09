@@ -172,8 +172,7 @@ Type any message in a channel that corresponds to a repository folder. The bot w
   - `gpt-5.5` - Most capable
   - `gpt-5.4-mini` - Fast and affordable (default)
   - `gpt-5.4` - Capable
-  - `gpt-5.3-codex-spark` - Near-instant (Pro)
-  - `gpt-5.3-codex`, `gpt-5.2-codex` - Legacy/API workflows
+  - `gpt-5.3-codex-spark` - Near-instant (requires ChatGPT Pro)
 - **/status**: Show current mode, models, and session info
 
 #### Project Commands

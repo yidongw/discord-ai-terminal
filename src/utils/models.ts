@@ -15,11 +15,9 @@ export const CC_MODEL_CHOICES = [
 
 export const CODEX_MODEL_CHOICES = [
   { name: "GPT-5.5 — most capable", value: "gpt-5.5" },
-  { name: "GPT-5.4-mini — fast & affordable", value: "gpt-5.4-mini" },
+  { name: "GPT-5.4-mini — fast & affordable (default)", value: "gpt-5.4-mini" },
   { name: "GPT-5.4", value: "gpt-5.4" },
-  { name: "GPT-5.3 Codex Spark — near-instant (Pro)", value: "gpt-5.3-codex-spark" },
-  { name: "GPT-5.3 Codex", value: "gpt-5.3-codex" },
-  { name: "GPT-5.2 Codex — API-key workflows", value: "gpt-5.2-codex" },
+  { name: "GPT-5.3 Codex Spark — near-instant (ChatGPT Pro)", value: "gpt-5.3-codex-spark" },
 ] as const;
 
 export type CcModel = (typeof CC_MODEL_CHOICES)[number]["value"];
