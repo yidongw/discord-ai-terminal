@@ -66,12 +66,12 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
 
     const previewUrlFromComment = extractPreviewUrl(payload);
 
-    if (body === "/cc skip-tests") {
+    if (body === "/skip-tests") {
       await handler.handleSkipTests(repo, prNumber);
       return;
     }
 
-    if (body === "/cc enable-tests") {
+    if (body === "/enable-tests") {
       await handler.handleEnableTests(repo, prNumber);
       return;
     }

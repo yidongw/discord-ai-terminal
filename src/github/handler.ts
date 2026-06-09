@@ -80,7 +80,7 @@ export class GitHubHandler {
       await postPrComment(
         repo,
         prNumber,
-        `⏭️ Tests are currently skipped for PR #${prNumber}. Post \`/cc enable-tests\` to re-enable.`
+        `⏭️ Tests are currently skipped for PR #${prNumber}. Post \`/enable-tests\` to re-enable.`
       );
       return;
     }
@@ -199,7 +199,7 @@ export class GitHubHandler {
     await postPrComment(
       repo,
       prNumber,
-      `⏭️ Tests skipped for PR #${prNumber}. Post \`/cc enable-tests\` to re-enable.`
+      `⏭️ Tests skipped for PR #${prNumber}. Post \`/enable-tests\` to re-enable.`
     );
   }
 
@@ -208,7 +208,7 @@ export class GitHubHandler {
     await postPrComment(
       repo,
       prNumber,
-      `✅ Tests re-enabled for PR #${prNumber}. Post \`/cc test:\` with your test list to run them now.`
+      `✅ Tests re-enabled for PR #${prNumber}. Post \`/cc test:\` or \`/cx test:\` with your test list to run them now.`
     );
   }
 
