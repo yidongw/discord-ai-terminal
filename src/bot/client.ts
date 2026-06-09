@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import {
   Client,
   GatewayIntentBits,
@@ -145,8 +147,11 @@ export class DiscordBot {
   // Auto-cleanup a thread's worktree when it closes or is deleted. Never forces:
   // a worktree with unsaved/unmerged work is kept (and noted, if the thread is
   // still reachable) so nothing is silently lost — clear it later with /cleanup.
+  // On "closed" (auto-archive) we keep the session so the thread can be resumed
+  // by sending a new message; on "deleted" we clean up fully.
   private cleanupThread(threadId: string, thread: ThreadChannel | null, reason: string): void {
-    const result = this.sessionManager.cleanupThreadWorktree(threadId);
+    const keepSession = reason === "closed";
+    const result = this.sessionManager.cleanupThreadWorktree(threadId, false, keepSession);
     // A deleted thread is gone — no rename is possible regardless of outcome.
     const archived = reason === "closed";
 
@@ -267,6 +272,20 @@ export class DiscordBot {
     if (this.sessionManager.hasActiveProcess(thread.id)) {
       await msg.reply("Agent is still running. Use `/stop` to cancel.");
       return;
+    }
+
+    // If the worktree was removed when the thread was archived, re-create it so
+    // the agent resumes in the same path with the same branch (or a fresh one off
+    // the default branch if the old branch was already merged and deleted).
+    if (session.isWorktree && !fs.existsSync(session.workDir)) {
+      const channelName = thread.parent?.name;
+      if (channelName) {
+        // Recover the original label slug from the stored workDir basename,
+        // e.g. "fix-auth-bug-a1b2c3" → "fix-auth-bug". resolveThreadWorkDir
+        // will re-derive the same branch/dir names from that slug + thread id.
+        const label = path.basename(session.workDir).replace(/-[a-z0-9]{6}$/i, "");
+        resolveThreadWorkDir(channelName, thread.id, label, this.baseFolder);
+      }
     }
 
     await msg.react("👀").catch(() => {});

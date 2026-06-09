@@ -161,11 +161,18 @@ export class SessionManager {
   // Remove a thread's isolated worktree + branch and forget the session.
   // Refuses (keeping everything) when the worktree has uncommitted or unmerged
   // work, unless `force` is set. Returns null when the thread had no worktree.
-  cleanupThreadWorktree(threadId: string, force = false): RemoveResult | null {
+  // Pass keepSession=true to preserve the DB session (e.g. auto-archive) so the
+  // thread can be resumed later; false (default) deletes it permanently.
+  cleanupThreadWorktree(threadId: string, force = false, keepSession = false): RemoveResult | null {
     const session = this.db.getThreadSession(threadId);
     if (!session || !session.isWorktree) return null;
 
     this.killProcess(threadId);
+
+    // Worktree already gone — treat as removed without touching the session.
+    if (!fs.existsSync(session.workDir)) {
+      return { removed: true };
+    }
 
     const repoPath = mainRepoOf(session.workDir);
     if (!repoPath) {
@@ -174,7 +181,9 @@ export class SessionManager {
 
     const result = removeWorktree(repoPath, session.workDir, session.branch, force);
     if (result.removed) {
-      this.db.deleteThreadSession(threadId);
+      if (!keepSession) {
+        this.db.deleteThreadSession(threadId);
+      }
       this.db.deleteScheduledTasksForThread(threadId);
     }
     return result;
