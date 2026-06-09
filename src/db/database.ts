@@ -222,6 +222,16 @@ export class DatabaseManager {
     // Drop the obsolete all-or-nothing tool-visibility table (replaced by the
     // per-tool channel_hidden_tools table).
     this.db.exec(`DROP TABLE IF EXISTS channel_tool_visibility`);
+
+    const prCols = (this.db.prepare(`PRAGMA table_info(pr_threads)`).all() as any[]).map(
+      (c) => c.name as string
+    );
+    if (!prCols.includes("failed_tests")) {
+      this.db.exec(`ALTER TABLE pr_threads ADD COLUMN failed_tests TEXT`);
+    }
+    if (!prCols.includes("tests_skipped")) {
+      this.db.exec(`ALTER TABLE pr_threads ADD COLUMN tests_skipped INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 
   // ── Thread sessions ──────────────────────────────────────────────────────
@@ -568,7 +578,7 @@ export class DatabaseManager {
 
   // ── PR threads ───────────────────────────────────────────────────────────
 
-  getPrThreads(prNumber: string, repo: string): { makerThreadId?: string; testThreadId?: string } | null {
+  getPrThreads(prNumber: string, repo: string): { makerThreadId?: string; testThreadId?: string; testsSkipped?: boolean } | null {
     const row = this.db
       .prepare(`SELECT * FROM pr_threads WHERE pr_number = ? AND repo = ?`)
       .get(prNumber, repo) as any;
@@ -576,6 +586,7 @@ export class DatabaseManager {
     return {
       makerThreadId: row.maker_thread_id ?? undefined,
       testThreadId: row.test_thread_id ?? undefined,
+      testsSkipped: row.tests_skipped === 1,
     };
   }
 
@@ -597,6 +608,16 @@ export class DatabaseManager {
          ON CONFLICT (pr_number, repo) DO UPDATE SET test_thread_id = excluded.test_thread_id`
       )
       .run(prNumber, repo, testThreadId, Date.now());
+  }
+
+  setPrTestsSkipped(prNumber: string, repo: string, skipped: boolean): void {
+    this.db
+      .prepare(
+        `INSERT INTO pr_threads (pr_number, repo, tests_skipped, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (pr_number, repo) DO UPDATE SET tests_skipped = excluded.tests_skipped`
+      )
+      .run(prNumber, repo, skipped ? 1 : 0, Date.now());
   }
 
   // Find the most recent CC session whose work_dir matches a repo name.

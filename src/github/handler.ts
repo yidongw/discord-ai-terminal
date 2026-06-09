@@ -5,7 +5,13 @@ import {
   type ThreadChannel,
 } from "discord.js";
 import type { SessionManager, CompletionAction } from "../bot/session-manager.js";
-import { postPrComment, getPr } from "./pr-comment.js";
+import {
+  postPrComment,
+  getPr,
+  getPrComments,
+  parseTestPlanFromBody,
+  extractTestPlanFromComment,
+} from "./pr-comment.js";
 import { repoPathFor } from "../utils/path-resolver.js";
 
 export class GitHubHandler {
@@ -15,17 +21,31 @@ export class GitHubHandler {
     private baseFolder: string
   ) {}
 
-  // Called when pull_request.opened fires. Links the PR to the Discord thread
-  // that was most recently running CC for this repo (Thread A).
+  // Called when pull_request.opened fires.
+  // Links the PR to the maker thread and auto-triggers tests if the PR has a Test plan.
   async handlePrOpened(repo: string, prNumber: number): Promise<void> {
     const repoName = repo.split("/")[1] ?? repo;
+
     const makerThreadId = this.sessionManager.getDb().findMakerThreadForRepo(repoName);
-    if (!makerThreadId) {
+    if (makerThreadId) {
+      this.sessionManager.getDb().setPrMakerThread(String(prNumber), repo, makerThreadId);
+      console.log(`[github] PR #${prNumber} linked to maker thread ${makerThreadId}`);
+    } else {
       console.log(`[github] PR #${prNumber}: no maker thread found for ${repoName}`);
+    }
+
+    const pr = await getPr(repo, prNumber);
+    if (!pr) return;
+
+    const testPlan = parseTestPlanFromBody(pr.body ?? "");
+    if (!testPlan || testPlan.length === 0) {
+      console.log(`[github] PR #${prNumber}: no Test plan in description, skipping auto-test`);
       return;
     }
-    this.sessionManager.getDb().setPrMakerThread(String(prNumber), repo, makerThreadId);
-    console.log(`[github] PR #${prNumber} linked to maker thread ${makerThreadId}`);
+
+    const items = testPlan.map((t) => `- ${t}`).join("\n");
+    await postPrComment(repo, prNumber, `/cc test:\n${items}`);
+    console.log(`[github] PR #${prNumber}: auto-posted /cc test: with ${testPlan.length} items`);
   }
 
   // Called when issue_comment.created fires with a /cc or /cx command.
@@ -34,15 +54,15 @@ export class GitHubHandler {
     prNumber: number,
     previewUrl: string,
     command: string, // "cc" or "cx"
-    fixBody?: string // set when command is "cc" and body starts with "/cc fix:"
+    fixItems?: string[], // bugs from "/cc fix:\n- item"
+    testItems?: string[] // checklist from "/cc test:\n- item"
   ): Promise<void> {
     const repoName = repo.split("/")[1] ?? repo;
-    const isFix = command === "cc" && !!fixBody;
 
-    if (isFix) {
-      await this.runFix(repo, repoName, prNumber, fixBody!);
+    if (command === "cc" && fixItems?.length) {
+      await this.runFix(repo, repoName, prNumber, fixItems);
     } else {
-      await this.runTest(repo, repoName, prNumber, previewUrl, command);
+      await this.runTest(repo, repoName, prNumber, previewUrl, command, testItems ?? []);
     }
   }
 
@@ -51,8 +71,25 @@ export class GitHubHandler {
     repoName: string,
     prNumber: number,
     previewUrl: string,
-    agentKey: string
+    agentKey: string,
+    testItems: string[]
   ): Promise<void> {
+    const prState = this.sessionManager.getDb().getPrThreads(String(prNumber), repo);
+
+    if (prState?.testsSkipped) {
+      await postPrComment(
+        repo,
+        prNumber,
+        `⏭️ Tests are currently skipped for PR #${prNumber}. Post \`/cc enable-tests\` to re-enable.`
+      );
+      return;
+    }
+
+    if (testItems.length === 0) {
+      console.log(`[github] PR #${prNumber}: no test items, skipping`);
+      return;
+    }
+
     const pr = await getPr(repo, prNumber);
     const prTitle = pr?.title ?? `PR #${prNumber}`;
     const prBody = pr?.body ?? "";
@@ -63,7 +100,7 @@ export class GitHubHandler {
       return;
     }
 
-    const prompt = buildTestPrompt(prNumber, previewUrl, prTitle, prBody);
+    const prompt = buildTestPrompt(prNumber, previewUrl, prTitle, prBody, testItems);
 
     await this.sessionManager.runAgent(
       thread.id,
@@ -73,7 +110,6 @@ export class GitHubHandler {
       repoPathFor(repoName, this.baseFolder) ?? this.baseFolder,
       prompt,
       undefined,
-      // Persisted so the summary still posts if the run outlives a bot restart.
       { completion: { kind: "pr_test", repo, prNumber, agentKey } }
     );
   }
@@ -82,16 +118,19 @@ export class GitHubHandler {
     repo: string,
     repoName: string,
     prNumber: number,
-    bugReport: string
+    bugItems: string[]
   ): Promise<void> {
-    const makerThreadId = this.sessionManager.getDb().getPrThreads(String(prNumber), repo)?.makerThreadId;
+    const makerThreadId = this.sessionManager
+      .getDb()
+      .getPrThreads(String(prNumber), repo)?.makerThreadId;
 
     let thread: ThreadChannel | null = null;
     if (makerThreadId) {
-      thread = (await this.client.channels.fetch(makerThreadId).catch(() => null)) as ThreadChannel | null;
+      thread = (await this.client.channels
+        .fetch(makerThreadId)
+        .catch(() => null)) as ThreadChannel | null;
     }
 
-    // Fall back to the test thread if maker thread is gone
     if (!thread) {
       thread = await this.getOrCreateTestThread(repoName, prNumber);
     }
@@ -101,11 +140,10 @@ export class GitHubHandler {
       return;
     }
 
-    const workDir = this.sessionManager.getDb().getThreadSession(makerThreadId ?? "")?.workDir
-      ?? repoPathFor(repoName, this.baseFolder)
-      ?? this.baseFolder;
-
-    const prompt = buildFixPrompt(prNumber, bugReport);
+    const workDir =
+      this.sessionManager.getDb().getThreadSession(makerThreadId ?? "")?.workDir ??
+      repoPathFor(repoName, this.baseFolder) ??
+      this.baseFolder;
 
     await this.sessionManager.runAgent(
       thread.id,
@@ -113,47 +151,87 @@ export class GitHubHandler {
       thread,
       "cc",
       workDir,
-      prompt,
+      buildFixPrompt(prNumber, bugItems),
       undefined,
-      // Persisted so the summary still posts if the run outlives a bot restart.
       { prNumber, completion: { kind: "pr_fix", repo, prNumber } }
     );
   }
 
-  // Dispatch a run's persisted CompletionAction once it finishes. Registered on
-  // the SessionManager (see index.ts) so it fires for both fresh runs and runs
-  // re-attached after a restart.
+  // Dispatch a run's persisted CompletionAction once it finishes.
   async runCompletionAction(action: CompletionAction, text: string): Promise<void> {
     if (action.kind === "pr_test") {
-      await postPrComment(action.repo, action.prNumber, buildPrTestSummary(action.agentKey, action.prNumber, text));
-      // On FAIL the agent ends its report with a "/cc fix: <bugs>" line. Post it
-      // as its OWN comment (not buried in the summary) so the webhook dispatch's
-      // body.startsWith("/cc fix:") check matches and a fix run is triggered.
-      const fix = extractFixCommand(text);
-      if (fix) await postPrComment(action.repo, action.prNumber, fix);
+      const statusMatch = text.match(/STATUS:\s*(PASS|FAIL)/i);
+      const status = statusMatch ? statusMatch[1]!.toUpperCase() : "UNKNOWN";
+
+      // Post the summary. The Test plan: block is included when STATUS is FAIL
+      // so it's visible in the PR and readable by the bot for the next re-run.
+      await postPrComment(
+        action.repo,
+        action.prNumber,
+        buildPrTestSummary(action.agentKey, action.prNumber, text)
+      );
+
+      if (status === "FAIL") {
+        // Post /cc fix: as its own comment so the webhook dispatch picks it up
+        // and triggers the fix run.
+        const fix = extractFixBlock(text);
+        if (fix) await postPrComment(action.repo, action.prNumber, fix);
+      }
+      // On PASS the loop ends — nothing more to post.
     } else if (action.kind === "pr_fix") {
       await postPrComment(action.repo, action.prNumber, buildPrFixSummary(action.prNumber, text));
+
+      // Auto-trigger re-test: read the Test plan from the last test summary comment.
+      const comments = await getPrComments(action.repo, action.prNumber);
+      for (let i = comments.length - 1; i >= 0; i--) {
+        const plan = extractTestPlanFromComment(comments[i]!.body);
+        if (plan && plan.length > 0) {
+          const items = plan.map((t) => `- ${t}`).join("\n");
+          await postPrComment(action.repo, action.prNumber, `/cc test:\n${items}`);
+          break;
+        }
+      }
     }
   }
 
-  private async getOrCreateTestThread(repoName: string, prNumber: number): Promise<ThreadChannel | null> {
+  async handleSkipTests(repo: string, prNumber: number): Promise<void> {
+    this.sessionManager.getDb().setPrTestsSkipped(String(prNumber), repo, true);
+    await postPrComment(
+      repo,
+      prNumber,
+      `⏭️ Tests skipped for PR #${prNumber}. Post \`/cc enable-tests\` to re-enable.`
+    );
+  }
+
+  async handleEnableTests(repo: string, prNumber: number): Promise<void> {
+    this.sessionManager.getDb().setPrTestsSkipped(String(prNumber), repo, false);
+    await postPrComment(
+      repo,
+      prNumber,
+      `✅ Tests re-enabled for PR #${prNumber}. Post \`/cc test:\` with your test list to run them now.`
+    );
+  }
+
+  private async getOrCreateTestThread(
+    repoName: string,
+    prNumber: number
+  ): Promise<ThreadChannel | null> {
     const db = this.sessionManager.getDb();
     const existing = db.getPrThreads(String(prNumber), repoName);
 
-    // Try a cached test thread ID first
     if (existing?.testThreadId) {
-      const cached = await this.client.channels.fetch(existing.testThreadId).catch(() => null);
+      const cached = await this.client.channels
+        .fetch(existing.testThreadId)
+        .catch(() => null);
       if (cached?.isThread()) return cached as ThreadChannel;
     }
 
-    // Fetch the guild freshly if not cached (bot may have just started)
     let guild = this.client.guilds.cache.first();
     if (!guild) {
       console.error("[github] No guild in cache — bot not ready?");
       return null;
     }
 
-    // Ensure channels are fetched (cache may be stale on first use)
     if (guild.channels.cache.size === 0) {
       await guild.channels.fetch();
     }
@@ -163,15 +241,17 @@ export class GitHubHandler {
     ) as TextChannel | undefined;
 
     if (!channel) {
-      console.error(`[github] No Discord channel named "${repoName}" (searched ${guild.channels.cache.size} channels)`);
+      console.error(
+        `[github] No Discord channel named "${repoName}" (searched ${guild.channels.cache.size} channels)`
+      );
       return null;
     }
 
     console.log(`[github] Creating test thread "PR #${prNumber} — tests" in #${repoName}`);
-    const thread = await channel.threads.create({
+    const thread = (await channel.threads.create({
       name: `PR #${prNumber} — tests`,
       autoArchiveDuration: 1440,
-    }) as ThreadChannel;
+    })) as ThreadChannel;
 
     db.setPrTestThread(String(prNumber), repoName, thread.id);
     console.log(`[github] Test thread created: ${thread.id}`);
@@ -179,22 +259,32 @@ export class GitHubHandler {
   }
 }
 
-// Pull a standalone "/cc fix: <bugs>" trigger out of the test agent's output.
-// Returns everything from the "/cc fix:" line to the end (the bug report may
-// span multiple lines), or null if there's no actionable fix request.
-function extractFixCommand(text: string): string | null {
-  const idx = text.search(/^\/cc fix:/m);
+// Extract the "/cc fix:\n- item" block from the test agent's output.
+// Posted as its own comment so the webhook picks it up and triggers a fix run.
+function extractFixBlock(text: string): string | null {
+  const idx = text.search(/^\/cc fix:\n/m);
   if (idx === -1) return null;
-  const cmd = text.slice(idx).trim();
-  return cmd.length > "/cc fix:".length ? cmd : null;
+  const block = text.slice(idx).trim();
+  return block.split("\n").length > 1 ? block : null;
 }
 
-function buildTestPrompt(prNumber: number, previewUrl: string, prTitle: string, prBody: string): string {
+function buildTestPrompt(
+  prNumber: number,
+  previewUrl: string,
+  prTitle: string,
+  prBody: string,
+  testItems: string[]
+): string {
+  const checklist = testItems.map((t, i) => `${i + 1}. ${t}`).join("\n");
+
   return `You are a QA agent for this project.
 PR #${prNumber}: ${prTitle}
 Preview URL: ${previewUrl}
 
-Use the verify checklist from the PR description to guide your testing:
+Test plan:
+${checklist}
+
+PR description (additional context):
 ${prBody || "(no description provided)"}
 
 Use agent-browser to test the preview:
@@ -203,19 +293,25 @@ Use agent-browser to test the preview:
   agent-browser click @eN / agent-browser fill @eN "text"
   agent-browser screenshot --path /tmp/pr-${prNumber}-N.png
 
-Report your findings in this format:
+Test each item and report your findings in this exact format:
 STATUS: PASS or FAIL
 FINDINGS:
-- each checklist item — result and details
+- <item> — PASS/FAIL — details
 
-If STATUS is FAIL, your final line must be exactly:
-/cc fix: <clear bug descriptions with reproduction steps>`;
+If STATUS is FAIL, append a Test plan for the next run — list only the items that failed plus any new issues you discovered that are not in the original checklist:
+Test plan:
+- <item>
+
+If STATUS is FAIL, end with a /cc fix: block listing each bug on its own line:
+/cc fix:
+- <bug description>`;
 }
 
-function buildFixPrompt(prNumber: number, bugReport: string): string {
+function buildFixPrompt(prNumber: number, bugItems: string[]): string {
+  const list = bugItems.map((b) => `- ${b}`).join("\n");
   return `The QA test agent found these bugs in PR #${prNumber}:
 
-${bugReport}
+${list}
 
 Fix all of them. After fixing, commit the changes with a short message describing what was fixed. Do not push — CI handles that.`;
 }
@@ -226,9 +322,12 @@ function buildPrTestSummary(agentKey: string, prNumber: number, text: string): s
   const status = statusMatch ? (statusMatch[1] ?? "UNKNOWN").toUpperCase() : "UNKNOWN";
   const icon = status === "PASS" ? "✅" : status === "FAIL" ? "❌" : "⚠️";
 
+  // Strip the /cc fix: block — it's posted as a separate trigger comment
+  const summary = text.replace(/\n\/cc fix:\n[\s\S]*$/, "").trim();
+
   return `${icon} **${agent} test result — PR #${prNumber}**
 
-${text.trim()}`;
+${summary}`;
 }
 
 function buildPrFixSummary(prNumber: number, text: string): string {

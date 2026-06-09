@@ -43,3 +43,46 @@ export async function getPr(repo: string, prNumber: number): Promise<{ title: st
   }
   return res.json() as any;
 }
+
+export async function getPrComments(
+  repo: string,
+  prNumber: number
+): Promise<Array<{ id: number; body: string }>> {
+  const token = githubToken();
+  const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(
+    `${GITHUB_API}/repos/${repo}/issues/${prNumber}/comments?per_page=100`,
+    { headers }
+  );
+  if (!res.ok) {
+    console.error(`[github] Failed to fetch PR comments: ${res.status}`);
+    return [];
+  }
+  return res.json() as any;
+}
+
+// Parse the "## Test plan" section from a PR description.
+// Returns the bullet items, or null if no test plan section exists.
+export function parseTestPlanFromBody(body: string): string[] | null {
+  const match = body.match(/^##\s*test\s+plan\s*\r?\n([\s\S]+?)(?=\r?\n##\s|\s*$)/im);
+  if (!match || !match[1]) return null;
+  const items = match[1]
+    .split("\n")
+    .map((l) => l.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : null;
+}
+
+// Extract the "Test plan:" block from a bot-posted test summary comment.
+// Returns the item list, or null if not found.
+export function extractTestPlanFromComment(body: string): string[] | null {
+  const match = body.match(/^Test plan:\n((?:[-*] .+(?:\n|$))+)/m);
+  if (!match || !match[1]) return null;
+  const items = match[1]
+    .split("\n")
+    .map((l) => l.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : null;
+}
