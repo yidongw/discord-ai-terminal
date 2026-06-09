@@ -29,7 +29,7 @@ export async function postPrComment(repo: string, prNumber: number, body: string
   }
 }
 
-export async function getPr(repo: string, prNumber: number): Promise<{ title: string; body: string; head: { ref: string } } | null> {
+export async function getPr(repo: string, prNumber: number): Promise<{ title: string; body: string; head: { ref: string }; merged: boolean; state: string } | null> {
   const token = githubToken();
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
@@ -66,11 +66,14 @@ export async function getPrComments(
 // Parse the "## Test plan" section from a PR description.
 // Returns the bullet items, or null if no test plan section exists.
 export function parseTestPlanFromBody(body: string): string[] | null {
-  const match = body.match(/^##\s*test\s+plan\s*\r?\n([\s\S]+?)(?=\r?\n##\s|\s*$)/im);
-  if (!match || !match[1]) return null;
-  const items = match[1]
+  // Split on section boundaries so we don't bleed into adjacent ## sections.
+  const sections = body.split(/\n(?=##\s)/);
+  const testSection = sections.find((s) => /^##\s*test\s+plan/i.test(s));
+  if (!testSection) return null;
+  const items = testSection
     .split("\n")
-    .map((l) => l.replace(/^[-*]\s*/, "").trim())
+    .slice(1) // skip the "## Test plan" heading line
+    .map((l) => l.replace(/^[-*]\s*(?:\[[ xX]\]\s*)?/, "").trim()) // strip bullets and GH task-list checkboxes
     .filter(Boolean);
   return items.length > 0 ? items : null;
 }
