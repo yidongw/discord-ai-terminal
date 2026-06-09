@@ -161,9 +161,8 @@ export class DiscordBot {
     } else {
       console.log(`[cleanup] thread ${threadId} ${reason}: kept (${result.reason})`);
       if (thread) {
-        // Closed but the worktree was deliberately kept (uncommitted/unmerged
-        // work) — that's the "locked" state, not a clean close.
-        if (archived) void setThreadStatus(thread, "locked", { archived: true });
+        // Worktree kept — present buttons so the user can force-close or cancel.
+        // Don't change the thread status yet; that happens when a button is clicked.
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
             .setCustomId(`worktree_force_close_${thread.id}`)
