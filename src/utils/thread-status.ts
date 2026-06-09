@@ -53,6 +53,39 @@ export function applyStatusEmoji(name: string, status: ThreadStatus): string {
 }
 
 /**
+ * Return a thread name body (no emoji) with the agent prefix replaced by the
+ * PR number. Works whether or not `name` has a leading status emoji.
+ *
+ *   "🔄 cc • Fix auth bug"  →  "#20 • Fix auth bug"
+ *   "cc • Fix auth bug"     →  "#20 • Fix auth bug"
+ */
+export function threadNameWithPr(name: string, prNumber: number): string {
+  const stripped = stripStatusEmoji(name);
+  const sep = stripped.indexOf(" • ");
+  const title = sep !== -1 ? stripped.slice(sep + 3) : stripped;
+  return `#${prNumber} • ${title}`;
+}
+
+/**
+ * Inject the PR number into a thread's name, replacing the agent prefix while
+ * preserving the status emoji. Best-effort: never throws.
+ */
+export async function setPrInThreadName(thread: any, prNumber: number): Promise<void> {
+  if (!thread || typeof thread.setName !== "function") return;
+  try {
+    const current: string = thread.name ?? "";
+    const base = threadNameWithPr(current, prNumber);
+    const entry = Object.entries(STATUS_EMOJI).find(([, e]) => current.startsWith(e));
+    const status = (entry?.[0] as ThreadStatus) ?? "working";
+    const next = applyStatusEmoji(base, status);
+    if (next === current) return;
+    await thread.setName(next);
+  } catch (err) {
+    console.error("[thread-status] failed to inject PR number:", err);
+  }
+}
+
+/**
  * Set a thread's status emoji prefix. Best-effort: never throws (Discord rename
  * failures are logged and swallowed) so it can be fire-and-forgotten from hot
  * paths. No-ops when the emoji is already applied, avoiding a pointless rename.
