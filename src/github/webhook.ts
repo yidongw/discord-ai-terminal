@@ -15,9 +15,14 @@ export class GitHubWebhookServer {
       async fetch(req) {
         if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
 
+        const body = await req.text();
+
+        if (new URL(req.url).pathname === "/preview-ready") {
+          return handlePreviewReady(handler, req, body);
+        }
+
         const event = req.headers.get("x-github-event");
         const sig = req.headers.get("x-hub-signature-256") ?? "";
-        const body = await req.text();
 
         if (!await verifySignature(body, sig)) {
           console.warn("[webhook] Invalid signature");
@@ -45,6 +50,31 @@ export class GitHubWebhookServer {
   }
 }
 
+async function handlePreviewReady(handler: GitHubHandler, req: Request, body: string): Promise<Response> {
+  const secret = process.env.PREVIEW_READY_SECRET;
+  if (secret) {
+    const auth = req.headers.get("authorization") ?? "";
+    if (auth !== `Bearer ${secret}`) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+  }
+
+  let payload: any;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return new Response("Bad Request", { status: 400 });
+  }
+
+  const { repo, prNumber, previewUrl } = payload;
+  if (!repo || !prNumber || !previewUrl) {
+    return new Response("Missing repo, prNumber, or previewUrl", { status: 400 });
+  }
+
+  await handler.handlePreviewUrl(repo, Number(prNumber), previewUrl);
+  return new Response("OK");
+}
+
 async function dispatch(handler: GitHubHandler, event: string, payload: any): Promise<void> {
   const repo: string = payload.repository?.full_name;
   if (!repo) return;
@@ -55,16 +85,21 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
     return;
   }
 
-  if (event === "issue_comment" && payload.action === "created") {
-    // Ignore bot comments to prevent loops
-    if (payload.comment?.user?.type === "Bot") return;
-
+  if (event === "issue_comment" && (payload.action === "created" || payload.action === "edited")) {
     const prNumber: number = payload.issue?.number;
     if (!payload.issue?.pull_request || !prNumber) return;
 
     const body: string = (payload.comment?.body ?? "").trim();
+    const isBot = payload.comment?.user?.type === "Bot";
 
-    const previewUrlFromComment = extractPreviewUrl(payload);
+    // When a deployment bot posts a preview URL, forward it to the Discord thread.
+    if (isBot) {
+      const url = extractPreviewUrl(body);
+      if (url) await handler.handlePreviewUrl(repo, prNumber, url);
+      return;
+    }
+
+    const previewUrlFromComment = extractPreviewUrl(body);
 
     if (body === "/skip-tests") {
       await handler.handleSkipTests(repo, prNumber);
@@ -116,12 +151,9 @@ function buildPreviewUrl(repo: string, prNumber: number): string {
   return `https://erp-pr-${prNumber}.foxhole.bot`;
 }
 
-// Try to extract a preview URL from recent PR comments via the GitHub API
-function extractPreviewUrl(_payload: any): string | null {
-  // The preview URL comment is posted by the preview.yml workflow
-  // For now we rely on buildPreviewUrl; a future enhancement could
-  // fetch comment history to support arbitrary URL patterns
-  return null;
+function extractPreviewUrl(body: string): string | null {
+  const match = PREVIEW_URL_RE.exec(body);
+  return match ? match[0]! : null;
 }
 
 async function verifySignature(body: string, sig: string): Promise<boolean> {
