@@ -64,23 +64,47 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
 
     const body: string = (payload.comment?.body ?? "").trim();
 
-    // Extract preview URL from earlier comments if needed — passed via env for now
-    // The preview URL is deterministic: https://erp-pr-{N}.foxhole.bot
     const previewUrlFromComment = extractPreviewUrl(payload);
 
-    if (body === "/cc" || body === "/cx") {
-      const agentKey = body.slice(1); // "cc" or "cx"
-      const previewUrl = previewUrlFromComment ?? buildPreviewUrl(repo, prNumber);
-      await handler.handleComment(repo, prNumber, previewUrl, agentKey);
+    if (body === "/cc skip-tests") {
+      await handler.handleSkipTests(repo, prNumber);
       return;
     }
 
-    if (body.startsWith("/cc fix:")) {
-      const fixBody = body.slice("/cc fix:".length).trim();
-      await handler.handleComment(repo, prNumber, "", "cc", fixBody);
+    if (body === "/cc enable-tests") {
+      await handler.handleEnableTests(repo, prNumber);
       return;
     }
+
+    // /cc fix:\n- bug1\n- bug2
+    const fixMatch = /^\/cc fix:\n([\s\S]+)/.exec(body);
+    if (fixMatch) {
+      const fixItems = parseItems(fixMatch[1]!);
+      if (fixItems.length > 0) {
+        await handler.handleComment(repo, prNumber, "", "cc", fixItems);
+        return;
+      }
+    }
+
+    // /cc test:\n- item1\n- item2  or  /cx test:\n...
+    const testMatch = /^\/(cc|cx)\s+test:\n([\s\S]+)/.exec(body);
+    if (testMatch) {
+      const agentKey = testMatch[1]!;
+      const testItems = parseItems(testMatch[2]!);
+      if (testItems.length > 0) {
+        const previewUrl = previewUrlFromComment ?? buildPreviewUrl(repo, prNumber);
+        await handler.handleComment(repo, prNumber, previewUrl, agentKey, undefined, testItems);
+        return;
+      }
+    }
   }
+}
+
+function parseItems(text: string): string[] {
+  return text
+    .split("\n")
+    .map((l) => l.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
 }
 
 // Derive the preview URL from the known pattern for this repo.
