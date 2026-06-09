@@ -15,7 +15,7 @@ export const codexAgent: AgentRunner = {
     try { msg = JSON.parse(line); } catch { return null; }
 
     if (msg.type === "thread.started") {
-      return { kind: "init", sessionId: msg.thread_id, model: "Codex", cwd: workDir };
+      return { kind: "init", sessionId: msg.thread_id, model: msg.model ?? "Codex", cwd: workDir };
     }
 
     if (msg.type === "item.started" && msg.item?.type === "command_execution") {
@@ -33,7 +33,7 @@ export const codexAgent: AgentRunner = {
       }
 
       if (item?.type === "command_execution") {
-        const out = String(item.aggregated_output ?? "").split("\n")[0].slice(0, 120);
+        const out = String(item.aggregated_output ?? "").split("\n")[0]?.slice(0, 120) ?? "";
         const isError = item.status === "failed" || (typeof item.exit_code === "number" && item.exit_code !== 0);
         return { kind: "tool_done", id: item.id, preview: out, isError };
       }
