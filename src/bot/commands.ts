@@ -26,6 +26,10 @@ export class CommandHandler {
   getCommands() {
     return [
       new SlashCommandBuilder()
+        .setName("test")
+        .setDescription("Build a test plan and run the cx test agent for the PR linked to this thread"),
+
+      new SlashCommandBuilder()
         .setName("stop")
         .setDescription("Kill the running agent in this thread"),
 
