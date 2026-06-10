@@ -19,6 +19,8 @@ export type AgentEvent =
   | { kind: "tool_start"; id: string; label: string; name?: string }
   | { kind: "tool_done";  id: string; preview: string; isError: boolean }
   | { kind: "done";       turns: number | null; cost: number | null; tokens: string | null }
+  | { kind: "session_limit"; turns: number | null }
+  | { kind: "rate_limit";  resetAt: number; resetLabel: string }
   | { kind: "error";      message: string };
 
 export interface AgentParseContext {

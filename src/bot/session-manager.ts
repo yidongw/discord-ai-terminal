@@ -9,6 +9,11 @@ import { mainRepoOf, removeWorktree, type RemoveResult } from "../utils/path-res
 import { setThreadStatus } from "../utils/thread-status.js";
 import { escapeShellString, type DiscordContext } from "../utils/shell.js";
 import { RunTailer, isPidAlive } from "./run-tailer.js";
+import { parseSessionLimitReset } from "../utils/session-limit-reset.js";
+import {
+  SESSION_LIMIT_CONTINUATION_PROMPT,
+  registerSessionLimitWakeup,
+} from "./session-limit-wakeup.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -72,6 +77,16 @@ interface ActiveSession {
   // Action to dispatch when the run finishes (e.g. post a PR summary). The text
   // it needs is re-read from the log at finalize, so it works after a restart.
   completion?: CompletionAction;
+  // Discord context from the run that started this session — reused when cc auto-
+  // resumes after hitting a limit.
+  discordContext?: DiscordContext;
+  // Subscription usage limit ("resets 3:45pm") — scheduler wakes cc at reset time.
+  pendingUsageLimitResume?: boolean;
+  usageLimitResetAt?: number;
+  usageLimitResetLabel?: string;
+  usageLimitNoticeSent?: boolean;
+  // Per-run turn cap (error_max_turns) — immediate --resume when no usage limit.
+  pendingTurnLimitResume?: boolean;
 }
 
 export class SessionManager {
@@ -340,6 +355,7 @@ export class SessionManager {
       done: false,
       stopping: false,
       completion: opts?.completion,
+      discordContext,
     };
     this.active.set(threadId, session);
 
@@ -453,6 +469,36 @@ export class SessionManager {
     this.db.deleteActiveRun(session.runId);
     this.removeLog(session.logPath);
 
+    if (session.pendingUsageLimitResume && session.usageLimitResetAt && session.agentKey === "cc") {
+      this.scheduleUsageLimitResume(threadId, session);
+    } else if (session.pendingTurnLimitResume && session.agentKey === "cc") {
+      try {
+        const ctx = session.discordContext ?? {
+          channelId: threadId,
+          channelName: session.thread?.name ?? "thread",
+          userId: "",
+          messageId: "",
+        };
+        await this.runAgent(
+          threadId,
+          session.channelId,
+          session.thread,
+          session.agentKey,
+          session.workDir,
+          SESSION_LIMIT_CONTINUATION_PROMPT,
+          ctx
+        );
+      } catch (err) {
+        console.error(`[turn-limit] auto-resume failed for ${threadId}:`, err);
+        session.outbox.enqueue(() =>
+          session.thread.send({
+            embeds: [embed("❌ Resume failed", String((err as Error).message ?? err), 0xff0000)],
+          })
+        );
+        await session.outbox.drain();
+      }
+    }
+
     // Guard against a newer run having replaced this session in the map.
     if (this.active.get(threadId) === session) this.releaseThread(threadId);
   }
@@ -477,6 +523,7 @@ export class SessionManager {
       if (event.kind === "text") text += event.content;
       else if (event.kind === "_sdk_assistant" && event.content) text += event.content;
       else if (event.kind === "done" || event.kind === "error") completed = true;
+      // session_limit is intentionally not "completed" — cc auto-resumes instead.
     }
     return { text, completed };
   }
@@ -557,6 +604,12 @@ export class SessionManager {
       // The completion action was persisted, so a PR run that survives a restart
       // still posts its summary comment when it finishes — see finalizeRun.
       completion: parseCompletion(run.completionJson),
+      discordContext: {
+        channelId: run.threadId,
+        channelName: thread.name ?? "thread",
+        userId: "",
+        messageId: "",
+      },
     };
     this.active.set(run.threadId, session);
     this.getTyping(run.threadId, thread).start();
@@ -580,6 +633,51 @@ export class SessionManager {
     this.startTailer(run.threadId, session, agent, run.stdoutOffset, () => isPidAlive(run.pid));
   }
 
+  // Arm a one-shot scheduled task that re-invokes cc when the subscription usage
+  // window resets. Replaces any prior session-limit wakeup for this thread.
+  private scheduleUsageLimitResume(threadId: string, session: ActiveSession): void {
+    const task = registerSessionLimitWakeup(this.db, {
+      threadId,
+      channelId: session.channelId,
+      workDir: session.workDir,
+      userId: session.discordContext?.userId ?? "",
+      resetAt: session.usageLimitResetAt!,
+    });
+    console.log(
+      `[session-limit] scheduled resume for ${threadId} at ${new Date(task.nextRunAt).toISOString()}`
+    );
+  }
+
+  // Detect "You've hit your session limit · resets …" in streamed text/errors.
+  private noteUsageLimitReset(session: ActiveSession, text: string): void {
+    if (session.agentKey !== "cc" || session.pendingUsageLimitResume) return;
+    const parsed = parseSessionLimitReset(text);
+    if (!parsed) return;
+    session.pendingUsageLimitResume = true;
+    session.pendingTurnLimitResume = false;
+    session.usageLimitResetAt = parsed.resetAt;
+    session.usageLimitResetLabel = parsed.resetLabel;
+  }
+
+  private enqueueUsageLimitNotice(session: ActiveSession): void {
+    if (!session.pendingUsageLimitResume || !session.usageLimitResetLabel || session.usageLimitNoticeSent) {
+      return;
+    }
+    session.usageLimitNoticeSent = true;
+    const label = session.usageLimitResetLabel;
+    session.outbox.enqueue(() =>
+      session.thread.send({
+        embeds: [
+          embed(
+            "⏸️ Session limit reached",
+            `Usage limit hit — will resume at **${label}** and continue where you left off.`,
+            0xffd700
+          ),
+        ],
+      })
+    );
+  }
+
   // Translates a parsed agent event into ordered outbox operations. This is
   // synchronous: it only enqueues work, it never awaits Discord, so stdout
   // parsing stays ahead and the outbox handles delivery + ordering + batching.
@@ -596,7 +694,24 @@ export class SessionManager {
     }
 
     if (event.kind === "text") {
+      this.noteUsageLimitReset(session, event.content);
       outbox.pushText(event.content);
+      return;
+    }
+
+    if (event.kind === "rate_limit") {
+      if (session.agentKey !== "cc") return;
+      if (!session.pendingUsageLimitResume) {
+        session.pendingUsageLimitResume = true;
+        session.pendingTurnLimitResume = false;
+        session.usageLimitResetAt = event.resetAt;
+        session.usageLimitResetLabel = event.resetLabel;
+        this.enqueueUsageLimitNotice(session);
+        this.stopProcess(session);
+      } else {
+        session.usageLimitResetAt = event.resetAt;
+        session.usageLimitResetLabel = event.resetLabel;
+      }
       return;
     }
 
@@ -653,7 +768,42 @@ export class SessionManager {
       return;
     }
 
+    if (event.kind === "session_limit") {
+      if (session.agentKey === "cc") {
+        if (session.pendingUsageLimitResume) {
+          this.enqueueUsageLimitNotice(session);
+        } else {
+          session.pendingTurnLimitResume = true;
+          const turns = event.turns !== null ? `${event.turns} turns` : "turn limit";
+          outbox.enqueue(() =>
+            thread.send({
+              embeds: [
+                embed(
+                  "⏸️ Turn limit reached",
+                  `Hit the ${turns} cap — continuing where you left off.`,
+                  0xffd700
+                ),
+              ],
+            })
+          );
+        }
+      } else {
+        session.done = true;
+        outbox.enqueue(() =>
+          thread.send({ embeds: [embed("❌ Failed", "error_max_turns", 0xff0000)] })
+        );
+      }
+      this.stopProcess(session);
+      return;
+    }
+
     if (event.kind === "error") {
+      this.noteUsageLimitReset(session, event.message);
+      if (session.pendingUsageLimitResume) {
+        this.enqueueUsageLimitNotice(session);
+        this.stopProcess(session);
+        return;
+      }
       session.done = true;
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("❌ Failed", event.message, 0xff0000)] })
@@ -667,6 +817,11 @@ export class SessionManager {
     if (raw.kind === "_sdk_assistant") {
       this.db.updateSessionId(threadId, raw.sessionId);
       if (raw.content?.trim()) {
+        this.noteUsageLimitReset(session, raw.content);
+        if (session.pendingUsageLimitResume) {
+          this.enqueueUsageLimitNotice(session);
+          this.stopProcess(session);
+        }
         outbox.pushText(raw.content);
       }
       for (const tool of (raw.tools ?? [])) {
