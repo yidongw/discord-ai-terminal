@@ -71,6 +71,29 @@ async function main() {
   // (or an incoming message) can spawn a new run onto the same thread.
   await sessionManager.reattachRuns(bot.client);
 
+  // If /update triggered this restart, edit the "Restarting…" message to confirm.
+  const restartNote = sessionManager.getDb().getRestartNotification();
+  if (restartNote) {
+    sessionManager.getDb().clearRestartNotification();
+    try {
+      const ch = await bot.client.channels.fetch(restartNote.channelId);
+      if (ch?.isTextBased()) {
+        const msg = await (ch as any).messages.fetch(restartNote.messageId);
+        const { EmbedBuilder } = await import("discord.js");
+        await msg.edit({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("✅ Restart complete")
+              .setDescription("Bot is back online.")
+              .setColor(0x00ff00),
+          ],
+        });
+      }
+    } catch (err) {
+      console.error("[update] failed to edit restart notification:", err);
+    }
+  }
+
   scheduler.start();
   // Resumes watching any background jobs that were running before a restart;
   // ones that finished while the bot was down get detected and wake cc now.

@@ -333,7 +333,14 @@ export class CommandHandler {
       return;
     }
 
-    await i.editReply({
+    if (pullOutput.includes("Already up to date")) {
+      await i.editReply({
+        embeds: [embed("✅ Already up to date", "Nothing to pull — already on the latest commit.", 0x00ff00)],
+      });
+      return;
+    }
+
+    const msg = await i.editReply({
       embeds: [
         embed(
           "🔄 Restarting…",
@@ -342,6 +349,8 @@ export class CommandHandler {
         ),
       ],
     });
+
+    this.sessionManager.getDb().setRestartNotification(i.channelId, msg.id);
 
     // Spawn the restart detached so it fires after Discord receives the reply.
     // The service manager kills and relaunches this process, so nothing after
