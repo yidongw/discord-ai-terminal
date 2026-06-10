@@ -86,7 +86,11 @@ export class Scheduler {
       // 10003 = Unknown Channel → the thread no longer exists.
       if (err?.code === 10003) {
         console.error(`[scheduler] thread ${task.threadId} gone, disabling task ${task.id}`);
-        this.db.setScheduledTaskEnabled(task.id, false);
+        if (task.oneshot) {
+          this.db.deleteScheduledTask(task.id);
+        } else {
+          this.db.setScheduledTaskEnabled(task.id, false);
+        }
       } else {
         console.error(`[scheduler] transient fetch error for ${task.threadId}, will retry:`, err);
         this.db.rescheduleScheduledTask(task.id, now + BUSY_RETRY_MS);
@@ -95,14 +99,25 @@ export class Scheduler {
     }
     if (!thread || (thread.type !== ChannelType.PublicThread && thread.type !== ChannelType.PrivateThread)) {
       console.error(`[scheduler] thread ${task.threadId} missing/not a thread, disabling task ${task.id}`);
-      this.db.setScheduledTaskEnabled(task.id, false);
+      if (task.oneshot) {
+        this.db.deleteScheduledTask(task.id);
+      } else {
+        this.db.setScheduledTaskEnabled(task.id, false);
+      }
       return;
     }
 
     const intervalSeconds = Math.max(task.intervalSeconds, MIN_INTERVAL_SECONDS);
-    // Arm the next run BEFORE launching so a crash mid-run can't double-fire, and
-    // so the run's own duration doesn't drift the schedule.
-    this.db.markScheduledTaskRun(task.id, now, now + intervalSeconds * 1000);
+
+    if (task.oneshot) {
+      // Disable immediately so a restart between here and the runAgent call can't
+      // double-fire. The row is deleted after runAgent returns successfully.
+      this.db.setScheduledTaskEnabled(task.id, false);
+    } else {
+      // Arm the next run BEFORE launching so a crash mid-run can't double-fire, and
+      // so the run's own duration doesn't drift the schedule.
+      this.db.markScheduledTaskRun(task.id, now, now + intervalSeconds * 1000);
+    }
 
     const discordContext = {
       channelId: task.threadId,
@@ -111,17 +126,30 @@ export class Scheduler {
       messageId: "",
     };
 
-    await thread.send({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("⏰ Scheduled run")
-          .setDescription(
-            `${task.label ? `**${task.label}**\n` : ""}\`${truncate(task.prompt, 300)}\`` +
-              `\n*every ${formatInterval(intervalSeconds)} · run #${task.runCount + 1}*`
-          )
-          .setColor(0x9b59b6),
-      ],
-    });
+    if (task.oneshot) {
+      await thread.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("⏰ Wakeup")
+            .setDescription(
+              `${task.label ? `**${task.label}**\n` : ""}\`${truncate(task.prompt, 300)}\``
+            )
+            .setColor(0x3498db),
+        ],
+      });
+    } else {
+      await thread.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("⏰ Scheduled run")
+            .setDescription(
+              `${task.label ? `**${task.label}**\n` : ""}\`${truncate(task.prompt, 300)}\`` +
+                `\n*every ${formatInterval(intervalSeconds)} · run #${task.runCount + 1}*`
+            )
+            .setColor(0x9b59b6),
+        ],
+      });
+    }
 
     await this.sessionManager.runAgent(
       task.threadId,
@@ -132,6 +160,10 @@ export class Scheduler {
       task.prompt,
       discordContext
     );
+
+    if (task.oneshot) {
+      this.db.deleteScheduledTask(task.id);
+    }
   }
 }
 
