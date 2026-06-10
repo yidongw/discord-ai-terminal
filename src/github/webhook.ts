@@ -69,6 +69,7 @@ async function handlePreviewReady(handler: GitHubHandler, req: Request, body: st
     return new Response("Missing repo, prNumber, or previewUrl", { status: 400 });
   }
 
+  console.log(`[webhook] /preview-ready: repo=${repo} prNumber=${prNumber} previewUrl=${previewUrl}`);
   await handler.handlePreviewUrl(repo, Number(prNumber), previewUrl);
   return new Response("OK");
 }
