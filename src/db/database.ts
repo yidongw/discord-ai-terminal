@@ -3,14 +3,17 @@ import * as path from "path";
 import {
   type CcModel,
   type CodexModel,
+  type CsModel,
   DEFAULT_CC_MODEL,
   DEFAULT_CODEX_MODEL,
+  DEFAULT_CS_MODEL,
   normalizeCcModel,
   normalizeCodexModel,
+  normalizeCsModel,
 } from "../utils/models.js";
 
 export type PermissionMode = "auto" | "plan" | "approve";
-export type { CcModel, CodexModel };
+export type { CcModel, CodexModel, CsModel };
 // Back-compat alias used by agent opts
 export type ClaudeModel = CcModel;
 
@@ -141,6 +144,11 @@ export class DatabaseManager {
       CREATE TABLE IF NOT EXISTS channel_codex_models (
         channel_id  TEXT PRIMARY KEY,
         model       TEXT NOT NULL DEFAULT 'gpt-5.4-mini'
+      );
+
+      CREATE TABLE IF NOT EXISTS channel_cs_models (
+        channel_id  TEXT PRIMARY KEY,
+        model       TEXT NOT NULL DEFAULT 'auto'
       );
 
       CREATE TABLE IF NOT EXISTS channel_hidden_tools (
@@ -355,6 +363,19 @@ export class DatabaseManager {
   setCodexModel(channelId: string, model: CodexModel): void {
     this.db
       .prepare(`INSERT OR REPLACE INTO channel_codex_models (channel_id, model) VALUES (?, ?)`)
+      .run(channelId, model);
+  }
+
+  getCsModel(channelId: string): CsModel {
+    const row = this.db
+      .prepare(`SELECT model FROM channel_cs_models WHERE channel_id = ?`)
+      .get(channelId) as any;
+    return normalizeCsModel(row?.model);
+  }
+
+  setCsModel(channelId: string, model: CsModel): void {
+    this.db
+      .prepare(`INSERT OR REPLACE INTO channel_cs_models (channel_id, model) VALUES (?, ?)`)
       .run(channelId, model);
   }
 

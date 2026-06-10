@@ -13,8 +13,8 @@ import {
 import { SessionManager } from "./session-manager.js";
 import { DEFAULT_HIDDEN_TOOLS, KNOWN_TOOLS, toolIsHidden } from "../db/database.js";
 import { setThreadStatus } from "../utils/thread-status.js";
-import type { PermissionMode, CcModel, CodexModel } from "../db/database.js";
-import { CC_MODEL_CHOICES, CODEX_MODEL_CHOICES } from "../utils/models.js";
+import type { PermissionMode, CcModel, CodexModel, CsModel } from "../db/database.js";
+import { CC_MODEL_CHOICES, CODEX_MODEL_CHOICES, CS_MODEL_CHOICES } from "../utils/models.js";
 
 export class CommandHandler {
   constructor(
@@ -68,7 +68,7 @@ export class CommandHandler {
 
       new SlashCommandBuilder()
         .setName("model")
-        .setDescription("Set the model for cc or codex in this channel")
+        .setDescription("Set the model for cc, codex, or cs in this channel")
         .addSubcommand((s) =>
           s
             .setName("cc")
@@ -91,6 +91,18 @@ export class CommandHandler {
                 .setDescription("Codex model to use")
                 .setRequired(true)
                 .addChoices(...CODEX_MODEL_CHOICES)
+            )
+        )
+        .addSubcommand((s) =>
+          s
+            .setName("cs")
+            .setDescription("Set the Cursor agent model for this channel")
+            .addStringOption((o) =>
+              o
+                .setName("model")
+                .setDescription("Cursor model to use")
+                .setRequired(true)
+                .addChoices(...CS_MODEL_CHOICES)
             )
         ),
 
@@ -240,6 +252,7 @@ export class CommandHandler {
             { name: "Status", value: running ? "🟢 Running" : "⚫ Idle", inline: true },
             { name: "CC Model", value: db.getModel(channelId), inline: true },
             { name: "Codex Model", value: db.getCodexModel(channelId), inline: true },
+            { name: "CS Model", value: db.getCsModel(channelId), inline: true },
             { name: "Session ID", value: session.sessionId ?? "none", inline: false },
             { name: "Working Dir", value: `\`${session.workDir}\``, inline: false }
           )
@@ -266,6 +279,15 @@ export class CommandHandler {
       db.setModel(channelId, model);
       await i.reply({
         embeds: [embed("✅ CC Model Set", `Claude Code model set to **${model}** for this channel.`, 0x00ff00)],
+      });
+      return;
+    }
+
+    if (sub === "cs") {
+      const model = i.options.getString("model", true) as CsModel;
+      db.setCsModel(channelId, model);
+      await i.reply({
+        embeds: [embed("✅ CS Model Set", `Cursor agent model set to **${model}** for this channel.`, 0x00ff00)],
       });
       return;
     }

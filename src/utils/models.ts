@@ -19,11 +19,23 @@ export const CODEX_MODEL_CHOICES = [
   { name: "GPT-5.4", value: "gpt-5.4" },
 ] as const;
 
+export const CS_MODEL_CHOICES = [
+  { name: "auto — cursor's automatic selection (default)", value: "auto" },
+  { name: "Composer 2.5 Fast", value: "composer-2.5-fast" },
+  { name: "Composer 2.5", value: "composer-2.5" },
+  { name: "Opus 4.8", value: "claude-opus-4-8-high" },
+  { name: "GPT-5.5", value: "gpt-5.5-medium" },
+  { name: "Sonnet 4.6", value: "claude-4.6-sonnet-medium" },
+  { name: "Codex 5.3", value: "gpt-5.3-codex" },
+] as const;
+
 export type CcModel = (typeof CC_MODEL_CHOICES)[number]["value"];
 export type CodexModel = (typeof CODEX_MODEL_CHOICES)[number]["value"];
+export type CsModel = (typeof CS_MODEL_CHOICES)[number]["value"];
 
 export const DEFAULT_CC_MODEL: CcModel = "claude-sonnet-4-6";
 export const DEFAULT_CODEX_MODEL: CodexModel = "gpt-5.4-mini";
+export const DEFAULT_CS_MODEL: CsModel = "auto";
 
 const CC_MODEL_VALUES = new Set<string>(CC_MODEL_CHOICES.map((c) => c.value));
 const CODEX_MODEL_VALUES = new Set<string>(CODEX_MODEL_CHOICES.map((c) => c.value));
@@ -45,4 +57,12 @@ export function normalizeCodexModel(stored: string | undefined | null): CodexMod
   if (!stored) return DEFAULT_CODEX_MODEL;
   if (CODEX_MODEL_VALUES.has(stored)) return stored as CodexModel;
   return DEFAULT_CODEX_MODEL;
+}
+
+const CS_MODEL_VALUES = new Set<string>(CS_MODEL_CHOICES.map((c) => c.value));
+
+export function normalizeCsModel(stored: string | undefined | null): CsModel {
+  if (!stored) return DEFAULT_CS_MODEL;
+  if (CS_MODEL_VALUES.has(stored)) return stored as CsModel;
+  return DEFAULT_CS_MODEL;
 }
