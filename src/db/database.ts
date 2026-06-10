@@ -103,8 +103,6 @@ export interface ScheduledTask {
   lastRunAt?: number;
   runCount: number;
   maxRuns?: number;
-  /** True for one-shot wakeups (fire once then delete). */
-  oneshot?: boolean;
   createdAt: number;
 }
 
@@ -253,13 +251,6 @@ export class DatabaseManager {
     // Drop the obsolete all-or-nothing tool-visibility table (replaced by the
     // per-tool channel_hidden_tools table).
     this.db.exec(`DROP TABLE IF EXISTS channel_tool_visibility`);
-
-    const taskCols = (this.db.prepare(`PRAGMA table_info(scheduled_tasks)`).all() as any[]).map(
-      (c) => c.name as string
-    );
-    if (!taskCols.includes("oneshot")) {
-      this.db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN oneshot INTEGER NOT NULL DEFAULT 0`);
-    }
 
     const prCols = (this.db.prepare(`PRAGMA table_info(pr_threads)`).all() as any[]).map(
       (c) => c.name as string
@@ -418,7 +409,6 @@ export class DatabaseManager {
       lastRunAt: row.last_run_at ?? undefined,
       runCount: row.run_count,
       maxRuns: row.max_runs ?? undefined,
-      oneshot: !!row.oneshot,
       createdAt: row.created_at,
     };
   }
@@ -428,8 +418,8 @@ export class DatabaseManager {
       .prepare(
         `INSERT INTO scheduled_tasks
          (id, thread_id, channel_id, agent, work_dir, user_id, prompt, label,
-          interval_seconds, next_run_at, enabled, last_run_at, run_count, max_runs, oneshot, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          interval_seconds, next_run_at, enabled, last_run_at, run_count, max_runs, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         task.id,
@@ -446,7 +436,6 @@ export class DatabaseManager {
         task.lastRunAt ?? null,
         task.runCount,
         task.maxRuns ?? null,
-        task.oneshot ? 1 : 0,
         task.createdAt
       );
   }
