@@ -316,19 +316,37 @@ export class CommandHandler {
 
     const repoDir = path.resolve(import.meta.dir, "../..");
 
+    // Fetch then hard-reset so divergent local commits never block the update.
     let pullOutput: string;
     try {
-      const proc = Bun.spawn(["git", "-C", repoDir, "pull"], { stderr: "pipe" });
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
+      const fetch = Bun.spawn(["git", "-C", repoDir, "fetch", "origin", "main"], { stderr: "pipe" });
+      const fetchErr = await new Response(fetch.stderr).text();
+      await fetch.exited;
+      if (fetch.exitCode !== 0) throw new Error(fetchErr.trim() || "git fetch failed");
+
+      // Check whether we're already at origin/main before resetting.
+      const revLocal = Bun.spawn(["git", "-C", repoDir, "rev-parse", "HEAD"], { stderr: "pipe" });
+      const revRemote = Bun.spawn(["git", "-C", repoDir, "rev-parse", "origin/main"], { stderr: "pipe" });
+      const [localSha, remoteSha] = await Promise.all([
+        new Response(revLocal.stdout).text(),
+        new Response(revRemote.stdout).text(),
       ]);
-      await proc.exited;
-      pullOutput = (stdout + stderr).trim() || "Already up to date.";
-      if (proc.exitCode !== 0) throw new Error(pullOutput);
+
+      if (localSha.trim() === remoteSha.trim()) {
+        pullOutput = "Already up to date.";
+      } else {
+        const reset = Bun.spawn(["git", "-C", repoDir, "reset", "--hard", "origin/main"], { stderr: "pipe" });
+        const [resetOut, resetErr] = await Promise.all([
+          new Response(reset.stdout).text(),
+          new Response(reset.stderr).text(),
+        ]);
+        await reset.exited;
+        if (reset.exitCode !== 0) throw new Error((resetOut + resetErr).trim() || "git reset failed");
+        pullOutput = (resetOut + resetErr).trim() || "Reset to origin/main.";
+      }
     } catch (err: any) {
       await i.editReply({
-        embeds: [embed("❌ Pull Failed", `\`\`\`\n${String(err.message ?? err).slice(0, 1800)}\n\`\`\``, 0xff0000)],
+        embeds: [embed("❌ Update Failed", `\`\`\`\n${String(err.message ?? err).slice(0, 1800)}\n\`\`\``, 0xff0000)],
       });
       return;
     }
