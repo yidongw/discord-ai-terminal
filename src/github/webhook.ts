@@ -133,6 +133,7 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
 function parseItems(text: string): string[] {
   return text
     .split("\n")
+    .filter((l) => /^[-*]\s/.test(l))
     .map((l) => l.replace(/^[-*]\s*/, "").trim())
     .filter(Boolean);
 }
