@@ -9,8 +9,12 @@ import {
   postPrComment,
   getPr,
   getPrComments,
+  getPrCommits,
   parseTestPlanFromBody,
   extractTestPlanFromComment,
+  extractPassedItems,
+  extractLastFailedItems,
+  buildPreviewUrl,
 } from "./pr-comment.js";
 import { repoPathFor } from "../utils/path-resolver.js";
 import { setPrInThreadName } from "../utils/thread-status.js";
@@ -24,7 +28,6 @@ export class GitHubHandler {
 
   // Called when pull_request.{opened,reopened,ready_for_review} fires. Links the PR
   // to the maker thread, renames it with the PR number, and pins the PR URL.
-  // Tests are triggered later via handlePreviewUrl once the preview URL is ready.
   async handlePrOpened(repo: string, prNumber: number, headRef: string = ""): Promise<void> {
     await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
   }
@@ -80,127 +83,91 @@ export class GitHubHandler {
     return makerThreadId;
   }
 
-  // Called when issue_comment.created fires with a /cc or /cx command.
-  async handleComment(
-    repo: string,
-    prNumber: number,
-    previewUrl: string,
-    command: string, // "cc" or "cx"
-    fixItems?: string[], // bugs from "/cc fix:\n- item"
-    testItems?: string[] // checklist from "/cc test:\n- item"
-  ): Promise<void> {
+  // Called when the user types /test in a PR maker thread. Builds a smart test
+  // plan by combining the PR description, commit history, and previous test results
+  // (skipping items already marked PASS). Starts the cx test agent in a dedicated
+  // test thread named "🔄 #{pr-number} • Test".
+  async handleTestCommand(repo: string, prNumber: number, makerThread: ThreadChannel): Promise<void> {
     const repoName = repo.split("/")[1] ?? repo;
 
-    if (command === "cc" && fixItems?.length) {
-      await this.runFix(repo, repoName, prNumber, fixItems);
-    } else {
-      await this.runTest(repo, repoName, prNumber, previewUrl, command, testItems ?? []);
-    }
-  }
-
-  private async runTest(
-    repo: string,
-    repoName: string,
-    prNumber: number,
-    previewUrl: string,
-    agentKey: string,
-    testItems: string[]
-  ): Promise<void> {
-    const prState = this.sessionManager.getDb().getPrThreads(String(prNumber), repo);
-
-    if (prState?.testsSkipped) {
-      await postPrComment(
-        repo,
-        prNumber,
-        `⏭️ Tests are currently skipped for PR #${prNumber}. Post \`/enable-tests\` to re-enable.`
-      );
-      return;
-    }
-
-    if (testItems.length === 0) {
-      console.log(`[github] PR #${prNumber}: no test items, skipping`);
-      return;
-    }
-
     const pr = await getPr(repo, prNumber);
-    if (pr?.merged) {
-      console.log(`[github] PR #${prNumber}: already merged, skipping test`);
+    if (!pr) {
+      await makerThread.send(`❌ Could not fetch PR #${prNumber}.`);
       return;
     }
-    const prTitle = pr?.title ?? `PR #${prNumber}`;
-    const prBody = pr?.body ?? "";
-
-    const thread = await this.getOrCreateTestThread(repoName, prNumber);
-    if (!thread) {
-      console.error(`[github] Could not find/create test thread for PR #${prNumber}`);
+    if (pr.merged) {
+      await makerThread.send(`ℹ️ PR #${prNumber} is already merged.`);
       return;
     }
 
-    if (this.sessionManager.getDb().hasActiveRun(thread.id)) {
-      console.log(`[github] PR #${prNumber}: test already in progress, ignoring new trigger`);
+    const [comments, commits] = await Promise.all([
+      getPrComments(repo, prNumber),
+      getPrCommits(repo, prNumber),
+    ]);
+
+    // Build the combined item list: PR description + previously-failed items
+    const descriptionItems = parseTestPlanFromBody(pr.body ?? "") ?? [];
+    const failedItems = extractLastFailedItems(comments);
+    const allItems = [...new Set([...descriptionItems, ...failedItems])];
+
+    // Remove items that already PASS in any previous test summary
+    const passedItems = extractPassedItems(comments);
+    const pendingItems = allItems.filter((item) => !passedItems.has(item.toLowerCase()));
+
+    if (pendingItems.length === 0) {
+      if (allItems.length > 0) {
+        await makerThread.send(`✅ All ${allItems.length} test item${allItems.length !== 1 ? "s" : ""} are already passing!`);
+      } else {
+        await makerThread.send(`⚠️ No test plan found. Add a \`## Test plan\` section to the PR description.`);
+      }
       return;
     }
 
-    const prompt = buildTestPrompt(prNumber, previewUrl, prTitle, prBody, testItems);
+    const previewUrl = buildPreviewUrl(repo, prNumber);
+    const skippedCount = allItems.length - pendingItems.length;
+    const listText = pendingItems.map((t) => `- ${t}`).join("\n");
+    const skippedNote = skippedCount > 0 ? ` *(${skippedCount} already passing — skipped)*` : "";
+
+    // Post the test plan to the Discord maker thread
+    await makerThread.send(
+      `🧪 **Test plan for PR #${prNumber}**${skippedNote}\n\n${listText}\n\nPreview: ${previewUrl}`
+    );
+
+    // Post the test plan to the GitHub PR
+    await postPrComment(
+      repo,
+      prNumber,
+      `🧪 **Test plan** (${pendingItems.length} item${pendingItems.length !== 1 ? "s" : ""})\n\n${listText}\n\nPreview: ${previewUrl}`
+    );
+
+    // Get or create the test thread
+    const testThread = await this.getOrCreateTestThread(repoName, prNumber);
+    if (!testThread) {
+      await makerThread.send(`❌ Could not create test thread for PR #${prNumber}.`);
+      return;
+    }
+
+    if (this.sessionManager.hasActiveProcess(testThread.id)) {
+      await makerThread.send(`⚠️ A test is already running in the test thread for PR #${prNumber}.`);
+      return;
+    }
+
+    const commitHistory = commits
+      .slice(-10)
+      .map((c) => `- ${(c.commit.message.split("\n")[0] ?? "").slice(0, 80)}`)
+      .join("\n");
+
+    const prompt = buildTestPrompt(prNumber, previewUrl, pr.title, pr.body ?? "", pendingItems, commitHistory);
 
     await this.sessionManager.runAgent(
-      thread.id,
-      thread.parentId ?? thread.id,
-      thread,
-      agentKey,
+      testThread.id,
+      testThread.parentId ?? testThread.id,
+      testThread,
+      "cx",
       repoPathFor(repoName, this.baseFolder) ?? this.baseFolder,
       prompt,
       undefined,
-      { completion: { kind: "pr_test", repo, prNumber, agentKey } }
-    );
-  }
-
-  private async runFix(
-    repo: string,
-    repoName: string,
-    prNumber: number,
-    bugItems: string[]
-  ): Promise<void> {
-    const pr = await getPr(repo, prNumber);
-    if (pr?.merged) {
-      console.log(`[github] PR #${prNumber}: already merged, skipping fix`);
-      return;
-    }
-
-    const makerThreadId = this.sessionManager
-      .getDb()
-      .getPrThreads(String(prNumber), repo)?.makerThreadId;
-
-    let thread: ThreadChannel | null = null;
-    if (makerThreadId) {
-      thread = (await this.client.channels
-        .fetch(makerThreadId)
-        .catch(() => null)) as ThreadChannel | null;
-    }
-
-    if (!thread) {
-      thread = await this.getOrCreateTestThread(repoName, prNumber);
-    }
-
-    if (!thread) {
-      console.error(`[github] Could not find any thread for PR #${prNumber} fix`);
-      return;
-    }
-
-    const workDir =
-      this.sessionManager.getDb().getThreadSession(makerThreadId ?? "")?.workDir ??
-      repoPathFor(repoName, this.baseFolder) ??
-      this.baseFolder;
-
-    await this.sessionManager.runAgent(
-      thread.id,
-      thread.parentId ?? thread.id,
-      thread,
-      "cc",
-      workDir,
-      buildFixPrompt(prNumber, bugItems),
-      undefined,
-      { prNumber, completion: { kind: "pr_fix", repo, prNumber } }
+      { completion: { kind: "pr_test", repo, prNumber, agentKey: "cx" } }
     );
   }
 
@@ -209,33 +176,33 @@ export class GitHubHandler {
     if (action.kind === "pr_test") {
       const statusMatch = text.match(/STATUS:\s*(PASS|FAIL)/i);
       const status = statusMatch ? statusMatch[1]!.toUpperCase() : "UNKNOWN";
+      const icon = status === "PASS" ? "✅" : status === "FAIL" ? "❌" : "⚠️";
+      const agent = action.agentKey === "cx" ? "Codex" : "Claude Code";
 
-      // Post the summary. The Test plan: block is included when STATUS is FAIL
-      // so it's visible in the PR and readable by the bot for the next re-run.
       await postPrComment(
         action.repo,
         action.prNumber,
-        buildPrTestSummary(action.agentKey, action.prNumber, text)
+        `${icon} **${agent} test result — PR #${action.prNumber}**\n\n${text.trim()}`
       );
 
+      // On failure, ping the maker thread so the developer knows to fix and re-run /test
       if (status === "FAIL") {
-        // Post /cc fix: as its own comment so the webhook dispatch picks it up
-        // and triggers the fix run.
-        const fix = extractFixBlock(text);
-        if (fix) await postPrComment(action.repo, action.prNumber, fix);
-      }
-      // On PASS the loop ends — nothing more to post.
-    } else if (action.kind === "pr_fix") {
-      await postPrComment(action.repo, action.prNumber, buildPrFixSummary(action.prNumber, text));
-
-      // Auto-trigger re-test: read the Test plan from the last test summary comment.
-      const comments = await getPrComments(action.repo, action.prNumber);
-      for (let i = comments.length - 1; i >= 0; i--) {
-        const plan = extractTestPlanFromComment(comments[i]!.body);
-        if (plan && plan.length > 0) {
-          const items = plan.map((t) => `- ${t}`).join("\n");
-          await postPrComment(action.repo, action.prNumber, `/${defaultTestingAgent()} test:\n${items}`);
-          break;
+        const db = this.sessionManager.getDb();
+        const prThreads =
+          db.getPrThreads(String(action.prNumber), action.repo) ??
+          db.getPrThreads(String(action.prNumber), action.repo.split("/")[1] ?? action.repo);
+        const makerThreadId = prThreads?.makerThreadId;
+        if (makerThreadId) {
+          try {
+            const makerThread = await this.client.channels.fetch(makerThreadId).catch(() => null);
+            if (makerThread?.isThread()) {
+              await (makerThread as ThreadChannel).send(
+                `❌ Tests failed for PR #${action.prNumber}. Fix the issues and run \`/test\` again.`
+              );
+            }
+          } catch (err) {
+            console.error(`[github] PR #${action.prNumber}: failed to ping maker thread:`, err);
+          }
         }
       }
     }
@@ -270,39 +237,6 @@ export class GitHubHandler {
     } else {
       console.log(`[github] PR #${prNumber}: no thread found to post preview URL`);
     }
-
-    // Fetch PR to check merged state and extract test plan.
-    const pr = await getPr(repo, prNumber);
-    if (!pr || pr.merged) return;
-
-    const testPlan = parseTestPlanFromBody(pr.body ?? "");
-    if (!testPlan || testPlan.length === 0) {
-      console.log(`[github] PR #${prNumber}: no test plan in description, skipping test trigger`);
-      return;
-    }
-
-    const items = testPlan.map((t) => `- ${t}`).join("\n");
-    const agent = defaultTestingAgent();
-    console.log(`[github] PR #${prNumber}: posting /${agent} test: with ${testPlan.length} items`);
-    await postPrComment(repo, prNumber, `/${agent} test:\n${items}\n${previewUrl}`);
-  }
-
-  async handleSkipTests(repo: string, prNumber: number): Promise<void> {
-    this.sessionManager.getDb().setPrTestsSkipped(String(prNumber), repo, true);
-    await postPrComment(
-      repo,
-      prNumber,
-      `⏭️ Tests skipped for PR #${prNumber}. Post \`/enable-tests\` to re-enable.`
-    );
-  }
-
-  async handleEnableTests(repo: string, prNumber: number): Promise<void> {
-    this.sessionManager.getDb().setPrTestsSkipped(String(prNumber), repo, false);
-    await postPrComment(
-      repo,
-      prNumber,
-      `✅ Tests re-enabled for PR #${prNumber}. Post \`/cc test:\` or \`/cx test:\` with your test list to run them now.`
-    );
   }
 
   private async getOrCreateTestThread(
@@ -340,9 +274,10 @@ export class GitHubHandler {
       return null;
     }
 
-    console.log(`[github] Creating test thread "PR #${prNumber} — tests" in #${repoName}`);
+    const name = `🔄 #${prNumber} • Test`;
+    console.log(`[github] Creating test thread "${name}" in #${repoName}`);
     const thread = (await channel.threads.create({
-      name: `PR #${prNumber} — tests`,
+      name,
       autoArchiveDuration: 1440,
     })) as ThreadChannel;
 
@@ -352,21 +287,13 @@ export class GitHubHandler {
   }
 }
 
-// Extract the "/cc fix:\n- item" block from the test agent's output.
-// Posted as its own comment so the webhook picks it up and triggers a fix run.
-function extractFixBlock(text: string): string | null {
-  const idx = text.search(/^\/cc fix:\n/m);
-  if (idx === -1) return null;
-  const block = text.slice(idx).trim();
-  return block.split("\n").length > 1 ? block : null;
-}
-
 function buildTestPrompt(
   prNumber: number,
   previewUrl: string,
   prTitle: string,
   prBody: string,
-  testItems: string[]
+  testItems: string[],
+  commitHistory: string
 ): string {
   const checklist = testItems.map((t, i) => `${i + 1}. ${t}`).join("\n");
 
@@ -376,6 +303,9 @@ Preview URL: ${previewUrl}
 
 Test plan:
 ${checklist}
+
+Recent commits:
+${commitHistory || "(no commits)"}
 
 PR description (additional context):
 ${prBody || "(no description provided)"}
@@ -391,44 +321,7 @@ STATUS: PASS or FAIL
 FINDINGS:
 - <item> — PASS/FAIL — details
 
-If STATUS is FAIL, append a Test plan for the next run — list only the items that failed plus any new issues you discovered that are not in the original checklist:
+If STATUS is FAIL, append a Test plan for the next run — list only the items that failed plus any new issues you discovered:
 Test plan:
-- <item>
-
-If STATUS is FAIL, end with a /cc fix: block listing each bug on its own line:
-/cc fix:
-- <bug description>`;
-}
-
-function buildFixPrompt(prNumber: number, bugItems: string[]): string {
-  const list = bugItems.map((b) => `- ${b}`).join("\n");
-  return `The QA test agent found these bugs in PR #${prNumber}:
-
-${list}
-
-Fix all of them. After fixing, commit the changes with a short message describing what was fixed. Do not push — CI handles that.`;
-}
-
-function buildPrTestSummary(agentKey: string, prNumber: number, text: string): string {
-  const agent = agentKey === "cx" ? "Codex" : "Claude Code";
-  const statusMatch = text.match(/STATUS:\s*(PASS|FAIL)/i);
-  const status = statusMatch ? (statusMatch[1] ?? "UNKNOWN").toUpperCase() : "UNKNOWN";
-  const icon = status === "PASS" ? "✅" : status === "FAIL" ? "❌" : "⚠️";
-
-  // Strip the /cc fix: block — it's posted as a separate trigger comment
-  const summary = text.replace(/\n\/cc fix:\n[\s\S]*$/, "").trim();
-
-  return `${icon} **${agent} test result — PR #${prNumber}**
-
-${summary}`;
-}
-
-function buildPrFixSummary(prNumber: number, text: string): string {
-  return `🔧 **Claude Code fix attempt — PR #${prNumber}**
-
-${text.trim()}`;
-}
-
-function defaultTestingAgent(): string {
-  return process.env.DEFAULT_TESTING_AGENT ?? "cx";
+- <item>`;
 }

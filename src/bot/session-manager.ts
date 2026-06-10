@@ -16,8 +16,7 @@ import { RunTailer, isPidAlive } from "./run-tailer.js";
 // is done by a handler registered via setCompletionHandler (keeps this module
 // free of any github/* dependency).
 export type CompletionAction =
-  | { kind: "pr_test"; repo: string; prNumber: number; agentKey: string }
-  | { kind: "pr_fix"; repo: string; prNumber: number };
+  | { kind: "pr_test"; repo: string; prNumber: number; agentKey: string };
 
 export type CompletionHandler = (action: CompletionAction, text: string) => Promise<void>;
 
@@ -262,8 +261,13 @@ export class SessionManager {
     const requestedModel = agentKey === "cx" ? codexModel : model;
     const toolOverrides = this.db.getToolOverrides(channelId);
 
+    // Only resume the existing session if the agent type matches — passing a
+    // Claude session ID to `codex exec resume` (or vice versa) causes an
+    // immediate silent failure with no "done" event, which suppresses the
+    // completion action and leaves no trace on the PR.
+    const resumeSessionId = existing?.agent === agentKey ? existing.sessionId : undefined;
     const command = agent.buildCommand(workDir, prompt, {
-      sessionId: existing?.sessionId,
+      sessionId: resumeSessionId,
       mode,
       model,
       codexModel,
@@ -346,15 +350,15 @@ export class SessionManager {
     // so a (rate-limited) rename never delays the run itself.
     void setThreadStatus(thread, "working");
 
-    if (!existing) {
+    if (!existing || existing.agent !== agentKey) {
       this.db.createThreadSession({
         threadId,
         channelId,
         agent: agentKey,
         workDir,
-        branch: opts?.branch,
-        isWorktree: !!opts?.isWorktree,
-        createdAt: Date.now(),
+        branch: opts?.branch ?? existing?.branch,
+        isWorktree: opts?.isWorktree ?? existing?.isWorktree ?? false,
+        createdAt: existing?.createdAt ?? Date.now(),
       });
     }
 

@@ -27,11 +27,13 @@ import {
   type DownloadedAttachment,
 } from "../utils/attachments.js";
 import type { MCPPermissionServer } from "../mcp/server.js";
+import type { GitHubHandler } from "../github/handler.js";
 
 export class DiscordBot {
   public client: Client;
   private commands: CommandHandler;
   private mcpServer?: MCPPermissionServer;
+  private githubHandler?: GitHubHandler;
 
   constructor(
     private sessionManager: SessionManager,
@@ -58,6 +60,10 @@ export class DiscordBot {
     mcp.setDiscordBot(this);
   }
 
+  setGitHubHandler(handler: GitHubHandler): void {
+    this.githubHandler = handler;
+  }
+
   async login(token: string): Promise<void> {
     await this.client.login(token);
   }
@@ -71,7 +77,7 @@ export class DiscordBot {
       );
     });
 
-    this.client.on("interactionCreate", (i) => this.commands.handleInteraction(i));
+    this.client.on("interactionCreate", (i) => this.handleInteraction(i));
 
     this.client.on("messageCreate", async (msg) => {
       if (msg.author.bot) return;
@@ -188,6 +194,37 @@ export class DiscordBot {
     }
   }
 
+  private async handleInteraction(interaction: any): Promise<void> {
+    if (interaction.isChatInputCommand?.() && interaction.commandName === "test") {
+      if (!this.allowedUserIds.includes(interaction.user.id)) {
+        await interaction.reply({ content: "Not authorised.", ephemeral: true });
+        return;
+      }
+      if (!this.githubHandler) {
+        await interaction.reply({ content: "GitHub integration is not enabled.", ephemeral: true });
+        return;
+      }
+      const channel = interaction.channel;
+      if (!channel?.isThread?.()) {
+        await interaction.reply({ content: "Use `/test` inside the PR maker thread.", ephemeral: true });
+        return;
+      }
+      const prLink = this.sessionManager.getDb().findPrForMakerThread(channel.id);
+      if (!prLink) {
+        await interaction.reply({ content: "This thread is not linked to a PR.", ephemeral: true });
+        return;
+      }
+      await interaction.reply({ content: "🧪 Building test plan…" });
+      try {
+        await this.githubHandler.handleTestCommand(prLink.repo, Number(prLink.prNumber), channel);
+      } catch (err: any) {
+        await channel.send(`❌ Failed to run test: ${err.message}`);
+      }
+      return;
+    }
+    await this.commands.handleInteraction(interaction);
+  }
+
   private async handleChannelMessage(msg: Message): Promise<void> {
     const channel = msg.channel as TextChannel;
     const channelName = channel.name;
@@ -262,6 +299,21 @@ export class DiscordBot {
 
   private async handleThreadMessage(msg: Message): Promise<void> {
     const thread = msg.channel as ThreadChannel;
+
+    // /test command: run manual test flow for the PR linked to this maker thread
+    if (msg.content.trim() === "/test" && this.githubHandler) {
+      const prLink = this.sessionManager.getDb().findPrForMakerThread(thread.id);
+      if (prLink) {
+        await msg.react("🧪").catch(() => {});
+        try {
+          await this.githubHandler.handleTestCommand(prLink.repo, Number(prLink.prNumber), thread);
+        } catch (err: any) {
+          await thread.send(`❌ Failed to run test: ${err.message}`);
+        }
+        return;
+      }
+    }
+
     const session = this.sessionManager.getDb().getThreadSession(thread.id);
 
     if (!session) {
