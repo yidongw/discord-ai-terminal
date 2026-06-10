@@ -48,7 +48,7 @@ export class GitHubHandler {
     }
 
     const makerThreadId = ref.startsWith("discord/")
-      ? db.findThreadByBranch(ref)
+      ? (db.findThreadByBranch(ref) ?? db.findMakerThreadForRepo(repoName))
       : db.findMakerThreadForRepo(repoName);
 
     if (!makerThreadId) {
@@ -256,10 +256,16 @@ export class GitHubHandler {
       byName?.makerThreadId ?? byFull?.makerThreadId;
 
     if (threadId) {
-      const thread = await this.client.channels.fetch(threadId).catch(() => null);
-      if (thread?.isThread()) {
-        await thread.send(`🔗 Preview URL ready: ${previewUrl}`);
-        console.log(`[github] PR #${prNumber}: posted preview URL to thread ${threadId}`);
+      try {
+        const thread = await this.client.channels.fetch(threadId).catch(() => null);
+        if (thread?.isThread()) {
+          await thread.send(`🔗 Preview URL ready: ${previewUrl}`);
+          console.log(`[github] PR #${prNumber}: posted preview URL to thread ${threadId}`);
+        } else {
+          console.log(`[github] PR #${prNumber}: thread ${threadId} not fetchable or not a thread`);
+        }
+      } catch (err) {
+        console.error(`[github] PR #${prNumber}: failed to post preview URL to thread ${threadId}:`, err);
       }
     } else {
       console.log(`[github] PR #${prNumber}: no thread found to post preview URL`);

@@ -95,7 +95,7 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
     const prNumber: number = payload.issue?.number;
     if (!payload.issue?.pull_request || !prNumber) return;
 
-    const body: string = (payload.comment?.body ?? "").trim();
+    const body: string = (payload.comment?.body ?? "").trim().replace(/\r\n/g, "\n");
     if (payload.comment?.user?.type === "Bot") return;
 
     const previewUrlFromComment = extractPreviewUrl(body);

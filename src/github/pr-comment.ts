@@ -73,6 +73,7 @@ export function parseTestPlanFromBody(body: string): string[] | null {
   const items = testSection
     .split("\n")
     .slice(1) // skip the "## Test plan" heading line
+    .filter((l) => /^[-*]\s/.test(l)) // only actual list items
     .map((l) => l.replace(/^[-*]\s*(?:\[[ xX]\]\s*)?/, "").trim()) // strip bullets and GH task-list checkboxes
     .filter(Boolean);
   return items.length > 0 ? items : null;
