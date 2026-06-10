@@ -24,7 +24,7 @@ export const cursorAgent: AgentRunner = {
     return parts.join(" ");
   },
 
-  parseLine(line, workDir) { return parseSdkLine(line, workDir); },
+  parseLine(line, workDir, ctx) { return parseSdkLine(line, workDir, ctx); },
 
   titleCommand(prompt) {
     // --print without --output-format stream-json gives plain text output.

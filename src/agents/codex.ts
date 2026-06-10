@@ -1,9 +1,5 @@
-import type { AgentRunner, AgentRunOptions, AgentEvent } from "./index.js";
-import {
-  buildCodexCommand,
-  escapeShellString,
-  CODEX_MODEL_DISPLAY_NAME,
-} from "../utils/shell.js";
+import type { AgentRunner, AgentRunOptions, AgentEvent, AgentParseContext } from "./index.js";
+import { buildCodexCommand, escapeShellString } from "../utils/shell.js";
 import { DEFAULT_CODEX_MODEL } from "../utils/models.js";
 
 export const codexAgent: AgentRunner = {
@@ -15,7 +11,7 @@ export const codexAgent: AgentRunner = {
     return buildCodexCommand(workDir, prompt, opts.sessionId, false, opts.codexModel ?? DEFAULT_CODEX_MODEL);
   },
 
-  parseLine(line, workDir): AgentEvent | null {
+  parseLine(line, workDir, ctx?: AgentParseContext): AgentEvent | null {
     let msg: any;
     try { msg = JSON.parse(line); } catch { return null; }
 
@@ -23,7 +19,7 @@ export const codexAgent: AgentRunner = {
       return {
         kind: "init",
         sessionId: msg.thread_id,
-        model: msg.model ?? CODEX_MODEL_DISPLAY_NAME,
+        model: msg.model ?? ctx?.requestedModel ?? DEFAULT_CODEX_MODEL,
         cwd: workDir,
       };
     }

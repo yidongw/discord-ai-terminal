@@ -61,6 +61,8 @@ interface ActiveSession {
   // Live task list built from TaskCreate/TaskUpdate calls, keyed by task ID.
   taskList: Map<number, { subject: string; status: string }>;
   workDir: string;
+  // Model passed to the CLI for this run (from channel settings at start time).
+  requestedModel: string;
   // Per-channel tool-message visibility overrides ({ toolName: hidden }); see
   // toolIsHidden() and DEFAULT_HIDDEN_TOOLS.
   toolOverrides: Record<string, boolean>;
@@ -257,6 +259,7 @@ export class SessionManager {
     const mode = this.db.getMode(channelId);
     const model = this.db.getModel(channelId);
     const codexModel = this.db.getCodexModel(channelId);
+    const requestedModel = agentKey === "cx" ? codexModel : model;
     const toolOverrides = this.db.getToolOverrides(channelId);
 
     const command = agent.buildCommand(workDir, prompt, {
@@ -284,6 +287,7 @@ export class SessionManager {
     const fullCommand = `(${command}) >> ${escapeShellString(logPath)} 2>&1`;
 
     console.log(`[${agentKey}] CMD: ${command}`);
+    console.log(`[${agentKey}] model: ${requestedModel}`);
     console.log(`[${agentKey}] LOG: ${logPath}`);
 
     // `detached: true` puts the run in its own process group/session so killing
@@ -324,6 +328,7 @@ export class SessionManager {
       hiddenToolIds: new Set(),
       taskList: new Map(),
       workDir,
+      requestedModel,
       toolOverrides,
       outbox: this.getOutbox(threadId, thread),
       done: false,
@@ -389,7 +394,7 @@ export class SessionManager {
       startOffset,
       isAlive,
       onLine: (line) => {
-        const event = agent.parseLine(line, session.workDir);
+        const event = agent.parseLine(line, session.workDir, { requestedModel: session.requestedModel });
         if (event) {
           try { this.handleEvent(threadId, event, session); }
           catch (err) { console.error(err); }
@@ -534,6 +539,9 @@ export class SessionManager {
       hiddenToolIds: new Set(),
       taskList: new Map(),
       workDir: run.workDir,
+      requestedModel: run.agent === "cx"
+        ? this.db.getCodexModel(run.channelId)
+        : this.db.getModel(run.channelId),
       toolOverrides: this.db.getToolOverrides(run.channelId),
       outbox: this.getOutbox(run.threadId, thread),
       done: false,
@@ -572,8 +580,9 @@ export class SessionManager {
 
     if (event.kind === "init") {
       this.db.updateSessionId(threadId, event.sessionId);
+      const displayModel = session.requestedModel || event.model;
       outbox.enqueue(() =>
-        thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${event.model}`, 0x00ff00)] })
+        thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${displayModel}`, 0x00ff00)] })
       );
       return;
     }
