@@ -1,12 +1,17 @@
-import type { AgentEvent } from "./index.js";
+import type { AgentEvent, AgentParseContext } from "./index.js";
 
 // Shared parser for agents that use the Claude SDK stream-json format (cc, cs)
-export function parseSdkLine(line: string, workDir: string): AgentEvent | null {
+export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseContext): AgentEvent | null {
   let msg: any;
   try { msg = JSON.parse(line); } catch { return null; }
 
   if (msg.type === "system" && msg.subtype === "init") {
-    return { kind: "init", sessionId: msg.session_id, model: msg.model ?? "unknown", cwd: msg.cwd ?? workDir };
+    return {
+      kind: "init",
+      sessionId: msg.session_id,
+      model: msg.model ?? ctx?.requestedModel ?? "unknown",
+      cwd: msg.cwd ?? workDir,
+    };
   }
 
   if (msg.type === "assistant") {

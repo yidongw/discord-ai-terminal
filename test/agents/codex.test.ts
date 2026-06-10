@@ -7,16 +7,17 @@ describe('codexAgent', () => {
     expect(command).toContain('--model gpt-5.5');
   });
 
-  it('shows the configured Codex model name when thread.started omits it', () => {
+  it('uses the requested model when thread.started omits it', () => {
     const event = codexAgent.parseLine(
       JSON.stringify({ type: 'thread.started', thread_id: 'thread-123' }),
-      '/test/dir'
+      '/test/dir',
+      { requestedModel: 'gpt-5.4' }
     );
 
     expect(event).toEqual({
       kind: 'init',
       sessionId: 'thread-123',
-      model: 'GPT-5.4-Mini',
+      model: 'gpt-5.4',
       cwd: '/test/dir',
     });
   });
@@ -24,7 +25,8 @@ describe('codexAgent', () => {
   it('uses the model from thread.started events when available', () => {
     const event = codexAgent.parseLine(
       JSON.stringify({ type: 'thread.started', thread_id: 'thread-123', model: 'gpt-5.4-mini' }),
-      '/test/dir'
+      '/test/dir',
+      { requestedModel: 'gpt-5.4' }
     );
 
     expect(event).toEqual({

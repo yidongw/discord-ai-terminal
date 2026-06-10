@@ -18,7 +18,6 @@ export interface DiscordContext {
 export type PermissionMode = "auto" | "plan" | "approve";
 
 export const CODEX_MODEL = DEFAULT_CODEX_MODEL;
-export const CODEX_MODEL_DISPLAY_NAME = "GPT-5.4-Mini";
 
 const DISCORD_SYSTEM_PROMPT =
   "You are running inside a Discord bot. " +
