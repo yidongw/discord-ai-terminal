@@ -275,8 +275,9 @@ export class GitHubHandler {
       return;
     }
 
-    console.log(`[github] PR #${prNumber}: triggering test with ${testPlan.length} items and real preview URL`);
-    await this.runTest(repo, repoName, prNumber, previewUrl, "cc", testPlan);
+    const items = testPlan.map((t) => `- ${t}`).join("\n");
+    console.log(`[github] PR #${prNumber}: posting /cc test: with ${testPlan.length} items`);
+    await postPrComment(repo, prNumber, `/cc test:\n${items}\n${previewUrl}`);
   }
 
   async handleSkipTests(repo: string, prNumber: number): Promise<void> {

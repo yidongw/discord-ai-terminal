@@ -110,6 +110,7 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
       return;
     }
 
+
     // /cc fix:\n- bug1\n- bug2
     const fixMatch = /^\/cc fix:\n([\s\S]+)/.exec(body);
     if (fixMatch) {
@@ -137,6 +138,7 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
 function parseItems(text: string): string[] {
   return text
     .split("\n")
+    .filter((l) => /^[-*]\s/.test(l))
     .map((l) => l.replace(/^[-*]\s*/, "").trim())
     .filter(Boolean);
 }
