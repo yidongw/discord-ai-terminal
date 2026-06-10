@@ -9,6 +9,7 @@ export const cursorAgent: AgentRunner = {
 
   buildCommand(workDir, prompt, opts) {
     const escaped = escapeShellString(prompt);
+    const model = opts.csModel ?? "auto";
     const parts = [
       `cd ${workDir}`,
       "&&",
@@ -17,7 +18,7 @@ export const cursorAgent: AgentRunner = {
       "--output-format stream-json",
       "--yolo",
       "--trust",
-      "--model", "auto",
+      "--model", model,
     ];
     if (opts.sessionId) parts.push("--resume", opts.sessionId);
     parts.push(escaped);

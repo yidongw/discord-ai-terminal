@@ -258,7 +258,8 @@ export class SessionManager {
     const mode = this.db.getMode(channelId);
     const model = this.db.getModel(channelId);
     const codexModel = this.db.getCodexModel(channelId);
-    const requestedModel = agentKey === "cx" ? codexModel : agentKey === "cs" ? "auto" : model;
+    const csModel = this.db.getCsModel(channelId);
+    const requestedModel = agentKey === "cx" ? codexModel : agentKey === "cs" ? csModel : model;
     const toolOverrides = this.db.getToolOverrides(channelId);
 
     // Only resume the existing session if the agent type matches — passing a
@@ -271,6 +272,7 @@ export class SessionManager {
       mode,
       model,
       codexModel,
+      csModel,
       discordContext,
       prNumber: opts?.prNumber,
     });
@@ -546,7 +548,7 @@ export class SessionManager {
       requestedModel: run.agent === "cx"
         ? this.db.getCodexModel(run.channelId)
         : run.agent === "cs"
-          ? "auto"
+          ? this.db.getCsModel(run.channelId)
           : this.db.getModel(run.channelId),
       toolOverrides: this.db.getToolOverrides(run.channelId),
       outbox: this.getOutbox(run.threadId, thread),
