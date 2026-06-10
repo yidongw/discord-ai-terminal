@@ -1,4 +1,5 @@
 import type { AgentEvent, AgentParseContext } from "./index.js";
+import { parseRateLimitReset } from "../utils/session-limit-reset.js";
 
 // Shared parser for agents that use the Claude SDK stream-json format (cc, cs)
 export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseContext): AgentEvent | null {
@@ -35,6 +36,12 @@ export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseCont
     return { kind: "_sdk_tool_results" as any, results } as any;
   }
 
+  if (msg.type === "rate_limit_event") {
+    const parsed = parseRateLimitReset(msg.rate_limit_info);
+    if (parsed) return { kind: "rate_limit", resetAt: parsed.resetAt, resetLabel: parsed.resetLabel };
+    return null;
+  }
+
   if (msg.type === "result") {
     const cost = msg.total_cost_usd ?? null;
     const turns = msg.num_turns ?? null;
@@ -48,7 +55,12 @@ export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseCont
       : null;
 
     if (msg.subtype === "success") return { kind: "done", turns, cost, tokens };
-    return { kind: "error", message: msg.subtype ?? "unknown error" };
+    if (msg.subtype === "error_max_turns") return { kind: "session_limit", turns };
+    const detail = msg.error ?? msg.result;
+    const message = typeof detail === "string" && detail.trim()
+      ? detail
+      : (msg.subtype ?? "unknown error");
+    return { kind: "error", message };
   }
 
   return null;

@@ -21,4 +21,48 @@ describe('parseSdkLine', () => {
       cwd: '/test/dir',
     });
   });
+
+  it('maps error_max_turns to session_limit', () => {
+    const event = parseSdkLine(
+      JSON.stringify({
+        type: 'result',
+        subtype: 'error_max_turns',
+        num_turns: 25,
+        is_error: true,
+      }),
+      '/test/dir'
+    );
+
+    expect(event).toEqual({ kind: 'session_limit', turns: 25 });
+  });
+
+  it('maps other result errors to error', () => {
+    const event = parseSdkLine(
+      JSON.stringify({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+      }),
+      '/test/dir'
+    );
+
+    expect(event).toEqual({ kind: 'error', message: 'error_during_execution' });
+  });
+
+  it('prefers the error detail string over subtype', () => {
+    const event = parseSdkLine(
+      JSON.stringify({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        error: "You've hit your session limit · resets 3:45pm",
+      }),
+      '/test/dir'
+    );
+
+    expect(event).toEqual({
+      kind: 'error',
+      message: "You've hit your session limit · resets 3:45pm",
+    });
+  });
 });
