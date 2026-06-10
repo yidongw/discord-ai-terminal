@@ -1,0 +1,31 @@
+name: Agent Trigger
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+jobs:
+  forward:
+    runs-on: [self-hosted, macOS, preview]
+    # Only act on PR comments (not issue comments) or PR open events
+    if: |
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) ||
+      github.event_name == 'pull_request'
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Forward event to agent server
+        env:
+          WEBHOOK_SECRET: ${{ secrets.AGENT_WEBHOOK_SECRET }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD: ${{ toJson(github.event) }}
+        run: |
+          BODY="$PAYLOAD"
+          SIG="sha256=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $2}')"
+          curl -sf -X POST http://localhost:3002 \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: ${EVENT_NAME}" \
+            -H "X-Hub-Signature-256: ${SIG}" \
+            -d "$BODY" && echo "Forwarded to agent server"
