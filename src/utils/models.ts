@@ -21,9 +21,12 @@ export const CODEX_MODEL_CHOICES = [
 
 export const CS_MODEL_CHOICES = [
   { name: "auto — cursor's automatic selection (default)", value: "auto" },
-  { name: "claude-sonnet-4-5", value: "claude-sonnet-4-5" },
-  { name: "gpt-4o", value: "gpt-4o" },
-  { name: "gpt-4.1", value: "gpt-4.1" },
+  { name: "Composer 2.5 Fast", value: "composer-2.5-fast" },
+  { name: "Composer 2.5", value: "composer-2.5" },
+  { name: "Opus 4.8", value: "claude-opus-4-8-high" },
+  { name: "GPT-5.5", value: "gpt-5.5-medium" },
+  { name: "Sonnet 4.6", value: "claude-4.6-sonnet-medium" },
+  { name: "Codex 5.3", value: "gpt-5.3-codex" },
 ] as const;
 
 export type CcModel = (typeof CC_MODEL_CHOICES)[number]["value"];
