@@ -277,6 +277,93 @@ systemctl --user restart discord-ai-terminal
 systemctl --user stop discord-ai-terminal
 ```
 
+## Connecting a New Repo to the Bot
+
+Follow these steps to get a new GitHub repo wired up for PR thread linking, preview URL posting, and automated testing.
+
+### 1. Discord channel
+
+Create a channel in your Discord server whose name **exactly matches the repo name** (e.g., repo `yidongw/my-app` → channel `#my-app`). This is how the bot finds the right thread to post into.
+
+### 2. Add the agent-trigger workflow
+
+Copy `.github/workflows/agent-trigger.yml` from this repo into the target repo (unchanged). This workflow fires on `pull_request` (opened/reopened/ready_for_review) and `issue_comment` events and forwards them to the bot's webhook server at `http://localhost:3002`.
+
+### 3. Set the `AGENT_WEBHOOK_SECRET` repo secret
+
+In the target repo's GitHub Settings → Secrets → Actions, add:
+
+| Secret | Value |
+|---|---|
+| `AGENT_WEBHOOK_SECRET` | Same value as `GITHUB_WEBHOOK_SECRET` in the bot's `.env` |
+
+### 4. Register the self-hosted runner
+
+The workflow requires a runner with labels `[self-hosted, macOS, preview]`. Register the bot machine as a runner for each new repo:
+
+```bash
+# Get a registration token
+TOKEN=$(gh api -X POST repos/OWNER/REPO/actions/runners/registration-token --jq '.token')
+
+# Copy the existing runner binaries and configure for the new repo
+cp -r ~/preview/runner ~/preview/runner-REPO
+cd ~/preview/runner-REPO
+./config.sh --url https://github.com/OWNER/REPO \
+            --token "$TOKEN" \
+            --name mac-preview \
+            --labels self-hosted,macOS,preview \
+            --unattended --replace
+
+# Install and start as a launchd service
+./svc.sh install
+./svc.sh start
+```
+
+### 5. Add a Test plan to PR descriptions
+
+For automated testing to trigger when a preview URL is ready, include a `Test plan:` section in the PR body:
+
+```
+## Test plan:
+- User can log in with email and password
+- Dashboard loads without errors
+- Clicking "Save" persists changes
+```
+
+The bot extracts this list and posts a `/cx test:` comment (or `/cc test:` if `DEFAULT_TESTING_AGENT=cc`) which kicks off the test agent.
+
+### 6. (Optional) Preview URL integration
+
+The bot can start tests automatically when a preview deployment is ready via two mechanisms:
+
+**A. Push from CI** — Post to the bot's `/preview-ready` endpoint from your deploy workflow:
+
+```bash
+curl -X POST http://localhost:3002/preview-ready \
+  -H "Authorization: Bearer $PREVIEW_READY_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"repo":"OWNER/REPO","prNumber":42,"previewUrl":"https://my-app-pr-42.example.com"}'
+```
+
+Set `PREVIEW_READY_SECRET` in the bot's `.env` to require auth on this endpoint.
+
+**B. URL pattern** — Set `PREVIEW_URL_PATTERN` in the bot's `.env` if your preview URLs follow a predictable pattern:
+
+```env
+PREVIEW_URL_PATTERN=https://my-app-pr-{n}.example.com
+```
+
+The bot will derive the URL from the PR number automatically.
+
+### Summary checklist
+
+- [ ] Discord channel name matches repo name
+- [ ] `.github/workflows/agent-trigger.yml` copied into repo
+- [ ] `AGENT_WEBHOOK_SECRET` secret set on the repo
+- [ ] Self-hosted runner registered with `preview` label
+- [ ] PR descriptions include a `Test plan:` section
+- [ ] (Optional) Preview URL integration configured
+
 ## Credits
 
 This project is based on the original "Claude Code Discord Bot" by timoconnellaus.
