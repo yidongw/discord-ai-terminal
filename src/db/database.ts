@@ -210,6 +210,12 @@ export class DatabaseManager {
         created_at      INTEGER NOT NULL,
         PRIMARY KEY (pr_number, repo)
       );
+
+      CREATE TABLE IF NOT EXISTS restart_notification (
+        id         INTEGER PRIMARY KEY CHECK (id = 1),
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL
+      );
     `);
   }
 
@@ -666,5 +672,27 @@ export class DatabaseManager {
       .prepare(`SELECT thread_id FROM thread_sessions WHERE branch = ? LIMIT 1`)
       .get(branch) as any;
     return row?.thread_id ?? null;
+  }
+
+  // ── Restart notification ─────────────────────────────────────────────────
+
+  setRestartNotification(channelId: string, messageId: string): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO restart_notification (id, channel_id, message_id) VALUES (1, ?, ?)`
+      )
+      .run(channelId, messageId);
+  }
+
+  getRestartNotification(): { channelId: string; messageId: string } | null {
+    const row = this.db
+      .prepare(`SELECT channel_id, message_id FROM restart_notification WHERE id = 1`)
+      .get() as any;
+    if (!row) return null;
+    return { channelId: row.channel_id, messageId: row.message_id };
+  }
+
+  clearRestartNotification(): void {
+    this.db.prepare(`DELETE FROM restart_notification WHERE id = 1`).run();
   }
 }
