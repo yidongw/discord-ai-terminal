@@ -54,7 +54,17 @@ export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseCont
         ].filter(Boolean).join(" ") || null
       : null;
 
-    if (msg.subtype === "success") return { kind: "done", turns, cost, tokens };
+    if (msg.subtype === "success") {
+      // cc reports subscription usage limits as success+is_error with the limit text in result.
+      if (msg.is_error) {
+        const detail = msg.result ?? msg.error;
+        const message = typeof detail === "string" && detail.trim()
+          ? detail
+          : "unknown error";
+        return { kind: "error", message };
+      }
+      return { kind: "done", turns, cost, tokens };
+    }
     if (msg.subtype === "error_max_turns") return { kind: "session_limit", turns };
     const detail = msg.error ?? msg.result;
     const message = typeof detail === "string" && detail.trim()

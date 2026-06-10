@@ -54,4 +54,24 @@ describe("session-limit-reset", () => {
     expect(parsed).not.toBeNull();
     expect(parsed!.resetAt).toBe(new Date("2026-06-11T15:45:00.000Z").getTime());
   });
+
+  it("parses resetsAt unix seconds from cc rate_limit_event", () => {
+    const now = new Date("2026-06-10T19:00:00Z"); // before 1781121000 (= 2026-06-10T19:50:00Z)
+    const parsed = parseRateLimitReset(
+      { status: "rejected", resetsAt: 1781121000 },
+      now
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.resetAt).toBe(1781121000 * 1000);
+  });
+
+  it("parses reset time with timezone suffix", () => {
+    const now = new Date("2026-06-11T19:00:00Z");
+    const parsed = parseSessionLimitReset(
+      "You've hit your session limit · resets 2:50am (Asia/Bangkok)",
+      now
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.resetLabel).toContain("2:50am");
+  });
 });

@@ -10,6 +10,10 @@ import { setThreadStatus } from "../utils/thread-status.js";
 import { escapeShellString, type DiscordContext } from "../utils/shell.js";
 import { RunTailer, isPidAlive } from "./run-tailer.js";
 import { parseSessionLimitReset } from "../utils/session-limit-reset.js";
+import {
+  SESSION_LIMIT_CONTINUATION_PROMPT,
+  registerSessionLimitWakeup,
+} from "./session-limit-wakeup.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -632,28 +636,15 @@ export class SessionManager {
   // Arm a one-shot scheduled task that re-invokes cc when the subscription usage
   // window resets. Replaces any prior session-limit wakeup for this thread.
   private scheduleUsageLimitResume(threadId: string, session: ActiveSession): void {
-    const taskId = `session-limit-${threadId}`;
-    const existing = this.db.getScheduledTask(taskId);
-    if (existing) this.db.deleteScheduledTask(taskId);
-
-    this.db.createScheduledTask({
-      id: taskId,
+    const task = registerSessionLimitWakeup(this.db, {
       threadId,
       channelId: session.channelId,
-      agent: "cc",
       workDir: session.workDir,
       userId: session.discordContext?.userId ?? "",
-      prompt: SESSION_LIMIT_CONTINUATION_PROMPT,
-      label: "Session limit resume",
-      intervalSeconds: 60,
-      nextRunAt: session.usageLimitResetAt!,
-      enabled: true,
-      runCount: 0,
-      maxRuns: 1,
-      createdAt: Date.now(),
+      resetAt: session.usageLimitResetAt!,
     });
     console.log(
-      `[session-limit] scheduled resume for ${threadId} at ${new Date(session.usageLimitResetAt!).toISOString()}`
+      `[session-limit] scheduled resume for ${threadId} at ${new Date(task.nextRunAt).toISOString()}`
     );
   }
 
@@ -709,9 +700,15 @@ export class SessionManager {
     }
 
     if (event.kind === "rate_limit") {
-      // Informational only — the run may continue. If we already know the usage
-      // limit was hit, prefer the ISO reset timestamp from the event.
-      if (session.pendingUsageLimitResume && session.agentKey === "cc") {
+      if (session.agentKey !== "cc") return;
+      if (!session.pendingUsageLimitResume) {
+        session.pendingUsageLimitResume = true;
+        session.pendingTurnLimitResume = false;
+        session.usageLimitResetAt = event.resetAt;
+        session.usageLimitResetLabel = event.resetLabel;
+        this.enqueueUsageLimitNotice(session);
+        this.stopProcess(session);
+      } else {
         session.usageLimitResetAt = event.resetAt;
         session.usageLimitResetLabel = event.resetLabel;
       }
@@ -1096,11 +1093,6 @@ async function sendChunked(thread: any, content: string): Promise<void> {
     });
   }
 }
-
-const SESSION_LIMIT_CONTINUATION_PROMPT =
-  "Your previous run hit the session turn limit before finishing.\n\n" +
-  "Continue exactly where you left off and complete any remaining work from the original task. " +
-  "Do not restart from scratch or repeat work you already finished.";
 
 function embed(title: string, description: string, color: number) {
   return new EmbedBuilder().setTitle(title).setDescription(description).setColor(color);

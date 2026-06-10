@@ -1,9 +1,9 @@
 const USAGE_LIMIT_RE =
   /you(?:'ve| have) hit your (?:session|weekly|opus) limit/i;
 
-// "resets 3:45pm" or "resets Mon 12:00am"
+// "resets 3:45pm", "resets 2:50am (Asia/Bangkok)", or "resets Mon 12:00am"
 const RESET_RE =
-  /resets?\s+(?:(Mon(?:day)?|Tue(?:s(?:day)?)?|Wed(?:nesday)?|Thu(?:rs(?:day)?)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s+)?(\d{1,2}:\d{2}\s*(?:am|pm))/i;
+  /resets?\s+(?:(Mon(?:day)?|Tue(?:s(?:day)?)?|Wed(?:nesday)?|Thu(?:rs(?:day)?)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s+)?(\d{1,2}:\d{2}\s*(?:am|pm))(?:\s*\([^)]+\))?/i;
 
 const DAY_INDEX: Record<string, number> = {
   sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
@@ -43,18 +43,36 @@ export function parseSessionLimitReset(text: string, now = new Date()): SessionL
   return { resetAt: resetDate.getTime(), resetLabel };
 }
 
-/** Pick the earliest ISO reset timestamp from a rate_limit_event payload. */
+/** Pick the earliest reset timestamp from a rate_limit_event payload. */
 export function parseRateLimitReset(
-  info: { requests_reset?: string; tokens_reset?: string } | undefined,
+  info: {
+    requests_reset?: string;
+    tokens_reset?: string;
+    /** Unix seconds (cc v2.1+) */
+    resetsAt?: number;
+    status?: string;
+  } | undefined,
   now = new Date()
 ): SessionLimitReset | null {
   if (!info) return null;
-  const candidates = [info.requests_reset, info.tokens_reset]
-    .filter((v): v is string => !!v)
-    .map((iso) => new Date(iso))
-    .filter((d) => !Number.isNaN(d.getTime()) && d.getTime() > now.getTime());
-  if (candidates.length === 0) return null;
-  const resetDate = candidates.reduce((a, b) => (a < b ? a : b));
+
+  const candidates: Date[] = [];
+
+  if (info.resetsAt != null && info.resetsAt > 0) {
+    const ms = info.resetsAt < 1e12 ? info.resetsAt * 1000 : info.resetsAt;
+    const d = new Date(ms);
+    if (!Number.isNaN(d.getTime())) candidates.push(d);
+  }
+
+  for (const iso of [info.requests_reset, info.tokens_reset]) {
+    if (!iso) continue;
+    const d = new Date(iso);
+    if (!Number.isNaN(d.getTime())) candidates.push(d);
+  }
+
+  const future = candidates.filter((d) => d.getTime() > now.getTime());
+  if (future.length === 0) return null;
+  const resetDate = future.reduce((a, b) => (a < b ? a : b));
   return { resetAt: resetDate.getTime(), resetLabel: resetDate.toLocaleString() };
 }
 
