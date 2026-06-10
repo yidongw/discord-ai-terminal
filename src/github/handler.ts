@@ -215,12 +215,19 @@ export class GitHubHandler {
     // Second chance when pull_request.opened was missed (e.g. Actions didn't forward it).
     await this.ensurePrLinkedToMakerThread(repo, prNumber);
 
-    // testThreadId is stored under repoName; makerThreadId under repo (full name)
+    // Prefer makerThreadId (where the developer is working); fall back to testThreadId.
+    // testThreadId is stored under repoName; makerThreadId under repo (full name).
     const byName = db.getPrThreads(String(prNumber), repoName);
     const byFull = db.getPrThreads(String(prNumber), repo);
     const threadId =
-      byName?.testThreadId ?? byFull?.testThreadId ??
-      byName?.makerThreadId ?? byFull?.makerThreadId;
+      byName?.makerThreadId ?? byFull?.makerThreadId ??
+      byName?.testThreadId ?? byFull?.testThreadId;
+
+    console.log(
+      `[github] PR #${prNumber}: preview-ready received — threadId=${threadId ?? "none"} ` +
+      `(makerByName=${byName?.makerThreadId ?? "-"} makerByFull=${byFull?.makerThreadId ?? "-"} ` +
+      `testByName=${byName?.testThreadId ?? "-"} testByFull=${byFull?.testThreadId ?? "-"})`
+    );
 
     if (threadId) {
       try {
@@ -229,13 +236,13 @@ export class GitHubHandler {
           await thread.send(`🔗 Preview URL ready: ${previewUrl}`);
           console.log(`[github] PR #${prNumber}: posted preview URL to thread ${threadId}`);
         } else {
-          console.log(`[github] PR #${prNumber}: thread ${threadId} not fetchable or not a thread`);
+          console.error(`[github] PR #${prNumber}: thread ${threadId} not fetchable or not a thread — preview URL NOT delivered`);
         }
       } catch (err) {
         console.error(`[github] PR #${prNumber}: failed to post preview URL to thread ${threadId}:`, err);
       }
     } else {
-      console.log(`[github] PR #${prNumber}: no thread found to post preview URL`);
+      console.error(`[github] PR #${prNumber}: no thread found to post preview URL (repo=${repo})`);
     }
   }
 
