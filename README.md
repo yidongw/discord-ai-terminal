@@ -279,7 +279,11 @@ systemctl --user stop discord-ai-terminal
 
 ## Connecting a New Repo to the Bot
 
-Follow these steps to get a new GitHub repo wired up for PR thread linking, preview URL posting, and automated testing.
+Follow these steps to get a new GitHub repo wired up with the bot. Once connected, the bot provides these automatic behaviors:
+
+- **PR opened** — the bot posts the PR URL to the maker thread and pins it, then renames the thread to include the PR number (e.g., `my feature [#42]`)
+- **Preview URL ready** — the bot posts the preview link directly to the thread so it's visible alongside the ongoing work
+- **Automated testing** — the bot runs the test agent against the preview URL using the test plan from the PR description, then posts results back to the PR
 
 ### 1. Discord channel
 
@@ -334,7 +338,7 @@ The bot extracts this list and posts a `/cx test:` comment (or `/cc test:` if `D
 
 ### 6. (Optional) Preview URL integration
 
-The bot can start tests automatically when a preview deployment is ready via two mechanisms:
+When a preview deployment is ready, the bot posts the URL to the Discord thread **and** kicks off the test agent. Two ways to notify the bot:
 
 **A. Push from CI** — Post to the bot's `/preview-ready` endpoint from your deploy workflow:
 
