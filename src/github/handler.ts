@@ -234,7 +234,7 @@ export class GitHubHandler {
         const plan = extractTestPlanFromComment(comments[i]!.body);
         if (plan && plan.length > 0) {
           const items = plan.map((t) => `- ${t}`).join("\n");
-          await postPrComment(action.repo, action.prNumber, `/cc test:\n${items}`);
+          await postPrComment(action.repo, action.prNumber, `/cx test:\n${items}`);
           break;
         }
       }
@@ -276,8 +276,8 @@ export class GitHubHandler {
     }
 
     const items = testPlan.map((t) => `- ${t}`).join("\n");
-    console.log(`[github] PR #${prNumber}: posting /cc test: with ${testPlan.length} items`);
-    await postPrComment(repo, prNumber, `/cc test:\n${items}\n${previewUrl}`);
+    console.log(`[github] PR #${prNumber}: posting /cx test: with ${testPlan.length} items`);
+    await postPrComment(repo, prNumber, `/cx test:\n${items}\n${previewUrl}`);
   }
 
   async handleSkipTests(repo: string, prNumber: number): Promise<void> {
