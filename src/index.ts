@@ -71,16 +71,17 @@ async function main() {
   // (or an incoming message) can spawn a new run onto the same thread.
   await sessionManager.reattachRuns(bot.client);
 
-  // If /update triggered this restart, edit the "Restarting…" message to confirm.
+  // If /update triggered this restart, send a confirmation to the channel.
+  // Interaction reply messages can only be edited via the interaction's webhook
+  // token (which doesn't survive restarts), so we send a new message instead.
   const restartNote = sessionManager.getDb().getRestartNotification();
   if (restartNote) {
     sessionManager.getDb().clearRestartNotification();
     try {
       const ch = await bot.client.channels.fetch(restartNote.channelId);
       if (ch?.isTextBased()) {
-        const msg = await (ch as any).messages.fetch(restartNote.messageId);
         const { EmbedBuilder } = await import("discord.js");
-        await msg.edit({
+        await (ch as any).send({
           embeds: [
             new EmbedBuilder()
               .setTitle("✅ Restart complete")
@@ -90,7 +91,7 @@ async function main() {
         });
       }
     } catch (err) {
-      console.error("[update] failed to edit restart notification:", err);
+      console.error("[update] failed to send restart notification:", err);
     }
   }
 
