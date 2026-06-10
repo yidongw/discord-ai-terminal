@@ -31,6 +31,6 @@ describe('normalizeCodexModel', () => {
 
   it('passes through known codex model IDs', () => {
     expect(normalizeCodexModel('gpt-5.5')).toBe('gpt-5.5');
-    expect(normalizeCodexModel('gpt-5.3-codex-spark')).toBe('gpt-5.3-codex-spark');
+    expect(normalizeCodexModel('gpt-5.4')).toBe('gpt-5.4');
   });
 });
