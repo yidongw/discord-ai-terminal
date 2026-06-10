@@ -211,37 +211,6 @@ const TOOLS = [
     },
   },
   {
-    name: 'schedule_wakeup',
-    description:
-      'Schedule a one-shot wakeup: re-invoke you in THIS Discord thread after a delay. ' +
-      'Use when you need to check back later (e.g. "poll CI in 4 minutes", ' +
-      '"retry after the cache expires", "check the deploy in 2 minutes"). ' +
-      'You (the agent) are a one-shot process that exits after each turn — you CANNOT ' +
-      'sleep or loop yourself. Call this tool, then end your turn. The bot will re-invoke ' +
-      'you in this thread with your prompt when the delay elapses (survives bot restarts). ' +
-      'Minimum delay is 60 seconds, maximum is 3600 (1 hour).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        prompt: {
-          type: 'string',
-          description:
-            'The prompt to run on wakeup. Write it as a standalone message — the future ' +
-            'run only sees this text, not the current conversation.',
-        },
-        delay_seconds: {
-          type: 'number',
-          description: 'Seconds to wait before waking (60–3600).',
-        },
-        reason: {
-          type: 'string',
-          description: 'Optional one-line description shown in the wakeup notification.',
-        },
-      },
-      required: ['prompt', 'delay_seconds'],
-    },
-  },
-  {
     name: 'list_scheduled_tasks',
     description:
       'List recurring tasks scheduled for this thread (their ids, prompts, ' +
