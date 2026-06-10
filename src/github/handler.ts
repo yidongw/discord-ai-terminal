@@ -234,7 +234,7 @@ export class GitHubHandler {
         const plan = extractTestPlanFromComment(comments[i]!.body);
         if (plan && plan.length > 0) {
           const items = plan.map((t) => `- ${t}`).join("\n");
-          await postPrComment(action.repo, action.prNumber, `/cc test:\n${items}`);
+          await postPrComment(action.repo, action.prNumber, `/${defaultTestingAgent()} test:\n${items}`);
           break;
         }
       }
@@ -276,8 +276,9 @@ export class GitHubHandler {
     }
 
     const items = testPlan.map((t) => `- ${t}`).join("\n");
-    console.log(`[github] PR #${prNumber}: posting /cc test: with ${testPlan.length} items`);
-    await postPrComment(repo, prNumber, `/cc test:\n${items}\n${previewUrl}`);
+    const agent = defaultTestingAgent();
+    console.log(`[github] PR #${prNumber}: posting /${agent} test: with ${testPlan.length} items`);
+    await postPrComment(repo, prNumber, `/${agent} test:\n${items}\n${previewUrl}`);
   }
 
   async handleSkipTests(repo: string, prNumber: number): Promise<void> {
@@ -420,4 +421,8 @@ function buildPrFixSummary(prNumber: number, text: string): string {
   return `🔧 **Claude Code fix attempt — PR #${prNumber}**
 
 ${text.trim()}`;
+}
+
+function defaultTestingAgent(): string {
+  return process.env.DEFAULT_TESTING_AGENT ?? "cx";
 }
