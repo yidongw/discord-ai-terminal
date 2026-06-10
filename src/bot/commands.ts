@@ -1,3 +1,4 @@
+import * as path from "path";
 import {
   SlashCommandBuilder,
   REST,
@@ -76,6 +77,10 @@ export class CommandHandler {
         ),
 
       new SlashCommandBuilder()
+        .setName("update")
+        .setDescription("Pull the latest default branch and restart the bot service"),
+
+      new SlashCommandBuilder()
         .setName("tools")
         .setDescription("Show or hide specific tool-call messages for this channel")
         .addSubcommand((s) =>
@@ -138,6 +143,7 @@ export class CommandHandler {
     if (commandName === "mode") return this.handleMode(interaction);
     if (commandName === "model") return this.handleModel(interaction);
     if (commandName === "tools") return this.handleTools(interaction);
+    if (commandName === "update") return this.handleUpdate(interaction);
   }
 
   // Channel-level settings (mode/model/tools) are keyed by the parent channel,
@@ -271,6 +277,53 @@ export class CommandHandler {
           0x00ff00
         ),
       ],
+    });
+  }
+
+  private async handleUpdate(i: ChatInputCommandInteraction): Promise<void> {
+    await i.deferReply();
+
+    const repoDir = path.resolve(import.meta.dir, "../..");
+
+    let pullOutput: string;
+    try {
+      const proc = Bun.spawn(["git", "-C", repoDir, "pull"], { stderr: "pipe" });
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      await proc.exited;
+      pullOutput = (stdout + stderr).trim() || "Already up to date.";
+      if (proc.exitCode !== 0) throw new Error(pullOutput);
+    } catch (err: any) {
+      await i.editReply({
+        embeds: [embed("❌ Pull Failed", `\`\`\`\n${String(err.message ?? err).slice(0, 1800)}\n\`\`\``, 0xff0000)],
+      });
+      return;
+    }
+
+    await i.editReply({
+      embeds: [
+        embed(
+          "🔄 Restarting…",
+          `\`\`\`\n${pullOutput.slice(0, 1800)}\n\`\`\`\nPulled. Restarting service — back in a moment.`,
+          0x5865f2
+        ),
+      ],
+    });
+
+    // Spawn the restart detached so it fires after Discord receives the reply.
+    // The service manager kills and relaunches this process, so nothing after
+    // the spawn will run reliably.
+    const isMac = process.platform === "darwin";
+    const uid = process.getuid?.() ?? 501;
+    const restartCmd = isMac
+      ? `launchctl kickstart -k gui/${uid}/com.discord-ai-terminal`
+      : "systemctl --user restart discord-ai-terminal";
+
+    Bun.spawn(["sh", "-c", `sleep 1 && ${restartCmd}`], {
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
     });
   }
 
