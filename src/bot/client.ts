@@ -27,11 +27,13 @@ import {
   type DownloadedAttachment,
 } from "../utils/attachments.js";
 import type { MCPPermissionServer } from "../mcp/server.js";
+import type { GitHubHandler } from "../github/handler.js";
 
 export class DiscordBot {
   public client: Client;
   private commands: CommandHandler;
   private mcpServer?: MCPPermissionServer;
+  private githubHandler?: GitHubHandler;
 
   constructor(
     private sessionManager: SessionManager,
@@ -56,6 +58,10 @@ export class DiscordBot {
     // and the permission manager (used by approve_tool). Calling the manager
     // directly would leave the server's own discordBot null, breaking questions.
     mcp.setDiscordBot(this);
+  }
+
+  setGitHubHandler(handler: GitHubHandler): void {
+    this.githubHandler = handler;
   }
 
   async login(token: string): Promise<void> {
@@ -262,6 +268,21 @@ export class DiscordBot {
 
   private async handleThreadMessage(msg: Message): Promise<void> {
     const thread = msg.channel as ThreadChannel;
+
+    // /test command: run manual test flow for the PR linked to this maker thread
+    if (msg.content.trim() === "/test" && this.githubHandler) {
+      const prLink = this.sessionManager.getDb().findPrForMakerThread(thread.id);
+      if (prLink) {
+        await msg.react("🧪").catch(() => {});
+        try {
+          await this.githubHandler.handleTestCommand(prLink.repo, Number(prLink.prNumber), thread);
+        } catch (err: any) {
+          await thread.send(`❌ Failed to run test: ${err.message}`);
+        }
+        return;
+      }
+    }
+
     const session = this.sessionManager.getDb().getThreadSession(thread.id);
 
     if (!session) {

@@ -79,6 +79,62 @@ export function parseTestPlanFromBody(body: string): string[] | null {
   return items.length > 0 ? items : null;
 }
 
+export async function getPrCommits(
+  repo: string,
+  prNumber: number
+): Promise<Array<{ sha: string; commit: { message: string } }>> {
+  const token = githubToken();
+  const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(
+    `${GITHUB_API}/repos/${repo}/pulls/${prNumber}/commits?per_page=50`,
+    { headers }
+  );
+  if (!res.ok) {
+    console.error(`[github] Failed to fetch PR commits: ${res.status}`);
+    return [];
+  }
+  return res.json() as any;
+}
+
+// Derive the preview URL for a PR. Repos can override via PREVIEW_URL_PATTERN=https://app-pr-{n}.example.com
+export function buildPreviewUrl(repo: string, prNumber: number): string {
+  const pattern = process.env.PREVIEW_URL_PATTERN;
+  if (pattern) return pattern.replace("{n}", String(prNumber));
+  const repoName = repo.split("/")[1] ?? repo;
+  return `https://erp-pr-${prNumber}.foxhole.bot`;
+}
+
+// Extract items that already PASS from bot-posted test summary comments.
+export function extractPassedItems(comments: Array<{ body: string }>): Set<string> {
+  const passed = new Set<string>();
+  for (const comment of comments) {
+    const body = comment.body;
+    if (!/test result — PR #/i.test(body) && !/STATUS:/i.test(body)) continue;
+    const findingsIdx = body.indexOf("FINDINGS:");
+    if (findingsIdx === -1) continue;
+    const afterFindings = body.slice(findingsIdx + "FINDINGS:".length);
+    for (const line of afterFindings.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("Test plan:") || trimmed.startsWith("/cc")) break;
+      const match = trimmed.match(/^[-*]\s+(.+?)\s+—\s+PASS(?:\s+—|$)/i);
+      if (match?.[1]) passed.add(match[1].trim().toLowerCase());
+    }
+  }
+  return passed;
+}
+
+// Extract the failed items from the most recent test summary comment with STATUS: FAIL.
+export function extractLastFailedItems(comments: Array<{ body: string }>): string[] {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const body = comments[i]!.body;
+    if (!/STATUS:\s*FAIL/i.test(body)) continue;
+    return extractTestPlanFromComment(body) ?? [];
+  }
+  return [];
+}
+
 // Extract the "Test plan:" block from a bot-posted test summary comment.
 // Returns the item list, or null if not found.
 export function extractTestPlanFromComment(body: string): string[] | null {

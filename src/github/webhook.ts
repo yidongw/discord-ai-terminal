@@ -1,7 +1,5 @@
 import type { GitHubHandler } from "./handler.js";
 
-const PREVIEW_URL_RE = /https?:\/\/[^\s)>]+/;
-
 export class GitHubWebhookServer {
   private server?: ReturnType<typeof Bun.serve>;
 
@@ -90,72 +88,6 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
     if (prNumber) await handler.handlePrOpened(repo, prNumber, headRef);
     return;
   }
-
-  if (event === "issue_comment" && (payload.action === "created" || payload.action === "edited")) {
-    const prNumber: number = payload.issue?.number;
-    if (!payload.issue?.pull_request || !prNumber) return;
-
-    const body: string = (payload.comment?.body ?? "").trim().replace(/\r\n/g, "\n");
-    if (payload.comment?.user?.type === "Bot") return;
-
-    const previewUrlFromComment = extractPreviewUrl(body);
-
-    if (body === "/skip-tests") {
-      await handler.handleSkipTests(repo, prNumber);
-      return;
-    }
-
-    if (body === "/enable-tests") {
-      await handler.handleEnableTests(repo, prNumber);
-      return;
-    }
-
-
-    // /cc fix:\n- bug1\n- bug2
-    const fixMatch = /^\/cc fix:\n([\s\S]+)/.exec(body);
-    if (fixMatch) {
-      const fixItems = parseItems(fixMatch[1]!);
-      if (fixItems.length > 0) {
-        await handler.handleComment(repo, prNumber, "", "cc", fixItems);
-        return;
-      }
-    }
-
-    // /cc test:\n- item1\n- item2  or  /cx test:\n...
-    const testMatch = /^\/(cc|cx)\s+test:\n([\s\S]+)/.exec(body);
-    if (testMatch) {
-      const agentKey = testMatch[1]!;
-      const testItems = parseItems(testMatch[2]!);
-      if (testItems.length > 0) {
-        const previewUrl = previewUrlFromComment ?? buildPreviewUrl(repo, prNumber);
-        await handler.handleComment(repo, prNumber, previewUrl, agentKey, undefined, testItems);
-        return;
-      }
-    }
-  }
-}
-
-function parseItems(text: string): string[] {
-  return text
-    .split("\n")
-    .filter((l) => /^[-*]\s/.test(l))
-    .map((l) => l.replace(/^[-*]\s*/, "").trim())
-    .filter(Boolean);
-}
-
-// Derive the preview URL from the known pattern for this repo.
-// Repos can override via PREVIEW_URL_PATTERN=https://erp-pr-{n}.example.com
-function buildPreviewUrl(repo: string, prNumber: number): string {
-  const pattern = process.env.PREVIEW_URL_PATTERN;
-  if (pattern) return pattern.replace("{n}", String(prNumber));
-  // Default carbon pattern
-  return `https://erp-pr-${prNumber}.foxhole.bot`;
-}
-
-function extractPreviewUrl(body: string): string | null {
-  const match = PREVIEW_URL_RE.exec(body);
-  if (!match) return null;
-  return match[0]!.replace(/[.,;:!?]+$/, "");
 }
 
 async function verifySignature(body: string, sig: string): Promise<boolean> {

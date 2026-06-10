@@ -16,8 +16,7 @@ import { RunTailer, isPidAlive } from "./run-tailer.js";
 // is done by a handler registered via setCompletionHandler (keeps this module
 // free of any github/* dependency).
 export type CompletionAction =
-  | { kind: "pr_test"; repo: string; prNumber: number; agentKey: string }
-  | { kind: "pr_fix"; repo: string; prNumber: number };
+  | { kind: "pr_test"; repo: string; prNumber: number; agentKey: string };
 
 export type CompletionHandler = (action: CompletionAction, text: string) => Promise<void>;
 

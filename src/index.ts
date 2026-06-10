@@ -65,6 +65,7 @@ async function main() {
     : undefined;
   if (githubHandler) {
     sessionManager.setCompletionHandler((action, text) => githubHandler.runCompletionAction(action, text));
+    bot.setGitHubHandler(githubHandler);
   }
 
   // Re-attach to any runs that survived the last restart BEFORE the scheduler
