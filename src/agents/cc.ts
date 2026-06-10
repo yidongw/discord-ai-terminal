@@ -15,7 +15,7 @@ export const ccAgent: AgentRunner = {
     return buildClaudeCommand(workDir, prompt, opts.sessionId, opts.discordContext, opts.mode ?? "auto", opts.model ?? DEFAULT_CC_MODEL);
   },
 
-  parseLine(line, workDir) { return parseSdkLine(line, workDir); },
+  parseLine(line, workDir, ctx) { return parseSdkLine(line, workDir, ctx); },
 
   titleCommand(prompt) {
     return `claude -p ${escapeShellString(prompt)}`;

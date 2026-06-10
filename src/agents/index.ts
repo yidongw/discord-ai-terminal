@@ -20,12 +20,18 @@ export type AgentEvent =
   | { kind: "done";       turns: number | null; cost: number | null; tokens: string | null }
   | { kind: "error";      message: string };
 
+export interface AgentParseContext {
+  // Model we passed on the CLI for this run — used when the agent's init event
+  // omits or misreports it (Codex thread.started often has no model field).
+  requestedModel?: string;
+}
+
 export interface AgentRunner {
   readonly key: string;
   readonly label: string;
   readonly color: number;
   buildCommand(workDir: string, prompt: string, opts: AgentRunOptions): string;
-  parseLine(line: string, workDir: string): AgentEvent | null;
+  parseLine(line: string, workDir: string, ctx?: AgentParseContext): AgentEvent | null;
   /** Shell command that runs the agent in one-shot mode and prints plain text to stdout. */
   titleCommand(prompt: string): string;
 }
