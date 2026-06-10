@@ -145,9 +145,8 @@ Type any message in a channel that corresponds to a repository folder. The bot w
 
 ### Provider Notes
 
-- **Claude** uses the `/model` and `/mode` settings.
-- **Codex** ignores `/model` for now and always runs in full access mode.
-- Use `/provider` per channel to switch between Claude and Codex.
+- **Claude Code** uses `/model cc` and `/mode` settings.
+- **Codex** uses `/model codex` and always runs in full access mode.
 
 ### Commands
 
@@ -162,12 +161,18 @@ Type any message in a channel that corresponds to a repository folder. The bot w
   - `auto` - Execute immediately without asking
   - `plan` - Create detailed plan before executing
   - `approve` - Ask permission (✅/❌) before each dangerous action
-- **/model**: Set the Claude model for the channel
-  - `opus` - Most capable, best for complex tasks
-  - `sonnet` - Balanced performance and cost
-  - `haiku` - Fastest and most affordable
-- **/provider**: Switch between Claude and Codex for the channel
-- **/status**: Show current mode, model, provider, and session info
+- **/model cc**: Set the Claude Code model for the channel (pinned version IDs)
+  - `claude-sonnet-4-6` - Balanced default
+  - `claude-opus-4-8` - Most capable Opus
+  - `claude-opus-4-7`, `claude-opus-4-6` - Earlier Opus versions
+  - `claude-sonnet-4-5` - Earlier Sonnet
+  - `claude-haiku-4-5` - Fastest
+  - `claude-fable-5` - Long autonomous tasks
+- **/model codex**: Set the Codex model for the channel
+  - `gpt-5.5` - Most capable
+  - `gpt-5.4-mini` - Fast and affordable (default)
+  - `gpt-5.4` - Capable
+- **/status**: Show current mode, models, and session info
 
 #### Project Commands
 - **/init**: Create a new project folder matching the channel name

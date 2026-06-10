@@ -132,29 +132,58 @@ describe("DatabaseManager", () => {
   });
 
   describe("model management", () => {
-    it("should return default model (sonnet) for non-existent channel", () => {
+    it("should return default model (claude-sonnet-4-6) for non-existent channel", () => {
       mockGet.mockReturnValue(null);
 
       const result = db.getModel("non-existent-channel");
 
-      expect(result).toBe("sonnet");
+      expect(result).toBe("claude-sonnet-4-6");
       expect(mockGet).toHaveBeenCalledWith("non-existent-channel");
     });
 
     it("should return model when it exists", () => {
-      mockGet.mockReturnValue({ model: "opus" });
+      mockGet.mockReturnValue({ model: "claude-opus-4-8" });
 
       const result = db.getModel("channel-1");
 
-      expect(result).toBe("opus");
+      expect(result).toBe("claude-opus-4-8");
       expect(mockGet).toHaveBeenCalledWith("channel-1");
     });
 
     it("should store a model", () => {
       const channelId = "test-channel-123";
-      const model = "haiku";
+      const model = "claude-haiku-4-5";
 
       db.setModel(channelId, model);
+
+      expect(mockRun).toHaveBeenCalledWith(channelId, model);
+    });
+  });
+
+  describe("codex model management", () => {
+    it("should return default codex model (gpt-5.4-mini) for non-existent channel", () => {
+      mockGet.mockReturnValue(null);
+
+      const result = db.getCodexModel("non-existent-channel");
+
+      expect(result).toBe("gpt-5.4-mini");
+      expect(mockGet).toHaveBeenCalledWith("non-existent-channel");
+    });
+
+    it("should return codex model when it exists", () => {
+      mockGet.mockReturnValue({ model: "gpt-5.5" });
+
+      const result = db.getCodexModel("channel-1");
+
+      expect(result).toBe("gpt-5.5");
+      expect(mockGet).toHaveBeenCalledWith("channel-1");
+    });
+
+    it("should store a codex model", () => {
+      const channelId = "test-channel-123";
+      const model = "gpt-5.4";
+
+      db.setCodexModel(channelId, model);
 
       expect(mockRun).toHaveBeenCalledWith(channelId, model);
     });

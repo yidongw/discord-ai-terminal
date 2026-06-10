@@ -1,8 +1,18 @@
 import { Database } from "bun:sqlite";
 import * as path from "path";
+import {
+  type CcModel,
+  type CodexModel,
+  DEFAULT_CC_MODEL,
+  DEFAULT_CODEX_MODEL,
+  normalizeCcModel,
+  normalizeCodexModel,
+} from "../utils/models.js";
 
 export type PermissionMode = "auto" | "plan" | "approve";
-export type ClaudeModel = "opus" | "sonnet" | "haiku";
+export type { CcModel, CodexModel };
+// Back-compat alias used by agent opts
+export type ClaudeModel = CcModel;
 
 // The common built-in tools, shown in `/tools list` so the user sees the full
 // picture. Not exhaustive (MCP tools are dynamic) — any tool a channel has an
@@ -123,7 +133,12 @@ export class DatabaseManager {
 
       CREATE TABLE IF NOT EXISTS channel_models (
         channel_id  TEXT PRIMARY KEY,
-        model       TEXT NOT NULL DEFAULT 'sonnet'
+        model       TEXT NOT NULL DEFAULT 'claude-sonnet-4-6'
+      );
+
+      CREATE TABLE IF NOT EXISTS channel_codex_models (
+        channel_id  TEXT PRIMARY KEY,
+        model       TEXT NOT NULL DEFAULT 'gpt-5.4-mini'
       );
 
       CREATE TABLE IF NOT EXISTS channel_hidden_tools (
@@ -302,16 +317,29 @@ export class DatabaseManager {
       .run(channelId, mode);
   }
 
-  getModel(channelId: string): ClaudeModel {
+  getModel(channelId: string): CcModel {
     const row = this.db
       .prepare(`SELECT model FROM channel_models WHERE channel_id = ?`)
       .get(channelId) as any;
-    return (row?.model as ClaudeModel) ?? "sonnet";
+    return normalizeCcModel(row?.model);
   }
 
-  setModel(channelId: string, model: ClaudeModel): void {
+  setModel(channelId: string, model: CcModel): void {
     this.db
       .prepare(`INSERT OR REPLACE INTO channel_models (channel_id, model) VALUES (?, ?)`)
+      .run(channelId, model);
+  }
+
+  getCodexModel(channelId: string): CodexModel {
+    const row = this.db
+      .prepare(`SELECT model FROM channel_codex_models WHERE channel_id = ?`)
+      .get(channelId) as any;
+    return normalizeCodexModel(row?.model);
+  }
+
+  setCodexModel(channelId: string, model: CodexModel): void {
+    this.db
+      .prepare(`INSERT OR REPLACE INTO channel_codex_models (channel_id, model) VALUES (?, ?)`)
       .run(channelId, model);
   }
 

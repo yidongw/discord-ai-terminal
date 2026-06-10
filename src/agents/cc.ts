@@ -1,5 +1,6 @@
 import type { AgentRunner, AgentRunOptions, AgentEvent } from "./index.js";
 import { buildClaudeCommand, buildClaudeCommandForGitHub, escapeShellString } from "../utils/shell.js";
+import { DEFAULT_CC_MODEL } from "../utils/models.js";
 import { parseSdkLine } from "./sdk-parser.js";
 
 export const ccAgent: AgentRunner = {
@@ -11,7 +12,7 @@ export const ccAgent: AgentRunner = {
     if (!opts.discordContext) {
       return buildClaudeCommandForGitHub(workDir, prompt, { prNumber: opts.prNumber, model: opts.model });
     }
-    return buildClaudeCommand(workDir, prompt, opts.sessionId, opts.discordContext, opts.mode ?? "auto", opts.model ?? "sonnet");
+    return buildClaudeCommand(workDir, prompt, opts.sessionId, opts.discordContext, opts.mode ?? "auto", opts.model ?? DEFAULT_CC_MODEL);
   },
 
   parseLine(line, workDir) { return parseSdkLine(line, workDir); },

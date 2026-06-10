@@ -12,7 +12,8 @@ import {
 import { SessionManager } from "./session-manager.js";
 import { DEFAULT_HIDDEN_TOOLS, KNOWN_TOOLS, toolIsHidden } from "../db/database.js";
 import { setThreadStatus } from "../utils/thread-status.js";
-import type { PermissionMode, ClaudeModel } from "../db/database.js";
+import type { PermissionMode, CcModel, CodexModel } from "../db/database.js";
+import { CC_MODEL_CHOICES, CODEX_MODEL_CHOICES } from "../utils/models.js";
 
 export class CommandHandler {
   constructor(
@@ -62,16 +63,29 @@ export class CommandHandler {
 
       new SlashCommandBuilder()
         .setName("model")
-        .setDescription("Set the Claude model for this channel")
-        .addStringOption((o) =>
-          o
-            .setName("model")
-            .setDescription("Model to use")
-            .setRequired(true)
-            .addChoices(
-              { name: "sonnet — balanced (default)", value: "sonnet" },
-              { name: "opus — most capable", value: "opus" },
-              { name: "haiku — fastest", value: "haiku" }
+        .setDescription("Set the model for cc or codex in this channel")
+        .addSubcommand((s) =>
+          s
+            .setName("cc")
+            .setDescription("Set the Claude Code model for this channel")
+            .addStringOption((o) =>
+              o
+                .setName("model")
+                .setDescription("Claude model to use")
+                .setRequired(true)
+                .addChoices(...CC_MODEL_CHOICES)
+            )
+        )
+        .addSubcommand((s) =>
+          s
+            .setName("codex")
+            .setDescription("Set the Codex model for this channel")
+            .addStringOption((o) =>
+              o
+                .setName("model")
+                .setDescription("Codex model to use")
+                .setRequired(true)
+                .addChoices(...CODEX_MODEL_CHOICES)
             )
         ),
 
@@ -199,7 +213,9 @@ export class CommandHandler {
   }
 
   private async handleStatus(i: ChatInputCommandInteraction): Promise<void> {
-    const session = this.sessionManager.getDb().getThreadSession(i.channelId);
+    const db = this.sessionManager.getDb();
+    const channelId = this.channelKey(i);
+    const session = db.getThreadSession(i.channelId);
     if (!session) {
       await i.reply({ embeds: [embed("ℹ️ No Session", "No session found for this thread.", 0x888888)] });
       return;
@@ -212,6 +228,8 @@ export class CommandHandler {
           .addFields(
             { name: "Agent", value: session.agent, inline: true },
             { name: "Status", value: running ? "🟢 Running" : "⚫ Idle", inline: true },
+            { name: "CC Model", value: db.getModel(channelId), inline: true },
+            { name: "Codex Model", value: db.getCodexModel(channelId), inline: true },
             { name: "Session ID", value: session.sessionId ?? "none", inline: false },
             { name: "Working Dir", value: `\`${session.workDir}\``, inline: false }
           )
@@ -229,10 +247,23 @@ export class CommandHandler {
   }
 
   private async handleModel(i: ChatInputCommandInteraction): Promise<void> {
-    const model = i.options.getString("model", true) as ClaudeModel;
-    this.sessionManager.getDb().setModel(this.channelKey(i), model);
+    const db = this.sessionManager.getDb();
+    const channelId = this.channelKey(i);
+    const sub = i.options.getSubcommand();
+
+    if (sub === "cc") {
+      const model = i.options.getString("model", true) as CcModel;
+      db.setModel(channelId, model);
+      await i.reply({
+        embeds: [embed("✅ CC Model Set", `Claude Code model set to **${model}** for this channel.`, 0x00ff00)],
+      });
+      return;
+    }
+
+    const model = i.options.getString("model", true) as CodexModel;
+    db.setCodexModel(channelId, model);
     await i.reply({
-      embeds: [embed("✅ Model Set", `Claude model set to **${model}** for this channel.`, 0x00ff00)],
+      embeds: [embed("✅ Codex Model Set", `Codex model set to **${model}** for this channel.`, 0x00ff00)],
     });
   }
 
