@@ -73,7 +73,7 @@ export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseCont
     const message = typeof detail === "string" && detail.trim()
       ? detail
       : (msg.subtype ?? "unknown error");
-    return { kind: "error", message };
+    return { kind: "error", message, subtype: msg.subtype };
   }
 
   return null;

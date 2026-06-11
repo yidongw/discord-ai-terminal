@@ -99,11 +99,20 @@ export function resolveThreadWorkDir(
   const worktreeBase = `origin/${base}`;
 
   fs.mkdirSync(path.dirname(wtPath), { recursive: true });
-  const result = spawnSync(
+  // Try remote tracking branch first; fall back to local branch for repos
+  // without a remote (e.g. preview-server which has no origin).
+  let result = spawnSync(
     "git",
     ["-C", repoPath, "worktree", "add", "-b", branch, wtPath, worktreeBase],
     { encoding: "utf8" }
   );
+  if (result.status !== 0) {
+    result = spawnSync(
+      "git",
+      ["-C", repoPath, "worktree", "add", "-b", branch, wtPath, base],
+      { encoding: "utf8" }
+    );
+  }
   if (result.status !== 0) {
     // Branch may already exist (e.g. a re-created thread reusing the name) —
     // check it out into the worktree instead of branching anew.

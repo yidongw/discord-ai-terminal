@@ -85,6 +85,12 @@ interface ActiveSession {
   usageLimitNoticeSent?: boolean;
   // Per-run turn cap (error_max_turns) — immediate --resume when no usage limit.
   pendingTurnLimitResume?: boolean;
+  // Non-JSON lines from the agent's output (stderr merged in). Capped at 20 lines
+  // so we have context when an error event arrives with no detail of its own.
+  nonJsonOutput: string[];
+  // True when this run used --resume (session already existed). Lets the error
+  // handler give a more useful message when the resume itself fails.
+  wasResume: boolean;
 }
 
 export class SessionManager {
@@ -365,6 +371,8 @@ export class SessionManager {
       stopping: false,
       completion: opts?.completion,
       discordContext,
+      nonJsonOutput: [],
+      wasResume: !!resumeSessionId,
     };
     this.active.set(threadId, session);
 
@@ -422,6 +430,11 @@ export class SessionManager {
         if (event) {
           try { this.handleEvent(threadId, event, session); }
           catch (err) { console.error(err); }
+        } else {
+          // Non-JSON line (e.g. stderr from the agent). Keep the last 20 so we
+          // have context when an error event arrives with no detail of its own.
+          session.nonJsonOutput.push(line);
+          if (session.nonJsonOutput.length > 20) session.nonJsonOutput.shift();
         }
       },
       onOffset: (offset) => {
@@ -815,8 +828,15 @@ export class SessionManager {
         return;
       }
       session.done = true;
+      let msg = event.message;
+      if (event.subtype === "error_during_execution" && session.wasResume) {
+        msg = "Session failed to resume — it was likely interrupted mid-execution (e.g. bot restart). Use /clear to start a fresh conversation.";
+      }
+      const detail = session.nonJsonOutput.length
+        ? `${msg}\n\n${session.nonJsonOutput.join("\n")}`
+        : msg;
       outbox.enqueue(() =>
-        thread.send({ embeds: [embed("❌ Failed", event.message, 0xff0000)] })
+        thread.send({ embeds: [embed("❌ Failed", detail, 0xff0000)] })
       );
       this.stopProcess(session);
       return;
