@@ -3,6 +3,7 @@ import {
   isUsageLimitMessage,
   parseSessionLimitReset,
   parseRateLimitReset,
+  formatResetLabel,
 } from "../../src/utils/session-limit-reset.js";
 
 describe("session-limit-reset", () => {
@@ -73,5 +74,19 @@ describe("session-limit-reset", () => {
     );
     expect(parsed).not.toBeNull();
     expect(parsed!.resetLabel).toContain("2:50am");
+  });
+
+  it("formats reset time in a configured timezone", () => {
+    const resetAt = Date.UTC(2026, 5, 11, 19, 50, 0);
+    expect(formatResetLabel(resetAt, "Asia/Shanghai")).toBe("3:50am");
+  });
+
+  it("formats weekday reset time in a configured timezone", () => {
+    const parsed = parseSessionLimitReset(
+      "You've hit your weekly limit · resets Mon 12:00am",
+      new Date("2026-06-11T14:00:00")
+    );
+    expect(parsed).not.toBeNull();
+    expect(formatResetLabel(parsed!.resetAt, "Asia/Shanghai", true)).toMatch(/^Mon /);
   });
 });

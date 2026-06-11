@@ -161,6 +161,10 @@ Type any message in a channel that corresponds to a repository folder. The bot w
   - `auto` - Execute immediately without asking
   - `plan` - Create detailed plan before executing
   - `approve` - Ask permission (✅/❌) before each dangerous action
+- **/timezone**: Set your personal timezone for session-limit timestamps
+  - `set` - Save an IANA timezone such as `Asia/Shanghai`
+  - `show` - Show the currently saved timezone
+  - `clear` - Remove your saved timezone and fall back to the bot default
 - **/model cc**: Set the Claude Code model for the channel (pinned version IDs)
   - `claude-sonnet-4-6` - Balanced default
   - `claude-opus-4-8` - Most capable Opus

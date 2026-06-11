@@ -14,6 +14,44 @@ export interface SessionLimitReset {
   resetLabel: string;
 }
 
+export function isValidTimeZone(timeZone: string): boolean {
+  if (!timeZone.trim()) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function formatResetLabel(
+  resetAt: number,
+  timeZone?: string,
+  includeWeekday = false
+): string {
+  const date = new Date(resetAt);
+  const options: Intl.DateTimeFormatOptions = {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  };
+  if (includeWeekday) options.weekday = "short";
+  if (timeZone) options.timeZone = timeZone;
+
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", options).formatToParts(date);
+    const weekday = parts.find((p) => p.type === "weekday")?.value;
+    const hour = parts.find((p) => p.type === "hour")?.value;
+    const minute = parts.find((p) => p.type === "minute")?.value;
+    const dayPeriod = parts.find((p) => p.type === "dayPeriod")?.value?.toLowerCase();
+    if (!hour || !minute || !dayPeriod) return date.toLocaleString();
+    const time = `${hour}:${minute}${dayPeriod}`;
+    return weekday ? `${weekday} ${time}` : time;
+  } catch {
+    return date.toLocaleString();
+  }
+}
+
 /** True when text looks like a Claude subscription usage-limit message. */
 export function isUsageLimitMessage(text: string): boolean {
   return USAGE_LIMIT_RE.test(text);
@@ -73,7 +111,7 @@ export function parseRateLimitReset(
   const future = candidates.filter((d) => d.getTime() > now.getTime());
   if (future.length === 0) return null;
   const resetDate = future.reduce((a, b) => (a < b ? a : b));
-  return { resetAt: resetDate.getTime(), resetLabel: resetDate.toLocaleString() };
+  return { resetAt: resetDate.getTime(), resetLabel: formatResetLabel(resetDate.getTime()) };
 }
 
 function parseClock(token: string): { hours: number; minutes: number } | null {
