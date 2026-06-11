@@ -224,6 +224,11 @@ export class DatabaseManager {
         channel_id TEXT NOT NULL,
         message_id TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS user_timezones (
+        user_id   TEXT PRIMARY KEY,
+        time_zone TEXT NOT NULL
+      );
     `);
   }
 
@@ -260,6 +265,18 @@ export class DatabaseManager {
     }
     if (!prCols.includes("tests_skipped")) {
       this.db.exec(`ALTER TABLE pr_threads ADD COLUMN tests_skipped INTEGER NOT NULL DEFAULT 0`);
+    }
+
+    const tzCols = (this.db.prepare(`PRAGMA table_info(user_timezones)`).all() as any[]).map(
+      (c) => c.name as string
+    );
+    if (tzCols.length === 0) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS user_timezones (
+          user_id   TEXT PRIMARY KEY,
+          time_zone TEXT NOT NULL
+        )
+      `);
     }
   }
 
@@ -389,6 +406,25 @@ export class DatabaseManager {
         `INSERT OR REPLACE INTO channel_hidden_tools (channel_id, tool_name, hidden) VALUES (?, ?, ?)`
       )
       .run(channelId, toolName, hidden ? 1 : 0);
+  }
+
+  // ── User settings ────────────────────────────────────────────────────────
+
+  getUserTimeZone(userId: string): string | null {
+    const row = this.db
+      .prepare(`SELECT time_zone FROM user_timezones WHERE user_id = ?`)
+      .get(userId) as any;
+    return (row?.time_zone as string | undefined) ?? null;
+  }
+
+  setUserTimeZone(userId: string, timeZone: string): void {
+    this.db
+      .prepare(`INSERT OR REPLACE INTO user_timezones (user_id, time_zone) VALUES (?, ?)`)
+      .run(userId, timeZone);
+  }
+
+  deleteUserTimeZone(userId: string): void {
+    this.db.prepare(`DELETE FROM user_timezones WHERE user_id = ?`).run(userId);
   }
 
   // ── Scheduled tasks ──────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ import { mainRepoOf, removeWorktree, type RemoveResult } from "../utils/path-res
 import { setThreadStatus } from "../utils/thread-status.js";
 import { escapeShellString, type DiscordContext } from "../utils/shell.js";
 import { RunTailer, isPidAlive } from "./run-tailer.js";
-import { parseSessionLimitReset } from "../utils/session-limit-reset.js";
+import { formatResetLabel, parseSessionLimitReset } from "../utils/session-limit-reset.js";
 import {
   SESSION_LIMIT_CONTINUATION_PROMPT,
   registerSessionLimitWakeup,
@@ -103,11 +103,13 @@ export class SessionManager {
   // Dispatches a run's CompletionAction (registered by index.ts; only set when
   // the GitHub integration is enabled).
   private completionHandler?: CompletionHandler;
+  private defaultTimeZone: string | null;
 
   constructor() {
     this.db = new DatabaseManager();
     this.db.cleanupOldThreadSessions();
     this.runsDir = path.join(process.cwd(), "runs");
+    this.defaultTimeZone = process.env.DISCORD_TIMEZONE || process.env.TZ || null;
     try { fs.mkdirSync(this.runsDir, { recursive: true }); } catch {}
     this.cleanupOrphanLogs();
   }
@@ -648,6 +650,26 @@ export class SessionManager {
     );
   }
 
+  private getUsageLimitTimeZone(session: ActiveSession): string | null {
+    const userId = session.discordContext?.userId;
+    if (userId) {
+      const tz = this.db.getUserTimeZone(userId);
+      if (tz) return tz;
+    }
+    return this.defaultTimeZone;
+  }
+
+  private formatUsageLimitLabel(session: ActiveSession, resetAt: number, sourceLabel?: string): string {
+    const timeZone = this.getUsageLimitTimeZone(session);
+    if (!timeZone) return sourceLabel ?? formatResetLabel(resetAt);
+    const includeWeekday = !!sourceLabel && /^(mon|tue|wed|thu|fri|sat|sun)/i.test(sourceLabel);
+    return formatResetLabel(resetAt, timeZone, includeWeekday);
+  }
+
+  resolveUserTimeZone(userId: string): string | null {
+    return this.db.getUserTimeZone(userId) ?? this.defaultTimeZone;
+  }
+
   // Detect "You've hit your session limit · resets …" in streamed text/errors.
   private noteUsageLimitReset(session: ActiveSession, text: string): void {
     if (session.agentKey !== "cc" || session.pendingUsageLimitResume) return;
@@ -656,7 +678,7 @@ export class SessionManager {
     session.pendingUsageLimitResume = true;
     session.pendingTurnLimitResume = false;
     session.usageLimitResetAt = parsed.resetAt;
-    session.usageLimitResetLabel = parsed.resetLabel;
+    session.usageLimitResetLabel = this.formatUsageLimitLabel(session, parsed.resetAt, parsed.resetLabel);
   }
 
   private enqueueUsageLimitNotice(session: ActiveSession): void {
@@ -705,12 +727,12 @@ export class SessionManager {
         session.pendingUsageLimitResume = true;
         session.pendingTurnLimitResume = false;
         session.usageLimitResetAt = event.resetAt;
-        session.usageLimitResetLabel = event.resetLabel;
+        session.usageLimitResetLabel = this.formatUsageLimitLabel(session, event.resetAt, event.resetLabel);
         this.enqueueUsageLimitNotice(session);
         this.stopProcess(session);
       } else {
         session.usageLimitResetAt = event.resetAt;
-        session.usageLimitResetLabel = event.resetLabel;
+        session.usageLimitResetLabel = this.formatUsageLimitLabel(session, event.resetAt, event.resetLabel);
       }
       return;
     }

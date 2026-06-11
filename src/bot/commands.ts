@@ -15,6 +15,7 @@ import { DEFAULT_HIDDEN_TOOLS, KNOWN_TOOLS, toolIsHidden } from "../db/database.
 import { setThreadStatus } from "../utils/thread-status.js";
 import type { PermissionMode, CcModel, CodexModel, CsModel } from "../db/database.js";
 import { CC_MODEL_CHOICES, CODEX_MODEL_CHOICES, CS_MODEL_CHOICES } from "../utils/models.js";
+import { isValidTimeZone } from "../utils/session-limit-reset.js";
 
 export class CommandHandler {
   constructor(
@@ -132,6 +133,27 @@ export class CommandHandler {
         .addSubcommand((s) =>
           s.setName("list").setDescription("List which tools are hidden/shown in this channel")
         ),
+
+      new SlashCommandBuilder()
+        .setName("timezone")
+        .setDescription("Set your personal timezone for session-limit timestamps")
+        .addSubcommand((s) =>
+          s
+            .setName("set")
+            .setDescription("Set your timezone")
+            .addStringOption((o) =>
+              o
+                .setName("time_zone")
+                .setDescription("IANA timezone, e.g. Asia/Shanghai")
+                .setRequired(true)
+            )
+        )
+        .addSubcommand((s) =>
+          s.setName("show").setDescription("Show your saved timezone")
+        )
+        .addSubcommand((s) =>
+          s.setName("clear").setDescription("Clear your saved timezone")
+        ),
     ];
   }
 
@@ -173,6 +195,7 @@ export class CommandHandler {
     if (commandName === "mode") return this.handleMode(interaction);
     if (commandName === "model") return this.handleModel(interaction);
     if (commandName === "tools") return this.handleTools(interaction);
+    if (commandName === "timezone") return this.handleTimezone(interaction);
     if (commandName === "update") return this.handleUpdate(interaction);
   }
 
@@ -331,6 +354,65 @@ export class CommandHandler {
         embed(
           "✅ Tool Visibility",
           `\`${tool}\` messages will be **${hidden ? "hidden" : "shown"}** in this channel.`,
+          0x00ff00
+        ),
+      ],
+    });
+  }
+
+  private async handleTimezone(i: ChatInputCommandInteraction): Promise<void> {
+    const db = this.sessionManager.getDb();
+    const sub = i.options.getSubcommand();
+    const userId = i.user.id;
+
+    if (sub === "show") {
+      const tz = this.sessionManager.resolveUserTimeZone(userId);
+      await i.reply({
+        ephemeral: true,
+        embeds: [
+          embed(
+            "🕒 Timezone",
+            tz
+              ? `Using **${tz}** for session-limit timestamps.`
+              : "No timezone configured. Session-limit timestamps will use the bot host timezone.",
+            0x5865f2
+          ),
+        ],
+      });
+      return;
+    }
+
+    if (sub === "clear") {
+      db.deleteUserTimeZone(userId);
+      await i.reply({
+        ephemeral: true,
+        embeds: [embed("🕒 Timezone Cleared", "Your custom timezone was removed.", 0x00ff00)],
+      });
+      return;
+    }
+
+    const timeZone = i.options.getString("time_zone", true).trim();
+    if (!isValidTimeZone(timeZone)) {
+      await i.reply({
+        ephemeral: true,
+        embeds: [
+          embed(
+            "❌ Invalid Timezone",
+            `\`${timeZone}\` is not a valid IANA timezone. Example: \`Asia/Shanghai\`.`,
+            0xff0000
+          ),
+        ],
+      });
+      return;
+    }
+
+    db.setUserTimeZone(userId, timeZone);
+    await i.reply({
+      ephemeral: true,
+      embeds: [
+        embed(
+          "🕒 Timezone Set",
+          `Session-limit timestamps will now be shown in **${timeZone}** for your account.`,
           0x00ff00
         ),
       ],
