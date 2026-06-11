@@ -784,6 +784,17 @@ export class SessionManager {
         this.stopProcess(session);
         return;
       }
+      // Stale/expired session — clear the stored session ID so the next message
+      // starts a fresh conversation instead of repeatedly failing to resume.
+      if (event.subtype === "error_during_execution") {
+        this.db.clearSessionId(threadId);
+        session.done = true;
+        outbox.enqueue(() =>
+          thread.send({ embeds: [embed("⚠️ Session reset", "Previous session expired or couldn't resume — cleared. Resend your message to start fresh.", 0xff6600)] })
+        );
+        this.stopProcess(session);
+        return;
+      }
       session.done = true;
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("❌ Failed", event.message, 0xff0000)] })

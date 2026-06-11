@@ -307,6 +307,10 @@ export class DatabaseManager {
       .run(sessionId, threadId);
   }
 
+  clearSessionId(threadId: string): void {
+    this.db.prepare(`UPDATE thread_sessions SET session_id = NULL WHERE thread_id = ?`).run(threadId);
+  }
+
   deleteThreadSession(threadId: string): void {
     this.db.prepare(`DELETE FROM thread_sessions WHERE thread_id = ?`).run(threadId);
   }
