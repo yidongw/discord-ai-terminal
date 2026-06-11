@@ -209,7 +209,8 @@ export class GitHubHandler {
   }
 
   // Called when a workflow_run completes with failure or timed_out. Finds the
-  // maker thread for the PR (or branch) and posts a failure notification.
+  // maker thread, notifies it, then either runs the agent immediately or queues
+  // a fix prompt to start as soon as the agent finishes its current task.
   async handleCiFailure(
     repo: string,
     prNumber: number | null,
@@ -242,17 +243,52 @@ export class GitHubHandler {
     }
 
     const label = prNumber ? `PR #${prNumber}` : headBranch || repo;
-    const conclusion = runUrl ? `[${workflowName}](${runUrl})` : workflowName;
-    const message = `⚠️ GitHub Actions failed for ${label}: ${conclusion}`;
+    const workflowLink = runUrl ? `[${workflowName}](${runUrl})` : workflowName;
+    const fixPrompt = buildCiFixPrompt(label, workflowName, runUrl);
 
+    let thread: import("discord.js").ThreadChannel | null = null;
     try {
-      const thread = await this.client.channels.fetch(makerThreadId).catch(() => null);
-      if (thread?.isThread()) {
-        await (thread as import("discord.js").ThreadChannel).send(message);
-        console.log(`[github] CI failure posted to maker thread ${makerThreadId}`);
-      }
+      const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
+      if (ch?.isThread()) thread = ch as import("discord.js").ThreadChannel;
     } catch (err) {
-      console.error(`[github] Failed to post CI failure to thread ${makerThreadId}:`, err);
+      console.error(`[github] CI failure: failed to fetch thread ${makerThreadId}:`, err);
+      return;
+    }
+
+    if (!thread) {
+      console.error(`[github] CI failure: thread ${makerThreadId} not found or not a thread`);
+      return;
+    }
+
+    const isBusy = this.sessionManager.hasActiveProcess(makerThreadId);
+
+    if (isBusy) {
+      this.sessionManager.setPendingPostRunPrompt(makerThreadId, fixPrompt);
+      await thread.send(
+        `⚠️ GitHub Actions failed for ${label}: ${workflowLink}\n🔄 Agent is busy — will investigate once current task finishes.`
+      );
+      console.log(`[github] CI failure queued for ${makerThreadId} (busy)`);
+    } else {
+      await thread.send(`⚠️ GitHub Actions failed for ${label}: ${workflowLink}`);
+      const session = db.getThreadSession(makerThreadId);
+      if (!session) {
+        console.log(`[github] CI failure: no thread session for ${makerThreadId}, cannot auto-fix`);
+        return;
+      }
+      try {
+        await this.sessionManager.runAgent(
+          makerThreadId,
+          session.channelId,
+          thread,
+          session.agent,
+          session.workDir,
+          fixPrompt,
+          undefined
+        );
+        console.log(`[github] CI failure: started fix run in ${makerThreadId}`);
+      } catch (err) {
+        console.error(`[github] CI failure: failed to start fix run:`, err);
+      }
     }
   }
 
@@ -379,4 +415,17 @@ FINDINGS:
 If STATUS is FAIL, append a Test plan for the next run — list only the items that failed plus any new issues you discovered:
 Test plan:
 - <item>`;
+}
+
+function buildCiFixPrompt(label: string, workflowName: string, runUrl: string): string {
+  return `GitHub Actions failed for ${label}.
+
+Workflow: ${workflowName}
+Run URL: ${runUrl}
+
+Please investigate the failure:
+1. Run the failing tests or checks locally to reproduce the issue
+2. Look at git log and recent changes to understand what might have caused it
+3. Fix the root cause
+4. Verify the fix works locally before finishing`;
 }
