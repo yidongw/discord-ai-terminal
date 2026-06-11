@@ -66,7 +66,7 @@ describe('parseSdkLine', () => {
     });
   });
 
-  it('maps rate_limit_event resetsAt to rate_limit', () => {
+  it('maps rejected rate_limit_event to rate_limit', () => {
     const now = Date.now();
     const resetsAt = Math.floor((now + 3600_000) / 1000);
     const event = parseSdkLine(
@@ -81,6 +81,18 @@ describe('parseSdkLine', () => {
     if (event?.kind === 'rate_limit') {
       expect(event.resetAt).toBe(resetsAt * 1000);
     }
+  });
+
+  it('ignores allowed rate_limit_event (informational, not a limit hit)', () => {
+    const event = parseSdkLine(
+      JSON.stringify({
+        type: 'rate_limit_event',
+        rate_limit_info: { status: 'allowed', resetsAt: 1781157000 },
+      }),
+      '/test/dir'
+    );
+
+    expect(event).toBeNull();
   });
 
   it('prefers the error detail string over subtype', () => {

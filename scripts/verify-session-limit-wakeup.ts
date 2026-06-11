@@ -128,18 +128,23 @@ async function main() {
     console.log(`  prompt:    ${result.stored.prompt.slice(0, 60)}…`);
   }
 
-  const hitLimit = !!result.limitMessage || result.events.some((e) => e.includes("rate_limit"));
+  const hitLimit = !!result.limitMessage;
+  const falsePositive = !hitLimit && result.stored !== null;
+
+  if (!hitLimit) {
+    if (falsePositive) {
+      console.log("\n=== Result: FAIL — false positive: wakeup registered without limit hit ===\n");
+      process.exit(1);
+    }
+    console.log("\n=== Result: PASS — normal run, no false wakeup registered ===\n");
+    process.exit(0);
+  }
+
   const ok =
-    hitLimit &&
     result.stored !== null &&
     result.stored.id === sessionLimitTaskId(threadId) &&
     result.stored.prompt === SESSION_LIMIT_CONTINUATION_PROMPT &&
     result.stored.maxRuns === 1;
-
-  if (!hitLimit) {
-    console.log("\n=== Result: SKIP — CC did not hit session limit this run ===\n");
-    process.exit(0);
-  }
 
   console.log(`\n=== Result: ${ok ? "PASS — wakeup registered from real CC output" : "FAIL"} ===\n`);
   process.exit(ok ? 0 : 1);
