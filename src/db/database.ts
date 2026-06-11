@@ -697,7 +697,7 @@ export class DatabaseManager {
 
   findPrForMakerThread(threadId: string): { prNumber: string; repo: string } | null {
     const row = this.db
-      .prepare(`SELECT pr_number, repo FROM pr_threads WHERE maker_thread_id = ? LIMIT 1`)
+      .prepare(`SELECT pr_number, repo FROM pr_threads WHERE maker_thread_id = ? ORDER BY created_at DESC LIMIT 1`)
       .get(threadId) as any;
     return row ? { prNumber: row.pr_number, repo: row.repo } : null;
   }
