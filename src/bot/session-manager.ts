@@ -25,7 +25,6 @@ export type CompletionAction =
 
 export type CompletionHandler = (action: CompletionAction, text: string) => Promise<void>;
 
-const TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_EMBED = 4000;
 // Grace period after SIGTERM before we escalate to SIGKILL. This keeps a
 // runaway agent that ignores SIGTERM from streaming "already produced" output
@@ -54,7 +53,6 @@ interface ActiveSession {
   exited: boolean;
   exitCode?: number | null;
   tailer?: RunTailer;
-  timeout?: ReturnType<typeof setTimeout>;
   finalized: boolean;
   thread: any;
   toolCalls: Map<string, { message: any }>;
@@ -391,13 +389,6 @@ export class SessionManager {
       );
     });
 
-    session.timeout = setTimeout(() => {
-      session.outbox.enqueue(() =>
-        thread.send({ embeds: [embed("⏰ Timeout", "30 min limit reached.", 0xffd700)] })
-      );
-      this.stopProcess(session);
-    }, TIMEOUT_MS);
-
     this.startTailer(threadId, session, agent, 0, () => !session.exited);
   }
 
@@ -437,7 +428,6 @@ export class SessionManager {
   private async finalizeRun(threadId: string, session: ActiveSession): Promise<void> {
     if (session.finalized) return;
     session.finalized = true;
-    if (session.timeout) clearTimeout(session.timeout);
     if (session.killTimer) clearTimeout(session.killTimer);
 
     // Only for fresh runs (exitCode known): surface a crash the agent didn't
@@ -615,16 +605,6 @@ export class SessionManager {
     this.getTyping(run.threadId, thread).start();
 
     if (alive) {
-      // Re-arm the timeout relative to the original start.
-      const remaining = run.startedAt + TIMEOUT_MS - Date.now();
-      const fire = () => {
-        session.outbox.enqueue(() =>
-          thread.send({ embeds: [embed("⏰ Timeout", "30 min limit reached.", 0xffd700)] })
-        );
-        this.stopProcess(session);
-      };
-      if (remaining <= 0) fire();
-      else session.timeout = setTimeout(fire, remaining);
       console.log(`[reattach] ${run.runId} alive (pid ${run.pid}); resuming at offset ${run.stdoutOffset}`);
     } else {
       console.log(`[reattach] ${run.runId} already exited; draining remaining output`);
@@ -901,7 +881,6 @@ export class SessionManager {
   // active_runs rows persist, so the next boot re-attaches via reattachRuns().
   async detachAndExit(): Promise<void> {
     for (const [, session] of this.active) {
-      if (session.timeout) clearTimeout(session.timeout);
       if (session.killTimer) clearTimeout(session.killTimer);
       try { session.tailer?.stop(); } catch {}
     }
@@ -917,7 +896,6 @@ export class SessionManager {
   // tests; the live bot uses detachAndExit() so runs survive restarts.
   killAll(): void {
     for (const [, session] of this.active) {
-      if (session.timeout) clearTimeout(session.timeout);
       if (session.killTimer) clearTimeout(session.killTimer);
       try { session.tailer?.stop(); } catch {}
       this.signalGroup(session.pid, "SIGKILL");
