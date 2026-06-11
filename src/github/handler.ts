@@ -212,6 +212,10 @@ export class GitHubHandler {
     const repoName = repo.split("/")[1] ?? repo;
     const db = this.sessionManager.getDb();
 
+    // Fire a GET to bust the cold start before anyone opens the URL in a browser.
+    // Intentionally not awaited — runs in parallel with the rest of the setup.
+    fetch(previewUrl, { signal: AbortSignal.timeout(15000) }).catch(() => {});
+
     // Second chance when pull_request.opened was missed (e.g. Actions didn't forward it).
     await this.ensurePrLinkedToMakerThread(repo, prNumber);
 
@@ -319,7 +323,7 @@ ${prBody || "(no description provided)"}
 
 Use agent-browser to test the preview:
   agent-browser open <url>
-  agent-browser snapshot -i
+  agent-browser snapshot -i   (if the page is still loading or shows a cold-start spinner, wait 5s and snapshot again)
   agent-browser click @eN / agent-browser fill @eN "text"
   agent-browser screenshot --path /tmp/pr-${prNumber}-N.png
 

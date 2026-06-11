@@ -7,9 +7,8 @@ import type { DatabaseManager, BackgroundJob } from "../db/database.js";
 import { escapeShellString } from "../utils/shell.js";
 import { isPidAlive } from "./run-tailer.js";
 
-// How often we re-stat running jobs for completion. Background commands are
-// minutes-to-hours long, so a 10s poll is plenty.
-const POLL_INTERVAL_MS = 10 * 1000;
+// How often we re-stat running jobs for completion.
+const POLL_INTERVAL_MS = 3 * 1000;
 // Appended to a job's log by the wrapper so completion (and the exit code) is
 // detectable from the FILE alone — survives a bot restart, no live-PID needed.
 const SENTINEL_RE = /__JOB_DONE__ exit=(\d+)/;

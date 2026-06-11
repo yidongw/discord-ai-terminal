@@ -540,13 +540,13 @@ export class SessionManager {
     const runs = this.db.listActiveRuns();
     if (runs.length === 0) return;
     console.log(`[reattach] re-attaching to ${runs.length} in-flight run(s)`);
-    for (const run of runs) {
-      try {
-        await this.reattachOne(client, run);
-      } catch (err) {
-        console.error(`[reattach] run ${run.runId} failed:`, err);
-      }
-    }
+    await Promise.all(
+      runs.map((run) =>
+        this.reattachOne(client, run).catch((err) =>
+          console.error(`[reattach] run ${run.runId} failed:`, err)
+        )
+      )
+    );
   }
 
   private async reattachOne(client: Client, run: ActiveRun): Promise<void> {
