@@ -85,6 +85,9 @@ interface ActiveSession {
   usageLimitNoticeSent?: boolean;
   // Per-run turn cap (error_max_turns) — immediate --resume when no usage limit.
   pendingTurnLimitResume?: boolean;
+  // Non-JSON lines from the agent's output (stderr merged in). Capped at 20 lines
+  // so we have context when an error event arrives with no detail of its own.
+  nonJsonOutput: string[];
 }
 
 export class SessionManager {
@@ -354,6 +357,7 @@ export class SessionManager {
       stopping: false,
       completion: opts?.completion,
       discordContext,
+      nonJsonOutput: [],
     };
     this.active.set(threadId, session);
 
@@ -411,6 +415,11 @@ export class SessionManager {
         if (event) {
           try { this.handleEvent(threadId, event, session); }
           catch (err) { console.error(err); }
+        } else {
+          // Non-JSON line (e.g. stderr from the agent). Keep the last 20 so we
+          // have context when an error event arrives with no detail of its own.
+          session.nonJsonOutput.push(line);
+          if (session.nonJsonOutput.length > 20) session.nonJsonOutput.shift();
         }
       },
       onOffset: (offset) => {
@@ -784,20 +793,12 @@ export class SessionManager {
         this.stopProcess(session);
         return;
       }
-      // Stale/expired session — clear the stored session ID so the next message
-      // starts a fresh conversation instead of repeatedly failing to resume.
-      if (event.subtype === "error_during_execution") {
-        this.db.clearSessionId(threadId);
-        session.done = true;
-        outbox.enqueue(() =>
-          thread.send({ embeds: [embed("⚠️ Session reset", "Previous session expired or couldn't resume — cleared. Resend your message to start fresh.", 0xff6600)] })
-        );
-        this.stopProcess(session);
-        return;
-      }
       session.done = true;
+      const detail = session.nonJsonOutput.length
+        ? `${event.message}\n\n${session.nonJsonOutput.join("\n")}`
+        : event.message;
       outbox.enqueue(() =>
-        thread.send({ embeds: [embed("❌ Failed", event.message, 0xff0000)] })
+        thread.send({ embeds: [embed("❌ Failed", detail, 0xff0000)] })
       );
       this.stopProcess(session);
       return;
