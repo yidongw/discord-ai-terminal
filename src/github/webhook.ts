@@ -89,6 +89,21 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
     if (prNumber) await handler.handlePrOpened(repo, prNumber, headRef);
     return;
   }
+
+  if (
+    event === "workflow_run" &&
+    payload.action === "completed" &&
+    (payload.workflow_run?.conclusion === "failure" ||
+      payload.workflow_run?.conclusion === "timed_out")
+  ) {
+    const run = payload.workflow_run;
+    const prNumber: number | null = run.pull_requests?.[0]?.number ?? null;
+    const workflowName: string = run.name ?? "Unknown workflow";
+    const runUrl: string = run.html_url ?? "";
+    const headBranch: string = run.head_branch ?? "";
+    await handler.handleCiFailure(repo, prNumber, workflowName, runUrl, headBranch);
+    return;
+  }
 }
 
 async function verifySignature(body: string, sig: string): Promise<boolean> {

@@ -95,6 +95,10 @@ export class SessionManager {
   // single ordered queue and a single typing indicator instead of racing.
   private outboxes = new Map<string, Outbox>();
   private typing = new Map<string, TypingIndicator>();
+  // Prompt queued to run once a thread's current run finishes (e.g. a CI fix
+  // request that arrived while the agent was busy). At most one pending prompt
+  // per thread — a newer failure overwrites the old one.
+  private pendingPostRunPrompts = new Map<string, string>();
   // Where detached runs write their append-only output logs (one per run). The
   // bot tails these and re-attaches to them after a restart.
   private runsDir: string;
@@ -114,6 +118,13 @@ export class SessionManager {
 
   setCompletionHandler(handler: CompletionHandler): void {
     this.completionHandler = handler;
+  }
+
+  // Queue a prompt to run in a thread once its current run finishes. If the
+  // thread is already idle, the caller should invoke runAgent directly instead.
+  // A newer call overwrites any previously queued prompt for the same thread.
+  setPendingPostRunPrompt(threadId: string, prompt: string): void {
+    this.pendingPostRunPrompts.set(threadId, prompt);
   }
 
   // A thread is "active" while its run is in flight OR its outbox still has
@@ -486,6 +497,25 @@ export class SessionManager {
           })
         );
         await session.outbox.drain();
+      }
+    } else {
+      // No resume needed — dispatch any queued post-run prompt (e.g. a CI fix).
+      const pendingPrompt = this.pendingPostRunPrompts.get(threadId);
+      if (pendingPrompt) {
+        this.pendingPostRunPrompts.delete(threadId);
+        try {
+          await this.runAgent(
+            threadId,
+            session.channelId,
+            session.thread,
+            session.agentKey,
+            session.workDir,
+            pendingPrompt,
+            session.discordContext
+          );
+        } catch (err) {
+          console.error(`[pending-prompt] auto-run failed for ${threadId}:`, err);
+        }
       }
     }
 
