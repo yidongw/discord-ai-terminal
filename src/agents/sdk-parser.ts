@@ -37,7 +37,10 @@ export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseCont
   }
 
   if (msg.type === "rate_limit_event") {
-    const parsed = parseRateLimitReset(msg.rate_limit_info);
+    // Informational when status is "allowed" — only act on an actual rejection.
+    const info = msg.rate_limit_info;
+    if (info?.status !== "rejected") return null;
+    const parsed = parseRateLimitReset(info);
     if (parsed) return { kind: "rate_limit", resetAt: parsed.resetAt, resetLabel: parsed.resetLabel };
     return null;
   }
