@@ -208,6 +208,54 @@ export class GitHubHandler {
     }
   }
 
+  // Called when a workflow_run completes with failure or timed_out. Finds the
+  // maker thread for the PR (or branch) and posts a failure notification.
+  async handleCiFailure(
+    repo: string,
+    prNumber: number | null,
+    workflowName: string,
+    runUrl: string,
+    headBranch: string
+  ): Promise<void> {
+    const db = this.sessionManager.getDb();
+    const repoName = repo.split("/")[1] ?? repo;
+
+    let makerThreadId: string | null | undefined = null;
+
+    if (prNumber) {
+      makerThreadId =
+        db.getPrThreads(String(prNumber), repo)?.makerThreadId ??
+        db.getPrThreads(String(prNumber), repoName)?.makerThreadId;
+    }
+
+    if (!makerThreadId && headBranch) {
+      makerThreadId = db.findThreadByBranch(headBranch);
+    }
+
+    if (!makerThreadId) {
+      console.log(
+        `[github] CI failure on ${repo} (${workflowName}): no maker thread found` +
+          (prNumber ? ` for PR #${prNumber}` : "") +
+          (headBranch ? ` branch=${headBranch}` : "")
+      );
+      return;
+    }
+
+    const label = prNumber ? `PR #${prNumber}` : headBranch || repo;
+    const conclusion = runUrl ? `[${workflowName}](${runUrl})` : workflowName;
+    const message = `⚠️ GitHub Actions failed for ${label}: ${conclusion}`;
+
+    try {
+      const thread = await this.client.channels.fetch(makerThreadId).catch(() => null);
+      if (thread?.isThread()) {
+        await (thread as import("discord.js").ThreadChannel).send(message);
+        console.log(`[github] CI failure posted to maker thread ${makerThreadId}`);
+      }
+    } catch (err) {
+      console.error(`[github] Failed to post CI failure to thread ${makerThreadId}:`, err);
+    }
+  }
+
   async handlePreviewUrl(repo: string, prNumber: number, previewUrl: string): Promise<void> {
     const repoName = repo.split("/")[1] ?? repo;
     const db = this.sessionManager.getDb();
