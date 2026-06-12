@@ -692,7 +692,21 @@ export class DatabaseManager {
     const row = this.db
       .prepare(`SELECT thread_id FROM thread_sessions WHERE branch = ? LIMIT 1`)
       .get(branch) as any;
-    return row?.thread_id ?? null;
+    if (row?.thread_id) return row.thread_id;
+
+    // Fuzzy fallback: branch names embed the thread's shortId (last 6 digits of
+    // thread_id) as `discord/<slug>-<shortId>`. When the branch has extra segments
+    // after the shortId (e.g. `-nav-id`), the exact match above fails. Extract all
+    // 6-digit sequences and try each as a thread_id suffix.
+    const segments = branch.match(/\d{6}/g) ?? [];
+    for (const seg of segments) {
+      const fuzzy = this.db
+        .prepare(`SELECT thread_id FROM thread_sessions WHERE thread_id LIKE ? ORDER BY created_at DESC LIMIT 1`)
+        .get(`%${seg}`) as any;
+      if (fuzzy?.thread_id) return fuzzy.thread_id;
+    }
+
+    return null;
   }
 
   findPrForMakerThread(threadId: string): { prNumber: string; repo: string } | null {
