@@ -20,6 +20,18 @@ import {
 // at finalize from the FULL run text re-read off the log file. The actual work
 // is done by a handler registered via setCompletionHandler (keeps this module
 // free of any github/* dependency).
+
+// A user message queued to run after the current agent finishes.
+export interface QueuedMessage {
+  prompt: string;
+  originalText: string;
+  discordContext: DiscordContext;
+  agentKey: string;
+  workDir: string;
+  channelId: string;
+  thread: any;
+}
+
 export type CompletionAction =
   | { kind: "pr_test"; repo: string; prNumber: number; agentKey: string };
 
@@ -105,6 +117,9 @@ export class SessionManager {
   // request that arrived while the agent was busy). At most one pending prompt
   // per thread — a newer failure overwrites the old one.
   private pendingPostRunPrompts = new Map<string, string>();
+  // User messages queued while an agent was running (FIFO). Multiple messages
+  // may be queued; each is dispatched in order once the thread becomes idle.
+  private messageQueues = new Map<string, QueuedMessage[]>();
   // Where detached runs write their append-only output logs (one per run). The
   // bot tails these and re-attaches to them after a restart.
   private runsDir: string;
@@ -131,6 +146,27 @@ export class SessionManager {
   // A newer call overwrites any previously queued prompt for the same thread.
   setPendingPostRunPrompt(threadId: string, prompt: string): void {
     this.pendingPostRunPrompts.set(threadId, prompt);
+  }
+
+  // Append a user-initiated message to the per-thread FIFO queue.
+  enqueueMessage(threadId: string, msg: QueuedMessage): void {
+    const queue = this.messageQueues.get(threadId) ?? [];
+    queue.push(msg);
+    this.messageQueues.set(threadId, queue);
+  }
+
+  // Pop the next queued user message for a thread, or undefined if empty.
+  dequeueMessage(threadId: string): QueuedMessage | undefined {
+    const queue = this.messageQueues.get(threadId);
+    if (!queue || queue.length === 0) return undefined;
+    const msg = queue.shift()!;
+    if (queue.length === 0) this.messageQueues.delete(threadId);
+    return msg;
+  }
+
+  // Number of user messages waiting in the queue for a thread.
+  getQueueLength(threadId: string): number {
+    return this.messageQueues.get(threadId)?.length ?? 0;
   }
 
   // A thread is "active" while its run is in flight OR its outbox still has
@@ -184,6 +220,7 @@ export class SessionManager {
   clearSession(threadId: string): void {
     this.killProcess(threadId);
     this.db.deleteThreadSession(threadId);
+    this.messageQueues.delete(threadId);
   }
 
   // Remove a thread's isolated worktree + branch and forget the session.
@@ -512,22 +549,48 @@ export class SessionManager {
         await session.outbox.drain();
       }
     } else {
-      // No resume needed — dispatch any queued post-run prompt (e.g. a CI fix).
-      const pendingPrompt = this.pendingPostRunPrompts.get(threadId);
-      if (pendingPrompt) {
-        this.pendingPostRunPrompts.delete(threadId);
-        try {
-          await this.runAgent(
-            threadId,
-            session.channelId,
-            session.thread,
-            session.agentKey,
-            session.workDir,
-            pendingPrompt,
-            session.discordContext
-          );
-        } catch (err) {
-          console.error(`[pending-prompt] auto-run failed for ${threadId}:`, err);
+      // Only dispatch if this is still the active session — an interrupt may have
+      // already started a newer run, in which case we must not steal the thread.
+      if (this.active.get(threadId) === session) {
+        const queued = this.dequeueMessage(threadId);
+        if (queued) {
+          // Restate the queued message so the user knows what's being processed.
+          const preview = queued.originalText.length > 200
+            ? queued.originalText.slice(0, 200) + "…"
+            : queued.originalText;
+          await queued.thread.send(`📋 **Processing queued message:**\n>>> ${preview}`);
+          try {
+            await this.runAgent(
+              threadId,
+              queued.channelId,
+              queued.thread,
+              queued.agentKey,
+              queued.workDir,
+              queued.prompt,
+              queued.discordContext
+            );
+          } catch (err) {
+            console.error(`[queue] run failed for ${threadId}:`, err);
+          }
+        } else {
+          // No user queue — fall back to any pending post-run prompt (e.g. CI fix).
+          const pendingPrompt = this.pendingPostRunPrompts.get(threadId);
+          if (pendingPrompt) {
+            this.pendingPostRunPrompts.delete(threadId);
+            try {
+              await this.runAgent(
+                threadId,
+                session.channelId,
+                session.thread,
+                session.agentKey,
+                session.workDir,
+                pendingPrompt,
+                session.discordContext
+              );
+            } catch (err) {
+              console.error(`[pending-prompt] auto-run failed for ${threadId}:`, err);
+            }
+          }
         }
       }
     }

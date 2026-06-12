@@ -10,8 +10,9 @@ import {
   type Message,
   type TextChannel,
   type ThreadChannel,
+  type ButtonInteraction,
 } from "discord.js";
-import { SessionManager } from "./session-manager.js";
+import { SessionManager, type QueuedMessage } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
 import { parseAgentInvocations, starterMessageText, threadName, firstLine } from "./parser.js";
 import { resolveThreadWorkDir } from "../utils/path-resolver.js";
@@ -29,11 +30,16 @@ import {
 import type { MCPPermissionServer } from "../mcp/server.js";
 import type { GitHubHandler } from "../github/handler.js";
 
+interface PendingInteraction extends QueuedMessage {}
+
 export class DiscordBot {
   public client: Client;
   private commands: CommandHandler;
   private mcpServer?: MCPPermissionServer;
   private githubHandler?: GitHubHandler;
+  // Keyed by original user message ID. Stores context for queue/interrupt/cancel
+  // button choices shown when a message arrives while an agent is running.
+  private pendingInteractions = new Map<string, PendingInteraction>();
 
   constructor(
     private sessionManager: SessionManager,
@@ -195,6 +201,22 @@ export class DiscordBot {
   }
 
   private async handleInteraction(interaction: any): Promise<void> {
+    if (interaction.isButton?.()) {
+      if (!this.allowedUserIds.includes(interaction.user.id)) {
+        await interaction.reply({ content: "Not authorised.", ephemeral: true });
+        return;
+      }
+      if (interaction.customId.startsWith("msg_queue_")) {
+        return this.handleMsgQueue(interaction as ButtonInteraction);
+      }
+      if (interaction.customId.startsWith("msg_interrupt_")) {
+        return this.handleMsgInterrupt(interaction as ButtonInteraction);
+      }
+      if (interaction.customId.startsWith("msg_cancel_")) {
+        return this.handleMsgCancel(interaction as ButtonInteraction);
+      }
+    }
+
     if (interaction.isChatInputCommand?.() && interaction.commandName === "test") {
       if (!this.allowedUserIds.includes(interaction.user.id)) {
         await interaction.reply({ content: "Not authorised.", ephemeral: true });
@@ -322,7 +344,46 @@ export class DiscordBot {
     }
 
     if (this.sessionManager.hasActiveProcess(thread.id)) {
-      await msg.reply("Agent is still running. Use `/stop` to cancel.");
+      // Download attachments now so we have the full prompt ready for queue/interrupt.
+      const attachments = await this.downloadMsgAttachments(msg);
+      const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
+      const discordContext = {
+        channelId: thread.id,
+        channelName: thread.name,
+        userId: msg.author.id,
+        messageId: msg.id,
+      };
+
+      this.pendingInteractions.set(msg.id, {
+        prompt: fullPrompt,
+        originalText: msg.content,
+        discordContext,
+        agentKey: session.agent,
+        workDir: session.workDir,
+        channelId: session.channelId,
+        thread,
+      });
+
+      const queueLen = this.sessionManager.getQueueLength(thread.id);
+      const hint = queueLen > 0 ? ` (${queueLen} already queued)` : "";
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`msg_queue_${msg.id}`)
+          .setLabel("Queue")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`msg_interrupt_${msg.id}`)
+          .setLabel("Interrupt")
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId(`msg_cancel_${msg.id}`)
+          .setLabel("Cancel")
+          .setStyle(ButtonStyle.Secondary)
+      );
+      await msg.reply({
+        content: `Agent is still running${hint}. What would you like to do?`,
+        components: [row],
+      });
       return;
     }
 
@@ -365,6 +426,56 @@ export class DiscordBot {
     } catch (err: any) {
       await msg.reply(`❌ Failed to resume **${session.agent}**: ${err.message}`);
     }
+  }
+
+  private async handleMsgQueue(interaction: ButtonInteraction): Promise<void> {
+    const msgId = interaction.customId.replace("msg_queue_", "");
+    const pending = this.pendingInteractions.get(msgId);
+    if (!pending) {
+      await interaction.update({ content: "⚠️ Message context expired.", components: [] });
+      return;
+    }
+
+    this.sessionManager.enqueueMessage(pending.thread.id, pending);
+    this.pendingInteractions.delete(msgId);
+
+    const queueLen = this.sessionManager.getQueueLength(pending.thread.id);
+    await interaction.update({
+      content: `✅ Queued (position ${queueLen}). Will run after the current agent finishes.`,
+      components: [],
+    });
+  }
+
+  private async handleMsgInterrupt(interaction: ButtonInteraction): Promise<void> {
+    const msgId = interaction.customId.replace("msg_interrupt_", "");
+    const pending = this.pendingInteractions.get(msgId);
+    if (!pending) {
+      await interaction.update({ content: "⚠️ Message context expired.", components: [] });
+      return;
+    }
+
+    this.pendingInteractions.delete(msgId);
+    await interaction.update({ content: "⚡ Interrupting current agent…", components: [] });
+
+    try {
+      await this.sessionManager.runAgent(
+        pending.thread.id,
+        pending.channelId,
+        pending.thread,
+        pending.agentKey,
+        pending.workDir,
+        pending.prompt,
+        pending.discordContext
+      );
+    } catch (err: any) {
+      await pending.thread.send(`❌ Failed to resume **${pending.agentKey}**: ${err.message}`);
+    }
+  }
+
+  private async handleMsgCancel(interaction: ButtonInteraction): Promise<void> {
+    const msgId = interaction.customId.replace("msg_cancel_", "");
+    this.pendingInteractions.delete(msgId);
+    await interaction.update({ content: "❌ Cancelled.", components: [] });
   }
 
   /**
