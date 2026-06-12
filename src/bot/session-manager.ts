@@ -830,7 +830,10 @@ export class SessionManager {
       session.done = true;
       let msg = event.message;
       if (event.subtype === "error_during_execution" && session.wasResume) {
-        msg = "Session failed to resume — it was likely interrupted mid-execution (e.g. bot restart). Use /clear to start a fresh conversation.";
+        // Stale session ID — clear it so the next message starts fresh without --resume.
+        // Worktree and branch are preserved; only cursor's conversation memory is dropped.
+        this.db.clearSessionId(threadId);
+        msg = "Session failed to resume (interrupted mid-execution). Cleared the stale session — retry your last message.";
       }
       const detail = session.nonJsonOutput.length
         ? `${msg}\n\n${session.nonJsonOutput.join("\n")}`
