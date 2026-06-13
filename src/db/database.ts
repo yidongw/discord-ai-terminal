@@ -47,6 +47,9 @@ export interface ThreadSession {
   // True when workDir is a bot-managed worktree we may remove on cleanup.
   isWorktree: boolean;
   createdAt: number;
+  // Discord message ID of the last user message we handled. Used on restart to
+  // fetch and replay any messages that arrived during downtime.
+  lastSeenMessageId?: string;
 }
 
 // A run whose agent process is detached and surviving across bot restarts. The
@@ -119,14 +122,15 @@ export class DatabaseManager {
   private initializeTables(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS thread_sessions (
-        thread_id   TEXT PRIMARY KEY,
-        channel_id  TEXT NOT NULL,
-        agent       TEXT NOT NULL,
-        session_id  TEXT,
-        work_dir    TEXT NOT NULL,
-        branch      TEXT,
-        is_worktree INTEGER NOT NULL DEFAULT 0,
-        created_at  INTEGER NOT NULL
+        thread_id             TEXT PRIMARY KEY,
+        channel_id            TEXT NOT NULL,
+        agent                 TEXT NOT NULL,
+        session_id            TEXT,
+        work_dir              TEXT NOT NULL,
+        branch                TEXT,
+        is_worktree           INTEGER NOT NULL DEFAULT 0,
+        created_at            INTEGER NOT NULL,
+        last_seen_message_id  TEXT
       );
 
       CREATE TABLE IF NOT EXISTS channel_modes (
@@ -239,6 +243,9 @@ export class DatabaseManager {
     if (!cols.includes("is_worktree")) {
       this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN is_worktree INTEGER NOT NULL DEFAULT 0`);
     }
+    if (!cols.includes("last_seen_message_id")) {
+      this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN last_seen_message_id TEXT`);
+    }
     // active_runs shipped before completion_json existed, so a DB created by that
     // build has the table but not the column. initializeTables() runs first, so
     // the table always exists here — just add the column when it's missing.
@@ -269,8 +276,8 @@ export class DatabaseManager {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO thread_sessions
-         (thread_id, channel_id, agent, session_id, work_dir, branch, is_worktree, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (thread_id, channel_id, agent, session_id, work_dir, branch, is_worktree, created_at, last_seen_message_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         ts.threadId,
@@ -280,7 +287,8 @@ export class DatabaseManager {
         ts.workDir,
         ts.branch ?? null,
         ts.isWorktree ? 1 : 0,
-        ts.createdAt
+        ts.createdAt,
+        ts.lastSeenMessageId ?? null
       );
   }
 
@@ -289,6 +297,10 @@ export class DatabaseManager {
       .prepare(`SELECT * FROM thread_sessions WHERE thread_id = ?`)
       .get(threadId) as any;
     if (!row) return null;
+    return this.rowToThreadSession(row);
+  }
+
+  private rowToThreadSession(row: any): ThreadSession {
     return {
       threadId: row.thread_id,
       channelId: row.channel_id,
@@ -298,7 +310,21 @@ export class DatabaseManager {
       branch: row.branch ?? undefined,
       isWorktree: !!row.is_worktree,
       createdAt: row.created_at,
+      lastSeenMessageId: row.last_seen_message_id ?? undefined,
     };
+  }
+
+  getAllThreadSessions(): ThreadSession[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM thread_sessions ORDER BY created_at DESC`)
+      .all() as any[];
+    return rows.map((r) => this.rowToThreadSession(r));
+  }
+
+  updateLastSeenMessageId(threadId: string, messageId: string): void {
+    this.db
+      .prepare(`UPDATE thread_sessions SET last_seen_message_id = ? WHERE thread_id = ?`)
+      .run(messageId, threadId);
   }
 
   updateSessionId(threadId: string, sessionId: string): void {
