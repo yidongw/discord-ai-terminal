@@ -125,8 +125,8 @@ export class MCPPermissionServer {
         rows.push(currentRow);
       }
 
-      // Send the question
-      const message = await channel.send({ embeds: [embed], components: rows });
+      // Send the question — mention the user so Discord notifies them
+      const message = await channel.send({ content: `<@${discordContext.userId}>`, embeds: [embed], components: rows });
 
       // Wait for button interaction (5 minute timeout)
       try {
