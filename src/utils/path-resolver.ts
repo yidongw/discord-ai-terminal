@@ -66,13 +66,17 @@ function slugify(name: string): string {
 // Each thread gets its own branch off the repo's default branch so concurrent
 // threads in the same channel never touch each other's git state.
 //
+// Pass `baseBranch` to branch off a specific local branch (e.g. a parent
+// thread's branch) instead of the repo's default branch.
+//
 // Falls back to running directly in the channel folder when it isn't a git repo
 // (we can't make worktrees there); that path returns no `worktree`/`branch`.
 export function resolveThreadWorkDir(
   channelName: string,
   threadId: string,
   label: string,
-  baseFolder: string
+  baseFolder: string,
+  baseBranch?: string
 ): ResolvedPath | null {
   const repoPath = repoPathFor(channelName, baseFolder);
   if (!repoPath) return null;
@@ -91,22 +95,31 @@ export function resolveThreadWorkDir(
     return { workDir: wtPath, repo: channelName, worktree: true, branch };
   }
 
-  // Fetch and refresh origin/HEAD before computing the base branch, so repos
-  // whose remote default changed after cloning (e.g. main→dev) get the right base.
-  spawnSync("git", ["-C", repoPath, "fetch", "origin"], { encoding: "utf8" });
-  spawnSync("git", ["-C", repoPath, "remote", "set-head", "origin", "--auto"], { encoding: "utf8" });
-  const base = defaultBranch(repoPath);
-  const worktreeBase = `origin/${base}`;
+  let worktreeBase: string;
+  let base: string;
+  if (baseBranch) {
+    // Branch off a caller-supplied branch (e.g. a parent thread's local branch).
+    // Skip the remote fetch — the branch already exists locally.
+    base = baseBranch;
+    worktreeBase = baseBranch;
+  } else {
+    // Fetch and refresh origin/HEAD before computing the base branch, so repos
+    // whose remote default changed after cloning (e.g. main→dev) get the right base.
+    spawnSync("git", ["-C", repoPath, "fetch", "origin"], { encoding: "utf8" });
+    spawnSync("git", ["-C", repoPath, "remote", "set-head", "origin", "--auto"], { encoding: "utf8" });
+    base = defaultBranch(repoPath);
+    worktreeBase = `origin/${base}`;
+  }
 
   fs.mkdirSync(path.dirname(wtPath), { recursive: true });
-  // Try remote tracking branch first; fall back to local branch for repos
-  // without a remote (e.g. preview-server which has no origin).
+  // Try the computed base first; fall back to local branch for repos without a
+  // remote, or when a pre-supplied baseBranch is already local-only.
   let result = spawnSync(
     "git",
     ["-C", repoPath, "worktree", "add", "-b", branch, wtPath, worktreeBase],
     { encoding: "utf8" }
   );
-  if (result.status !== 0) {
+  if (result.status !== 0 && !baseBranch) {
     result = spawnSync(
       "git",
       ["-C", repoPath, "worktree", "add", "-b", branch, wtPath, base],
