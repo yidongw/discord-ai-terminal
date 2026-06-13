@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { EmbedBuilder, type Client } from "discord.js";
+import { AttachmentBuilder, EmbedBuilder, type Client } from "discord.js";
 import { formatForDiscord } from "../utils/discord-format.js";
 import { getAgent, type AgentEvent, type AgentRunner } from "../agents/index.js";
 import { DatabaseManager, toolIsHidden, type ActiveRun } from "../db/database.js";
@@ -1002,6 +1002,7 @@ export class SessionManager {
         // Drop results for hidden tools entirely — enqueuing a no-op op would
         // seal the running summary between two batches of hidden calls.
         if (session.hiddenToolIds.has(result.tool_use_id)) continue;
+        const images = extractImages(result.content);
         outbox.enqueue(async () => {
           const tracked = toolCalls.get(result.tool_use_id);
           if (!tracked?.message) return;
@@ -1011,6 +1012,11 @@ export class SessionManager {
           await tracked.message.edit({
             embeds: [new EmbedBuilder().setDescription(`${updated}${firstLine ? `\n*${firstLine}*` : ""}`).setColor(result.is_error ? 0xff0000 : 0x00ff00)],
           });
+          for (const img of images) {
+            const ext = img.mediaType.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+            const buffer = Buffer.from(img.data, "base64");
+            await thread.send({ files: [new AttachmentBuilder(buffer, { name: `image.${ext}` })] });
+          }
         });
       }
     }
@@ -1259,13 +1265,27 @@ function toolResultText(content: any): string {
   if (content == null) return "";
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
-    return content
+    const texts = content
       .map((c) => (typeof c === "string" ? c : c?.type === "text" ? c.text ?? "" : ""))
-      .filter(Boolean)
-      .join(" ");
+      .filter(Boolean);
+    if (texts.length > 0) return texts.join(" ");
+    if (content.some((c: any) => c?.type === "image")) return "[image]";
+    return "";
   }
   if (typeof content === "object" && content.type === "text") return content.text ?? "";
+  if (typeof content === "object" && content.type === "image") return "[image]";
   return "";
+}
+
+function extractImages(content: any): { mediaType: string; data: string }[] {
+  const blocks: any[] = Array.isArray(content) ? content : [content];
+  const images: { mediaType: string; data: string }[] = [];
+  for (const block of blocks) {
+    if (block?.type === "image" && block.source?.type === "base64" && block.source?.data) {
+      images.push({ mediaType: block.source.media_type ?? "image/png", data: block.source.data });
+    }
+  }
+  return images;
 }
 
 function formatToolCall(tool: any, workDir: string): string {
