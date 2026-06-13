@@ -388,7 +388,8 @@ export class DiscordBot {
     if (this.sessionManager.hasActiveProcess(thread.id)) {
       // Download attachments now so we have the full prompt ready for queue/interrupt.
       const attachments = await this.downloadMsgAttachments(msg);
-      const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
+      const replyContext = await this.fetchReplyContext(msg);
+      const fullPrompt = buildPromptWithAttachments(replyContext + msg.content, attachments);
       const discordContext = {
         channelId: thread.id,
         channelName: thread.name,
@@ -453,7 +454,8 @@ export class DiscordBot {
     await msg.react("👀").catch(() => {});
 
     const attachments = await this.downloadMsgAttachments(msg);
-    const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
+    const replyContext = await this.fetchReplyContext(msg);
+    const fullPrompt = buildPromptWithAttachments(replyContext + msg.content, attachments);
 
     const discordContext = {
       channelId: thread.id,
@@ -666,6 +668,17 @@ export class DiscordBot {
    * agent can read them (e.g. images) by absolute path. Failures are logged
    * and skipped so a bad attachment never blocks the agent run.
    */
+  private async fetchReplyContext(msg: Message): Promise<string> {
+    if (!msg.reference?.messageId) return "";
+    try {
+      const replied = await msg.channel.messages.fetch(msg.reference.messageId);
+      if (!replied.content) return "";
+      return `[Replying to: ${replied.content}]\n\n`;
+    } catch {
+      return "";
+    }
+  }
+
   private async downloadMsgAttachments(
     msg: Message
   ): Promise<DownloadedAttachment[]> {
