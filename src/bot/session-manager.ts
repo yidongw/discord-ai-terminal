@@ -37,6 +37,10 @@ export type CompletionAction =
 
 export type CompletionHandler = (action: CompletionAction, text: string) => Promise<void>;
 
+// Called after every session ends (branch-based worktrees only). Used to detect
+// PRs created during the session when the GitHub webhook was missed.
+export type SessionFinalizeCallback = (threadId: string, workDir: string, branch: string) => Promise<void>;
+
 const MAX_EMBED = 4000;
 // Grace period after SIGTERM before we escalate to SIGKILL. This keeps a
 // runaway agent that ignores SIGTERM from streaming "already produced" output
@@ -126,6 +130,7 @@ export class SessionManager {
   // Dispatches a run's CompletionAction (registered by index.ts; only set when
   // the GitHub integration is enabled).
   private completionHandler?: CompletionHandler;
+  private sessionFinalizeHandler?: SessionFinalizeCallback;
 
   constructor() {
     this.db = new DatabaseManager();
@@ -139,6 +144,10 @@ export class SessionManager {
 
   setCompletionHandler(handler: CompletionHandler): void {
     this.completionHandler = handler;
+  }
+
+  setSessionFinalizeHandler(cb: SessionFinalizeCallback): void {
+    this.sessionFinalizeHandler = cb;
   }
 
   // Queue a prompt to run in a thread once its current run finishes. If the
@@ -520,6 +529,16 @@ export class SessionManager {
     this.db.deleteActiveRun(session.runId);
     this.removeLog(session.logPath);
 
+    // Catch PRs created during the session when the GitHub webhook was missed.
+    // Only for discord/ worktree branches; ensurePrLinkedToMakerThread is idempotent.
+    if (this.sessionFinalizeHandler) {
+      const sessionInfo = this.db.getThreadSession(threadId);
+      if (sessionInfo?.branch?.startsWith("discord/")) {
+        try { await this.sessionFinalizeHandler(threadId, session.workDir, sessionInfo.branch); }
+        catch (err) { console.error(`[finalize] pr-check failed for ${threadId}:`, err); }
+      }
+    }
+
     if (session.pendingUsageLimitResume && session.usageLimitResetAt && session.agentKey === "cc") {
       this.scheduleUsageLimitResume(threadId, session);
     } else if (session.pendingTurnLimitResume && session.agentKey === "cc") {
@@ -555,10 +574,17 @@ export class SessionManager {
         const queued = this.dequeueMessage(threadId);
         if (queued) {
           // Restate the queued message so the user knows what's being processed.
-          const preview = queued.originalText.length > 200
-            ? queued.originalText.slice(0, 200) + "…"
+          const preview = queued.originalText.length > 500
+            ? queued.originalText.slice(0, 500) + "…"
             : queued.originalText;
-          await queued.thread.send(`📋 **Processing queued message:**\n>>> ${preview}`);
+          await queued.thread.send({
+            embeds: [
+              new EmbedBuilder()
+                .setTitle("📋 Processing queued message")
+                .setDescription(preview)
+                .setColor(0x5865f2),
+            ],
+          });
           try {
             await this.runAgent(
               threadId,

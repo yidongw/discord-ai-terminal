@@ -65,6 +65,9 @@ async function main() {
     : undefined;
   if (githubHandler) {
     sessionManager.setCompletionHandler((action, text) => githubHandler.runCompletionAction(action, text));
+    sessionManager.setSessionFinalizeHandler((threadId, workDir, branch) =>
+      githubHandler.checkAndLinkPrForBranch(threadId, workDir, branch)
+    );
     bot.setGitHubHandler(githubHandler);
   }
 

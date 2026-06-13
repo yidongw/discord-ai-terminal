@@ -82,7 +82,8 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
     event === "pull_request" &&
     (payload.action === "opened" ||
       payload.action === "reopened" ||
-      payload.action === "ready_for_review")
+      payload.action === "ready_for_review" ||
+      payload.action === "synchronize")
   ) {
     const prNumber: number = payload.pull_request?.number;
     const headRef: string = payload.pull_request?.head?.ref ?? "";
