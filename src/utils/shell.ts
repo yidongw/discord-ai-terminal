@@ -39,7 +39,10 @@ const DISCORD_SYSTEM_PROMPT =
   "with the command and then end your turn — the bot runs it detached and " +
   "re-invokes you here with its output when it finishes (this survives bot " +
   "restarts). Use mcp__discord-permissions__list_background_jobs and " +
-  "mcp__discord-permissions__cancel_background_job to manage running ones.";
+  "mcp__discord-permissions__cancel_background_job to manage running ones. " +
+  "When the user asks you to create, draw, generate, or make an image, call " +
+  "mcp__discord-permissions__generate_image with a detailed prompt — it uses " +
+  "DALL-E 3 and sends the image directly to this Discord channel.";
 
 export function buildClaudeCommand(
   workingDir: string,

@@ -234,6 +234,28 @@ const TOOLS = [
       required: ['id'],
     },
   },
+  {
+    name: 'generate_image',
+    description:
+      'Generate an image from a text description using AI (DALL-E 3). The image is ' +
+      'sent directly to this Discord channel. Use this whenever the user asks you to ' +
+      'create, draw, generate, or make an image.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description: 'Detailed text description of the image to generate.',
+        },
+        size: {
+          type: 'string',
+          description:
+            'Image dimensions: "1024x1024" (square, default), "1792x1024" (landscape/wide), or "1024x1792" (portrait/tall).',
+        },
+      },
+      required: ['prompt'],
+    },
+  },
 ];
 
 function send(message) {
