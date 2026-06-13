@@ -65,14 +65,14 @@ function groupLines(content: string): LineBlock[] {
   let currentBlock: LineBlock | null = null;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const line = lines[i]!;
     let lineType: 'normal' | 'table' | 'diagram' = 'normal';
 
     // Check if it's a table line
     if (isTableLine(line) || isTableSeparator(line)) {
       // Look ahead and behind to confirm it's really a table
-      const prevIsTable = i > 0 && (isTableLine(lines[i - 1]) || isTableSeparator(lines[i - 1]));
-      const nextIsTable = i < lines.length - 1 && (isTableLine(lines[i + 1]) || isTableSeparator(lines[i + 1]));
+      const prevIsTable = i > 0 && (isTableLine(lines[i - 1]!) || isTableSeparator(lines[i - 1]!));
+      const nextIsTable = i < lines.length - 1 && (isTableLine(lines[i + 1]!) || isTableSeparator(lines[i + 1]!));
       if (prevIsTable || nextIsTable || isTableSeparator(line)) {
         lineType = 'table';
       }
@@ -81,8 +81,8 @@ function groupLines(content: string): LineBlock[] {
     // Check if it's a diagram line (only if not already identified as table)
     if (lineType === 'normal' && isDiagramLine(line)) {
       // Look ahead and behind to confirm it's part of a diagram
-      const prevIsDiagram = i > 0 && isDiagramLine(lines[i - 1]);
-      const nextIsDiagram = i < lines.length - 1 && isDiagramLine(lines[i + 1]);
+      const prevIsDiagram = i > 0 && isDiagramLine(lines[i - 1]!);
+      const nextIsDiagram = i < lines.length - 1 && isDiagramLine(lines[i + 1]!);
       if (prevIsDiagram || nextIsDiagram || hasBoxDrawingChars(line)) {
         lineType = 'diagram';
       }
