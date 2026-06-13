@@ -78,16 +78,37 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
   const repo: string = payload.repository?.full_name;
   if (!repo) return;
 
-  if (
-    event === "pull_request" &&
-    (payload.action === "opened" ||
-      payload.action === "reopened" ||
-      payload.action === "ready_for_review" ||
-      payload.action === "synchronize")
-  ) {
+  if (event === "pull_request") {
     const prNumber: number = payload.pull_request?.number;
     const headRef: string = payload.pull_request?.head?.ref ?? "";
-    if (prNumber) await handler.handlePrOpened(repo, prNumber, headRef);
+
+    if (
+      payload.action === "opened" ||
+      payload.action === "reopened" ||
+      payload.action === "ready_for_review"
+    ) {
+      if (prNumber) await handler.handlePrOpened(repo, prNumber, headRef);
+      return;
+    }
+
+    if (payload.action === "synchronize") {
+      if (prNumber) {
+        const headSha: string = payload.after ?? payload.pull_request?.head?.sha ?? "";
+        await handler.handlePrSynchronized(repo, prNumber, headRef, headSha);
+      }
+      return;
+    }
+
+    if (payload.action === "closed") {
+      if (prNumber) {
+        const merged: boolean = !!payload.pull_request?.merged;
+        const mergedBy: string | null = payload.pull_request?.merged_by?.login ?? null;
+        const prTitle: string = payload.pull_request?.title ?? "";
+        await handler.handlePrClosed(repo, prNumber, merged, mergedBy, prTitle);
+      }
+      return;
+    }
+
     return;
   }
 
