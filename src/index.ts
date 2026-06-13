@@ -75,6 +75,9 @@ async function main() {
   // (or an incoming message) can spawn a new run onto the same thread.
   await sessionManager.reattachRuns(bot.client);
 
+  // Replay user messages that arrived in known threads while the bot was down.
+  await bot.recoverMissedMessages();
+
   // If /update triggered this restart, send a confirmation to the channel.
   // Interaction reply messages can only be edited via the interaction's webhook
   // token (which doesn't survive restarts), so we send a new message instead.

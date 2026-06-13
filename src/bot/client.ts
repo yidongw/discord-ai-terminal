@@ -30,6 +30,7 @@ import {
 } from "../utils/attachments.js";
 import type { MCPPermissionServer } from "../mcp/server.js";
 import type { GitHubHandler } from "../github/handler.js";
+import type { ThreadSession } from "../db/database.js";
 
 interface PendingInteraction extends QueuedMessage {}
 
@@ -344,6 +345,9 @@ export class DiscordBot {
       return;
     }
 
+    // Record this message as seen so restart recovery picks up only newer ones.
+    this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
+
     // If the message mentions an agent, fork a new sibling thread off the
     // current thread's branch rather than running inside this thread.
     const invocations = parseAgentInvocations(msg.content);
@@ -587,6 +591,114 @@ export class DiscordBot {
       embeds: [new EmbedBuilder().setDescription("❌ Cancelled.").setColor(0x99aab5)],
       components: [],
     });
+  }
+
+  /**
+   * After a restart, fetch and replay any user messages that arrived in known
+   * threads while the bot was offline. Threads with no lastSeenMessageId (e.g.
+   * created before this feature) are skipped — recovery kicks in on the next
+   * restart after the first message is recorded.
+   */
+  async recoverMissedMessages(): Promise<void> {
+    const sessions = this.sessionManager.getDb().getAllThreadSessions();
+    for (const session of sessions) {
+      if (!session.lastSeenMessageId) continue;
+      try {
+        await this.recoverThreadMessages(session);
+      } catch (err) {
+        console.error(`[recover] failed for thread ${session.threadId}:`, err);
+      }
+    }
+  }
+
+  private async recoverThreadMessages(session: ThreadSession): Promise<void> {
+    let thread: ThreadChannel;
+    try {
+      const ch = await this.client.channels.fetch(session.threadId);
+      if (!ch) return;
+      const isThread =
+        ch.type === ChannelType.PublicThread || ch.type === ChannelType.PrivateThread;
+      if (!isThread) return;
+      thread = ch as ThreadChannel;
+    } catch (err: any) {
+      if (err?.code === 10003) return; // Unknown Channel — deleted
+      throw err;
+    }
+
+    const fetched = await thread.messages.fetch({
+      after: session.lastSeenMessageId,
+      limit: 100,
+    });
+
+    const ordered = [...fetched.values()]
+      .filter((m) => !m.author.bot && this.allowedUserIds.includes(m.author.id))
+      .sort((a, b) => (a.id < b.id ? -1 : 1));
+
+    if (ordered.length === 0) return;
+
+    console.log(`[recover] ${ordered.length} missed message(s) in thread ${session.threadId}`);
+
+    // Mark all as seen up front so a crash during processing doesn't re-fetch.
+    const lastMsg = ordered[ordered.length - 1]!;
+    this.sessionManager.getDb().updateLastSeenMessageId(session.threadId, lastMsg.id);
+
+    // Re-create the worktree path if it was cleaned up while the thread was archived.
+    if (session.isWorktree && !fs.existsSync(session.workDir)) {
+      const channelName = thread.parent?.name;
+      if (channelName) {
+        const label = path.basename(session.workDir).replace(/-[a-z0-9]{6}$/i, "");
+        resolveThreadWorkDir(channelName, thread.id, label, this.baseFolder);
+      }
+    }
+
+    for (const msg of ordered) {
+      const attachments = await this.downloadMsgAttachments(msg);
+      const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
+      this.sessionManager.enqueueMessage(session.threadId, {
+        prompt: fullPrompt,
+        originalText: msg.content,
+        discordContext: {
+          channelId: session.threadId,
+          channelName: thread.name,
+          userId: msg.author.id,
+          messageId: msg.id,
+        },
+        agentKey: session.agent,
+        workDir: session.workDir,
+        channelId: session.channelId,
+        thread,
+      });
+    }
+
+    // If no active run is streaming, kick off the first queued message now.
+    // Threads with a re-attached run will drain the queue when the run finishes.
+    if (!this.sessionManager.hasActiveProcess(session.threadId)) {
+      const queued = this.sessionManager.dequeueMessage(session.threadId);
+      if (!queued) return;
+
+      const count = ordered.length;
+      const preview =
+        queued.originalText.length > 200
+          ? queued.originalText.slice(0, 200) + "…"
+          : queued.originalText;
+      await thread.send(
+        `📋 **Recovering ${count} missed message${count > 1 ? "s" : ""} from downtime:**\n>>> ${preview}`
+      );
+
+      try {
+        await this.sessionManager.runAgent(
+          session.threadId,
+          session.channelId,
+          thread,
+          session.agent,
+          session.workDir,
+          queued.prompt,
+          queued.discordContext
+        );
+      } catch (err: any) {
+        await thread.send(`❌ Failed to resume **${session.agent}**: ${err.message}`);
+      }
+    }
   }
 
   /**
