@@ -33,6 +33,64 @@ export class GitHubHandler {
     await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
   }
 
+  // Called when pull_request.synchronize fires (new commits pushed to the PR branch).
+  // Ensures the PR is linked (idempotent) then notifies the maker thread.
+  async handlePrSynchronized(repo: string, prNumber: number, headRef: string, headSha: string): Promise<void> {
+    const makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
+    if (!makerThreadId) return;
+
+    const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
+    const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
+    if (!thread) return;
+
+    if (thread.archived) {
+      await thread.edit({ archived: false }).catch((err) => {
+        console.error(`[github] PR #${prNumber}: failed to unarchive thread for sync:`, err);
+      });
+    }
+
+    const shortSha = headSha ? ` — \`${headSha.slice(0, 7)}\`` : "";
+    const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
+    await thread
+      .send(`🔄 New commits pushed to PR #${prNumber}${shortSha}\n${prUrl}`)
+      .catch((err) => console.error(`[github] PR #${prNumber}: failed to notify new commits:`, err));
+  }
+
+  // Called when pull_request.closed fires. Notifies the maker thread whether the
+  // PR was merged or closed without merging.
+  async handlePrClosed(repo: string, prNumber: number, merged: boolean, mergedBy: string | null, prTitle: string): Promise<void> {
+    const db = this.sessionManager.getDb();
+    const repoName = repo.split("/")[1] ?? repo;
+    const makerThreadId =
+      db.getPrThreads(String(prNumber), repo)?.makerThreadId ??
+      db.getPrThreads(String(prNumber), repoName)?.makerThreadId;
+
+    if (!makerThreadId) {
+      console.log(`[github] PR #${prNumber} closed/merged but no maker thread found`);
+      return;
+    }
+
+    const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
+    const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
+    if (!thread) return;
+
+    if (thread.archived) {
+      await thread.edit({ archived: false }).catch((err) => {
+        console.error(`[github] PR #${prNumber}: failed to unarchive thread for close:`, err);
+      });
+    }
+
+    const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
+    const titleStr = prTitle ? ` — ${prTitle}` : "";
+    const msg = merged
+      ? `✅ PR #${prNumber}${titleStr} was merged${mergedBy ? ` by @${mergedBy}` : ""}.\n${prUrl}`
+      : `🚫 PR #${prNumber}${titleStr} was closed without merging.\n${prUrl}`;
+
+    await thread
+      .send(msg)
+      .catch((err) => console.error(`[github] PR #${prNumber}: failed to post close/merge notification:`, err));
+  }
+
   // Idempotent: link PR → maker thread, rename, and pin. Skips if already linked.
   // headRef is optional — fetched from the GitHub API when missing (preview-ready path).
   async ensurePrLinkedToMakerThread(
