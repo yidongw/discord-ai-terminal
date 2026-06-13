@@ -7,6 +7,14 @@ import { MCPPermissionServer } from "./mcp/server.js";
 import { GitHubHandler } from "./github/handler.js";
 import { GitHubWebhookServer, registerGitHubWebhook } from "./github/webhook.js";
 
+// Worker mode: runs as a headless single-message bot for one discord-ai-terminal
+// thread. Triggered when the main bot spawns us from the thread's own worktree.
+if (process.env.DISCORD_AI_TERMINAL_THREAD_ID) {
+  const { runWorkerMode } = await import("./bot/worker-mode.js");
+  await runWorkerMode();
+  process.exit(0);
+}
+
 async function main() {
   const config = validateConfig();
 
@@ -19,7 +27,7 @@ async function main() {
   // sessions the scheduler and bot read from.
   mcpServer.setDb(sessionManager.getDb());
 
-  const bot = new DiscordBot(sessionManager, config.allowedUserIds, config.baseFolder);
+  const bot = new DiscordBot(sessionManager, config.allowedUserIds, config.baseFolder, config.discordAiTerminalChannelId);
   bot.setMCPServer(mcpServer);
 
   // The scheduler is the durable timer that replays recurring tasks: it survives
