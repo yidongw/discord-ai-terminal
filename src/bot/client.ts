@@ -344,6 +344,14 @@ export class DiscordBot {
       return;
     }
 
+    // If the message mentions an agent, fork a new sibling thread off the
+    // current thread's branch rather than running inside this thread.
+    const invocations = parseAgentInvocations(msg.content);
+    if (invocations.length > 0) {
+      await this.handleChildThreadSpawn(msg, thread, session);
+      return;
+    }
+
     if (this.sessionManager.hasActiveProcess(thread.id)) {
       // Download attachments now so we have the full prompt ready for queue/interrupt.
       const attachments = await this.downloadMsgAttachments(msg);
@@ -433,6 +441,73 @@ export class DiscordBot {
       );
     } catch (err: any) {
       await msg.reply(`❌ Failed to resume **${session.agent}**: ${err.message}`);
+    }
+  }
+
+  // When the user @-mentions an agent inside an existing thread, open a new
+  // sibling thread in the parent text channel and base its worktree on the
+  // current thread's branch so it inherits any in-progress work.
+  private async handleChildThreadSpawn(
+    msg: Message,
+    parentThread: ThreadChannel,
+    parentSession: { agent: string; workDir: string; branch?: string; channelId: string }
+  ): Promise<void> {
+    const parentChannel = parentThread.parent as TextChannel | null;
+    if (!parentChannel) {
+      await msg.reply("Cannot spawn a new thread: parent channel not found.");
+      return;
+    }
+
+    await msg.react("👀").catch(() => {});
+
+    const attachments = await this.downloadMsgAttachments(msg);
+    const invocations = parseAgentInvocations(msg.content);
+
+    for (let i = 0; i < invocations.length; i++) {
+      const { agent, prompt } = invocations[i]!;
+      const fullPrompt = buildPromptWithAttachments(prompt, attachments);
+
+      const titleLabel = await generateThreadTitle(agent, prompt).catch(
+        () => firstLine(prompt)
+      );
+      const tName = threadName(agent, titleLabel);
+
+      // Always post a starter message to the parent text channel and thread from
+      // it — messages in threads can't reliably spawn sub-threads in Discord.
+      const starterMsg = await parentChannel.send(starterMessageText(agent, prompt));
+      const childThread = (await starterMsg.startThread({
+        name: tName,
+        autoArchiveDuration: 1440,
+      })) as ThreadChannel;
+
+      const discordContext = {
+        channelId: childThread.id,
+        channelName: tName,
+        userId: msg.author.id,
+        messageId: msg.id,
+      };
+
+      const channelName = parentChannel.name;
+      // Branch the new worktree off the parent thread's branch so it starts
+      // from the same state instead of the repo's default branch.
+      const resolved =
+        resolveThreadWorkDir(channelName, childThread.id, titleLabel, this.baseFolder, parentSession.branch) ??
+        { workDir: this.baseFolder, repo: channelName };
+
+      try {
+        await this.sessionManager.runAgent(
+          childThread.id,
+          parentChannel.id,
+          childThread,
+          agent,
+          resolved.workDir,
+          fullPrompt,
+          discordContext,
+          { branch: (resolved as any).branch, isWorktree: !!(resolved as any).worktree }
+        );
+      } catch (err: any) {
+        await childThread.send(`❌ Failed to start **${agent}**: ${err.message}`);
+      }
     }
   }
 
