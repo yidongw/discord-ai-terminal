@@ -41,6 +41,11 @@ export class DiscordBot {
   // Keyed by original user message ID. Stores context for queue/interrupt/cancel
   // button choices shown when a message arrives while an agent is running.
   private pendingInteractions = new Map<string, PendingInteraction>();
+  // Keyed by original user message ID. Stores context for branch-confirm buttons.
+  private pendingBranchInteractions = new Map<
+    string,
+    { msg: Message; thread: ThreadChannel; session: { agent: string; workDir: string; branch?: string; channelId: string } }
+  >();
 
   constructor(
     private sessionManager: SessionManager,
@@ -216,6 +221,12 @@ export class DiscordBot {
       if (interaction.customId.startsWith("msg_cancel_")) {
         return this.handleMsgCancel(interaction as ButtonInteraction);
       }
+      if (interaction.customId.startsWith("branch_confirm_")) {
+        return this.handleBranchConfirm(interaction as ButtonInteraction);
+      }
+      if (interaction.customId.startsWith("branch_here_")) {
+        return this.handleBranchHere(interaction as ButtonInteraction);
+      }
     }
 
     if (interaction.isChatInputCommand?.() && interaction.commandName === "test") {
@@ -344,11 +355,33 @@ export class DiscordBot {
       return;
     }
 
-    // If the message mentions an agent, fork a new sibling thread off the
-    // current thread's branch rather than running inside this thread.
+    // If the message mentions an agent, ask whether to branch into a new sibling
+    // thread or just send the message to the current thread's agent.
     const invocations = parseAgentInvocations(msg.content);
     if (invocations.length > 0) {
-      await this.handleChildThreadSpawn(msg, thread, session);
+      this.pendingBranchInteractions.set(msg.id, { msg, thread, session });
+      const agentList = invocations.map((i) => `**${i.agent}**`).join(", ");
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`branch_confirm_${msg.id}`)
+          .setLabel("Branch off → new thread")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`branch_here_${msg.id}`)
+          .setLabel("Send to this thread")
+          .setStyle(ButtonStyle.Secondary)
+      );
+      await msg.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("🌿 Branch or continue here?")
+            .setDescription(
+              `You mentioned ${agentList}. Do you want to spin up a new thread branched off this one, or just send this message to the current agent?`
+            )
+            .setColor(0x5865f2),
+        ],
+        components: [row],
+      });
       return;
     }
 
@@ -474,7 +507,8 @@ export class DiscordBot {
 
       // Always post a starter message to the parent text channel and thread from
       // it — messages in threads can't reliably spawn sub-threads in Discord.
-      const starterMsg = await parentChannel.send(starterMessageText(agent, prompt));
+      // Preserve the original message text; only prefix with the branch icon.
+      const starterMsg = await parentChannel.send(`🌲 ${msg.content}`);
       const childThread = (await starterMsg.startThread({
         name: tName,
         autoArchiveDuration: 1440,
@@ -512,6 +546,40 @@ export class DiscordBot {
       } catch (err: any) {
         await childThread.send(`❌ Failed to start **${agent}**: ${err.message}`);
       }
+    }
+  }
+
+  private async handleBranchConfirm(interaction: ButtonInteraction): Promise<void> {
+    const msgId = interaction.customId.replace("branch_confirm_", "");
+    const pending = this.pendingBranchInteractions.get(msgId);
+    if (!pending) {
+      await interaction.update({ embeds: [new EmbedBuilder().setDescription("⚠️ Context expired.").setColor(0x99aab5)], components: [] });
+      return;
+    }
+    this.pendingBranchInteractions.delete(msgId);
+    await interaction.update({ embeds: [new EmbedBuilder().setDescription("🌿 Branching off…").setColor(0x5865f2)], components: [] });
+    await this.handleChildThreadSpawn(pending.msg, pending.thread, pending.session);
+  }
+
+  private async handleBranchHere(interaction: ButtonInteraction): Promise<void> {
+    const msgId = interaction.customId.replace("branch_here_", "");
+    const pending = this.pendingBranchInteractions.get(msgId);
+    if (!pending) {
+      await interaction.update({ embeds: [new EmbedBuilder().setDescription("⚠️ Context expired.").setColor(0x99aab5)], components: [] });
+      return;
+    }
+    this.pendingBranchInteractions.delete(msgId);
+    await interaction.update({ embeds: [new EmbedBuilder().setDescription("✉️ Sending to this thread…").setColor(0x57f287)], components: [] });
+
+    const { msg, thread, session } = pending;
+    await msg.react("👀").catch(() => {});
+    const attachments = await this.downloadMsgAttachments(msg);
+    const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
+    const discordContext = { channelId: thread.id, channelName: thread.name, userId: msg.author.id, messageId: msg.id };
+    try {
+      await this.sessionManager.runAgent(thread.id, session.channelId, thread, session.agent, session.workDir, fullPrompt, discordContext);
+    } catch (err: any) {
+      await msg.reply(`❌ Failed to resume **${session.agent}**: ${err.message}`);
     }
   }
 
