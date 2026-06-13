@@ -536,7 +536,7 @@ export class DiscordBot {
       // Always post a starter message to the parent text channel and thread from
       // it — messages in threads can't reliably spawn sub-threads in Discord.
       // Preserve the original message text; only prefix with the branch icon.
-      const starterMsg = await parentChannel.send(`🌲 ${msg.content}`);
+      const starterMsg = await parentChannel.send(`🌿 ${msg.content}`);
       const childThread = (await starterMsg.startThread({
         name: tName,
         autoArchiveDuration: 1440,
