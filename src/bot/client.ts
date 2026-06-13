@@ -378,12 +378,9 @@ export class DiscordBot {
       return;
     }
 
-<<<<<<< HEAD
     // Record this message as seen so restart recovery picks up only newer ones.
     this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
 
-=======
->>>>>>> 9873b80 (feat: confirm before branching and preserve original message text)
     // If the message mentions an agent, ask whether to branch into a new sibling
     // thread or just send the message to the current thread's agent.
     const invocations = parseAgentInvocations(msg.content);
@@ -537,7 +534,7 @@ export class DiscordBot {
       // Always post a starter message to the parent text channel and thread from
       // it — messages in threads can't reliably spawn sub-threads in Discord.
       // Preserve the original message text; only prefix with the branch icon.
-      const starterMsg = await parentChannel.send(`🌲 ${msg.content}`);
+      const starterMsg = await parentChannel.send(`🌿 ${msg.content}`);
       const childThread = (await starterMsg.startThread({
         name: tName,
         autoArchiveDuration: 1440,
@@ -612,7 +609,6 @@ export class DiscordBot {
     }
   }
 
-<<<<<<< HEAD
   private async handleAgentSelect(interaction: ButtonInteraction): Promise<void> {
     // customId: agent_select_{agentKey}_{msgId}
     const withoutPrefix = interaction.customId.replace("agent_select_", "");
@@ -658,8 +654,6 @@ export class DiscordBot {
     await interaction.update({ content: "❌ Cancelled.", components: [] });
   }
 
-=======
->>>>>>> 9873b80 (feat: confirm before branching and preserve original message text)
   private async handleMsgQueue(interaction: ButtonInteraction): Promise<void> {
     const msgId = interaction.customId.replace("msg_queue_", "");
     const pending = this.pendingInteractions.get(msgId);
