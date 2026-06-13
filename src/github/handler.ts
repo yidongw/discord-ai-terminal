@@ -1,3 +1,4 @@
+import { spawnSync } from "child_process";
 import {
   ChannelType,
   type Client,
@@ -65,16 +66,26 @@ export class GitHubHandler {
     db.setPrMakerThread(String(prNumber), repo, makerThreadId);
     console.log(`[github] PR #${prNumber} linked to maker thread ${makerThreadId}`);
     try {
-      const thread = await this.client.channels.fetch(makerThreadId) as ThreadChannel | null;
-      if (thread) {
-        void setPrInThreadName(thread, prNumber);
-        const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
-        try {
-          const msg = await thread.send(prUrl);
-          await msg.pin();
-        } catch (err) {
-          console.error(`[github] PR #${prNumber}: failed to post/pin PR URL:`, err);
-        }
+      const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
+      const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
+      if (!thread) {
+        console.error(`[github] PR #${prNumber}: channel ${makerThreadId} not found or not a thread`);
+        return makerThreadId;
+      }
+      // Unarchive before renaming or sending — Discord rejects both on archived
+      // threads with a 400 error. Opening a PR is a natural signal to reactivate.
+      if (thread.archived) {
+        await thread.edit({ archived: false }).catch((err) => {
+          console.error(`[github] PR #${prNumber}: failed to unarchive thread:`, err);
+        });
+      }
+      void setPrInThreadName(thread, prNumber);
+      const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
+      try {
+        const msg = await thread.send(prUrl);
+        await msg.pin();
+      } catch (err) {
+        console.error(`[github] PR #${prNumber}: failed to post/pin PR URL:`, err);
       }
     } catch (err) {
       console.error(`[github] PR #${prNumber}: failed to update maker thread:`, err);
@@ -246,18 +257,18 @@ export class GitHubHandler {
     const workflowLink = runUrl ? `[${workflowName}](${runUrl})` : workflowName;
     const fixPrompt = buildCiFixPrompt(label, workflowName, runUrl);
 
-    let thread: import("discord.js").ThreadChannel | null = null;
-    try {
-      const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
-      if (ch?.isThread()) thread = ch as import("discord.js").ThreadChannel;
-    } catch (err) {
-      console.error(`[github] CI failure: failed to fetch thread ${makerThreadId}:`, err);
-      return;
-    }
+    const chCi = await this.client.channels.fetch(makerThreadId).catch(() => null);
+    const thread = chCi?.isThread() ? (chCi as import("discord.js").ThreadChannel) : null;
 
     if (!thread) {
       console.error(`[github] CI failure: thread ${makerThreadId} not found or not a thread`);
       return;
+    }
+
+    if (thread.archived) {
+      await thread.edit({ archived: false }).catch((err) => {
+        console.error(`[github] CI failure: failed to unarchive thread ${makerThreadId}:`, err);
+      });
     }
 
     const isBusy = this.sessionManager.hasActiveProcess(makerThreadId);
@@ -315,9 +326,13 @@ export class GitHubHandler {
 
     if (threadId) {
       try {
-        const thread = await this.client.channels.fetch(threadId).catch(() => null);
-        if (thread?.isThread()) {
-          await thread.send(`🔗 Preview URL ready: ${previewUrl}`);
+        const chPrev = await this.client.channels.fetch(threadId).catch(() => null);
+        const prevThread = chPrev?.isThread() ? (chPrev as ThreadChannel) : null;
+        if (prevThread) {
+          if (prevThread.archived) {
+            await prevThread.edit({ archived: false }).catch(() => {});
+          }
+          await prevThread.send(`🔗 Preview URL ready: ${previewUrl}`);
           console.log(`[github] PR #${prNumber}: posted preview URL to thread ${threadId}`);
         } else {
           console.error(`[github] PR #${prNumber}: thread ${threadId} not fetchable or not a thread — preview URL NOT delivered`);
@@ -328,6 +343,36 @@ export class GitHubHandler {
     } else {
       console.error(`[github] PR #${prNumber}: no thread found to post preview URL (repo=${repo})`);
     }
+  }
+
+  // Called at the end of every discord/ worktree session. Detects PRs that were
+  // created while the bot was down or before the GitHub webhook was configured,
+  // and links them to the Discord thread exactly as if the webhook had fired.
+  async checkAndLinkPrForBranch(threadId: string, workDir: string, branch: string): Promise<void> {
+    const remoteResult = spawnSync("git", ["-C", workDir, "remote", "get-url", "origin"], {
+      encoding: "utf8", timeout: 5000,
+    });
+    if (remoteResult.status !== 0 || !remoteResult.stdout.trim()) return;
+
+    const remoteUrl = remoteResult.stdout.trim();
+    const repoMatch = remoteUrl.match(/github\.com[:/](.+?)(?:\.git)?$/);
+    if (!repoMatch) return;
+    const repo = repoMatch[1]!;
+
+    const prResult = spawnSync(
+      "gh", ["pr", "list", "--head", branch, "--json", "number", "--repo", repo],
+      { encoding: "utf8", timeout: 10000 }
+    );
+    if (prResult.status !== 0 || !prResult.stdout.trim()) return;
+
+    let prs: Array<{ number: number }>;
+    try { prs = JSON.parse(prResult.stdout); }
+    catch { return; }
+    if (prs.length === 0) return;
+
+    const prNumber = prs[0]!.number;
+    console.log(`[github] thread ${threadId}: found PR #${prNumber} on ${branch} — linking (webhook fallback)`);
+    await this.ensurePrLinkedToMakerThread(repo, prNumber, branch);
   }
 
   private async getOrCreateTestThread(
