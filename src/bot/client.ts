@@ -16,6 +16,7 @@ import {
 import { SessionManager, type QueuedMessage } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
 import { parseAgentInvocations, starterMessageText, threadName, firstLine } from "./parser.js";
+import { listAgentKeys, getAgent } from "../agents/index.js";
 import { resolveThreadWorkDir } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
 import { setThreadStatus, renamingClosedThreads } from "../utils/thread-status.js";
@@ -42,6 +43,8 @@ export class DiscordBot {
   // Keyed by original user message ID. Stores context for queue/interrupt/cancel
   // button choices shown when a message arrives while an agent is running.
   private pendingInteractions = new Map<string, PendingInteraction>();
+  // Keyed by original user message ID. Stores the raw prompt when buttons were shown to pick an agent.
+  private pendingAgentSelectInteractions = new Map<string, { msg: Message; channel: TextChannel; prompt: string }>();
   // Keyed by original user message ID. Stores context for branch-confirm buttons.
   private pendingBranchInteractions = new Map<
     string,
@@ -213,6 +216,12 @@ export class DiscordBot {
         await interaction.reply({ content: "Not authorised.", ephemeral: true });
         return;
       }
+      if (interaction.customId.startsWith("agent_select_")) {
+        return this.handleAgentSelect(interaction as ButtonInteraction);
+      }
+      if (interaction.customId.startsWith("agent_cancel_")) {
+        return this.handleAgentCancel(interaction as ButtonInteraction);
+      }
       if (interaction.customId.startsWith("msg_queue_")) {
         return this.handleMsgQueue(interaction as ButtonInteraction);
       }
@@ -266,7 +275,20 @@ export class DiscordBot {
 
     const invocations = parseAgentInvocations(msg.content);
     if (invocations.length === 0) {
-      await msg.reply("Mention an agent to start: `@cc`, `@codex`, etc.");
+      const agentButtons = listAgentKeys().map((key) => {
+        const agent = getAgent(key)!;
+        return new ButtonBuilder()
+          .setCustomId(`agent_select_${key}_${msg.id}`)
+          .setLabel(`@${key} — ${agent.label}`)
+          .setStyle(ButtonStyle.Primary);
+      });
+      const cancelButton = new ButtonBuilder()
+        .setCustomId(`agent_cancel_${msg.id}`)
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...agentButtons, cancelButton);
+      this.pendingAgentSelectInteractions.set(msg.id, { msg, channel, prompt: msg.content });
+      await msg.reply({ content: "Mention an agent to start:", components: [row] });
       return;
     }
 
@@ -585,6 +607,51 @@ export class DiscordBot {
     } catch (err: any) {
       await msg.reply(`❌ Failed to resume **${session.agent}**: ${err.message}`);
     }
+  }
+
+  private async handleAgentSelect(interaction: ButtonInteraction): Promise<void> {
+    // customId: agent_select_{agentKey}_{msgId}
+    const withoutPrefix = interaction.customId.replace("agent_select_", "");
+    const underscoreIdx = withoutPrefix.indexOf("_");
+    const agentKey = withoutPrefix.slice(0, underscoreIdx);
+    const msgId = withoutPrefix.slice(underscoreIdx + 1);
+
+    const pending = this.pendingAgentSelectInteractions.get(msgId);
+    if (!pending) {
+      await interaction.update({ content: "⚠️ Context expired.", components: [] });
+      return;
+    }
+    this.pendingAgentSelectInteractions.delete(msgId);
+    await interaction.update({ content: `✅ Starting **@${agentKey}**…`, components: [] });
+
+    const { msg, channel, prompt } = pending;
+    const channelName = channel.name;
+    const attachments = await this.downloadMsgAttachments(msg);
+    const fullPrompt = buildPromptWithAttachments(prompt, attachments);
+
+    const titleLabel = await generateThreadTitle(agentKey, fullPrompt).catch(() => firstLine(fullPrompt));
+    const tName = threadName(agentKey, titleLabel);
+    const thread = (await msg.startThread({ name: tName, autoArchiveDuration: 1440 })) as ThreadChannel;
+
+    const discordContext = { channelId: thread.id, channelName: tName, userId: msg.author.id, messageId: msg.id };
+    const resolved =
+      resolveThreadWorkDir(channelName, thread.id, titleLabel, this.baseFolder) ??
+      { workDir: this.baseFolder, repo: channelName };
+
+    try {
+      await this.sessionManager.runAgent(
+        thread.id, channel.id, thread, agentKey, resolved.workDir, fullPrompt, discordContext,
+        { branch: (resolved as any).branch, isWorktree: !!(resolved as any).worktree }
+      );
+    } catch (err: any) {
+      await thread.send(`❌ Failed to start **${agentKey}**: ${err.message}`);
+    }
+  }
+
+  private async handleAgentCancel(interaction: ButtonInteraction): Promise<void> {
+    const msgId = interaction.customId.replace("agent_cancel_", "");
+    this.pendingAgentSelectInteractions.delete(msgId);
+    await interaction.update({ content: "❌ Cancelled.", components: [] });
   }
 
   private async handleMsgQueue(interaction: ButtonInteraction): Promise<void> {
