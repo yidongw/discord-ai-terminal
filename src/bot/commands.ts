@@ -406,7 +406,6 @@ export class CommandHandler {
       : "systemctl --user restart discord-ai-terminal";
 
     Bun.spawn(["sh", "-c", `sleep 1 && ${restartCmd}`], {
-      detached: true,
       stdio: ["ignore", "ignore", "ignore"],
     });
   }

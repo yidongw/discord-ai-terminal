@@ -706,6 +706,8 @@ export class SessionManager {
         userId: "",
         messageId: "",
       },
+      nonJsonOutput: [],
+      wasResume: true,
     };
     this.active.set(run.threadId, session);
     this.getTyping(run.threadId, thread).start();
@@ -977,7 +979,7 @@ export class SessionManager {
         outbox.enqueue(async () => {
           const tracked = toolCalls.get(result.tool_use_id);
           if (!tracked?.message) return;
-          const firstLine = toolResultText(result.content).split("\n")[0].trim().slice(0, 100);
+          const firstLine = (toolResultText(result.content).split("\n")[0] ?? "").trim().slice(0, 100);
           const current = tracked.message.embeds[0].data.description ?? "";
           const updated = current.replace("⏳", result.is_error ? "❌" : "✅");
           await tracked.message.edit({
@@ -1180,7 +1182,7 @@ async function sendChunked(thread: any, content: string): Promise<void> {
   const chunks = splitText(text, MAX_EMBED);
   for (let i = 0; i < chunks.length; i++) {
     await thread.send({
-      embeds: [new EmbedBuilder().setDescription(chunks[i]).setColor(0x7289da).setFooter(i > 0 ? { text: `(${i + 1}/${chunks.length})` } : null)],
+      embeds: [new EmbedBuilder().setDescription(chunks[i] ?? "").setColor(0x7289da).setFooter(i > 0 ? { text: `(${i + 1}/${chunks.length})` } : null)],
     });
   }
 }

@@ -18,7 +18,7 @@ export function parseAgentInvocations(content: string): ParsedInvocation[] {
   let match: RegExpExecArray | null;
 
   while ((match = mentionPattern.exec(content)) !== null) {
-    const key = match[1].toLowerCase();
+    const key = match[1]!.toLowerCase();
     if (knownAgents.has(key) && !mentionedAgents.includes(key)) {
       mentionedAgents.push(key);
     }

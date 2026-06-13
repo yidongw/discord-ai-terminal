@@ -160,6 +160,7 @@ export class MCPPermissionServer {
           // User selected an option
           const optionIndex = parseInt(interaction.customId.replace('mcp_ask_', ''));
           const selectedOption = q.options[optionIndex];
+          if (!selectedOption) continue;
 
           answers[q.question] = selectedOption.label;
           await interaction.deferUpdate();

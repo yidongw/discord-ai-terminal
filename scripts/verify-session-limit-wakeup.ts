@@ -67,7 +67,7 @@ function processCcLines(lines: string[], threadId: string) {
         resetLabel = resetLabel ?? parsed.resetLabel;
       }
     }
-    if (event.kind === "_sdk_assistant" && (event as any).content) {
+    if ((event as any).kind === "_sdk_assistant" && (event as any).content) {
       const parsed = parseSessionLimitReset((event as any).content);
       if (parsed) {
         limitMessage = (event as any).content;
