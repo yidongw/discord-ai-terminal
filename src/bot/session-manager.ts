@@ -14,6 +14,7 @@ import {
   SESSION_LIMIT_CONTINUATION_PROMPT,
   registerSessionLimitWakeup,
 } from "./session-limit-wakeup.js";
+import { isImageType } from "../utils/attachments.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -985,6 +986,25 @@ export class SessionManager {
           session.hiddenToolIds.add(tool.id);
           continue;
         }
+        if (tool.name === "Read" && tool.input?.file_path) {
+          const filePath = String(tool.input.file_path);
+          if (isImageType(undefined, filePath)) {
+            session.hiddenToolIds.add(tool.id);
+            outbox.pushHiddenTool(tool.name);
+            outbox.enqueue(async () => {
+              try {
+                if (fs.existsSync(filePath)) {
+                  const ext = path.extname(filePath).slice(1).toLowerCase().replace("jpeg", "jpg") || "png";
+                  const buffer = fs.readFileSync(filePath);
+                  await thread.send({ files: [new AttachmentBuilder(buffer, { name: `image.${ext}` })] });
+                }
+              } catch (err) {
+                console.error(`[image] Failed to send image ${filePath}:`, err);
+              }
+            });
+            continue;
+          }
+        }
         if (toolIsHidden(tool.name, session.toolOverrides)) {
           session.hiddenToolIds.add(tool.id);
           outbox.pushHiddenTool(tool.name);
@@ -1002,7 +1022,6 @@ export class SessionManager {
         // Drop results for hidden tools entirely — enqueuing a no-op op would
         // seal the running summary between two batches of hidden calls.
         if (session.hiddenToolIds.has(result.tool_use_id)) continue;
-        const images = extractImages(result.content);
         outbox.enqueue(async () => {
           const tracked = toolCalls.get(result.tool_use_id);
           if (!tracked?.message) return;
@@ -1012,11 +1031,6 @@ export class SessionManager {
           await tracked.message.edit({
             embeds: [new EmbedBuilder().setDescription(`${updated}${firstLine ? `\n*${firstLine}*` : ""}`).setColor(result.is_error ? 0xff0000 : 0x00ff00)],
           });
-          for (const img of images) {
-            const ext = img.mediaType.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
-            const buffer = Buffer.from(img.data, "base64");
-            await thread.send({ files: [new AttachmentBuilder(buffer, { name: `image.${ext}` })] });
-          }
         });
       }
     }
@@ -1277,16 +1291,6 @@ function toolResultText(content: any): string {
   return "";
 }
 
-function extractImages(content: any): { mediaType: string; data: string }[] {
-  const blocks: any[] = Array.isArray(content) ? content : [content];
-  const images: { mediaType: string; data: string }[] = [];
-  for (const block of blocks) {
-    if (block?.type === "image" && block.source?.type === "base64" && block.source?.data) {
-      images.push({ mediaType: block.source.media_type ?? "image/png", data: block.source.data });
-    }
-  }
-  return images;
-}
 
 function formatToolCall(tool: any, workDir: string): string {
   const clean = (v: string) => v.startsWith(workDir + "/") ? v.replace(workDir + "/", "./") : v === workDir ? "." : v;
