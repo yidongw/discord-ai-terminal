@@ -3,10 +3,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { PermissionManager } from './permission-manager.js';
-import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { AttachmentBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
 import type { DatabaseManager } from '../db/database.js';
 import { parseInterval, formatInterval, MIN_INTERVAL_SECONDS } from '../bot/scheduler.js';
 import type { BackgroundJobManager } from '../bot/background-jobs.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 export class MCPPermissionServer {
   private app: express.Application;
@@ -648,6 +651,80 @@ export class MCPPermissionServer {
       }
       const ok = this.bgJobs.cancelJob(id);
       res.json(ok ? { ok: true, id } : { error: `No background job with id "${id}".` });
+    });
+
+    // ── Image generation (called by mcp-bridge.cjs) ──────────────────────────
+
+    this.app.post('/tool/generate_image', async (req, res) => {
+      console.log('HTTP generate_image request:', req.body);
+
+      const discordContext = this.extractDiscordContext(req) || req.body.discord_context;
+      const { prompt, size = '1024x1024' } = req.body ?? {};
+
+      if (!prompt || typeof prompt !== 'string') {
+        res.json({ error: 'A non-empty "prompt" string is required.' });
+        return;
+      }
+
+      const validSizes = ['1024x1024', '1792x1024', '1024x1792'];
+      const imageSize = validSizes.includes(size) ? size : '1024x1024';
+
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        res.json({ error: 'OPENAI_API_KEY is not configured on the bot.' });
+        return;
+      }
+
+      try {
+        const dalleRes = await fetch('https://api.openai.com/v1/images/generations', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size: imageSize, response_format: 'url' }),
+        });
+
+        if (!dalleRes.ok) {
+          const errText = await dalleRes.text();
+          console.error('DALL-E API error:', errText);
+          res.json({ error: `Image generation failed: ${errText.slice(0, 200)}` });
+          return;
+        }
+
+        const dalleData = await dalleRes.json() as any;
+        const imageUrl: string | undefined = dalleData.data?.[0]?.url;
+        const revisedPrompt: string | undefined = dalleData.data?.[0]?.revised_prompt;
+
+        if (!imageUrl) {
+          res.json({ error: 'No image URL returned from DALL-E.' });
+          return;
+        }
+
+        const imgRes = await fetch(imageUrl);
+        const imageBuffer = Buffer.from(await imgRes.arrayBuffer());
+
+        const tmpPath = path.join(os.tmpdir(), `discord-generated-${Date.now()}.png`);
+        fs.writeFileSync(tmpPath, imageBuffer);
+
+        if (discordContext && this.discordBot) {
+          try {
+            const channel = await this.discordBot.client.channels.fetch(discordContext.channelId);
+            if (channel) {
+              const attachment = new AttachmentBuilder(imageBuffer, { name: 'generated.png' });
+              const caption = revisedPrompt ? `*${revisedPrompt.slice(0, 200)}*` : undefined;
+              await (channel as any).send({ content: caption, files: [attachment] });
+            }
+          } catch (sendErr) {
+            console.error('[generate_image] Failed to send image to Discord:', sendErr);
+          }
+        }
+
+        res.json({ ok: true, path: tmpPath, message: 'Image generated and sent to Discord.' });
+      } catch (error) {
+        console.error('HTTP generate_image error:', error);
+        res.json({ error: error instanceof Error ? error.message : String(error) });
+      }
     });
   }
 
