@@ -38,6 +38,7 @@ export interface Config {
   discordToken: string;
   allowedUserIds: string[];
   baseFolder: string;
+  discordAiTerminalChannelId?: string;
 }
 
 export interface ThreadContext {

@@ -24,5 +24,7 @@ export function validateConfig(): Config {
     process.exit(1);
   }
 
-  return { discordToken, allowedUserIds, baseFolder };
+  const discordAiTerminalChannelId = process.env.DISCORD_AI_TERMINAL || undefined;
+
+  return { discordToken, allowedUserIds, baseFolder, discordAiTerminalChannelId };
 }

@@ -1,0 +1,164 @@
+import { REST, Routes } from "discord.js";
+import { SessionManager } from "./session-manager.js";
+import type { DiscordContext } from "../utils/shell.js";
+
+// REST-based Discord message — matches the subset of discord.js Message that
+// session-manager reads back when editing tool-call embeds.
+class RestMessage {
+  embeds: { data: { description: string } }[];
+
+  constructor(
+    public id: string,
+    description: string,
+    private rest: REST,
+    private threadId: string
+  ) {
+    this.embeds = [{ data: { description } }];
+  }
+
+  async edit(data: any): Promise<this> {
+    try {
+      await this.rest.patch(Routes.channelMessage(this.threadId, this.id), {
+        body: serializeBody(data),
+      });
+      const desc = firstEmbedDescription(data);
+      if (desc !== undefined) this.embeds = [{ data: { description: desc } }];
+    } catch (err) {
+      console.error("[worker] edit failed:", err);
+    }
+    return this;
+  }
+}
+
+// REST-only stand-in for discord.js ThreadChannel. Implements the subset of the
+// ThreadChannel API that session-manager and thread-status utilities call.
+class RestThread {
+  archived: boolean = false;
+
+  constructor(
+    public id: string,
+    public parentId: string,
+    public name: string,
+    private rest: REST
+  ) {}
+
+  async send(data: any): Promise<RestMessage> {
+    try {
+      const response = (await this.rest.post(Routes.channelMessages(this.id), {
+        body: serializeBody(data),
+      })) as any;
+      const desc = response.embeds?.[0]?.description ?? "";
+      return new RestMessage(response.id, desc, this.rest, this.id);
+    } catch (err) {
+      console.error("[worker] send failed:", err);
+      return new RestMessage("0", "", this.rest, this.id);
+    }
+  }
+
+  async sendTyping(): Promise<void> {
+    await this.rest.post(Routes.channelTyping(this.id)).catch(() => {});
+  }
+
+  async setName(name: string): Promise<void> {
+    this.name = name;
+    await this.rest.patch(Routes.channel(this.id), { body: { name } }).catch(() => {});
+  }
+
+  async edit(opts: any): Promise<void> {
+    if (opts.name) this.name = opts.name;
+    if (opts.archived !== undefined) this.archived = opts.archived;
+    await this.rest.patch(Routes.channel(this.id), { body: opts }).catch(() => {});
+  }
+
+  toString(): string {
+    return `<#${this.id}>`;
+  }
+}
+
+// Recursively serialize an object that may contain discord.js builder instances
+// (EmbedBuilder, etc.) by calling .toJSON() where available.
+function serializeBody(data: any): any {
+  if (!data || typeof data !== "object") return data;
+  if (typeof (data as any).toJSON === "function") return (data as any).toJSON();
+  if (Array.isArray(data)) {
+    return data.map((item: any) =>
+      item && typeof item.toJSON === "function" ? item.toJSON() : serializeBody(item)
+    );
+  }
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (Array.isArray(v)) {
+      out[k] = v.map((item: any) =>
+        item && typeof item.toJSON === "function" ? item.toJSON() : serializeBody(item)
+      );
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+// Extract the description string from the first embed in a message body,
+// whether the embed is a plain API object or an EmbedBuilder instance.
+function firstEmbedDescription(data: any): string | undefined {
+  const embed = data?.embeds?.[0];
+  if (!embed) return undefined;
+  if (typeof embed.description === "string") return embed.description;
+  if (typeof embed.data?.description === "string") return embed.data.description;
+  return undefined;
+}
+
+export interface WorkerMessage {
+  prompt: string;
+  agentKey: string;
+  discordContext: DiscordContext;
+}
+
+export async function runWorkerMode(): Promise<void> {
+  const threadId = process.env.DISCORD_AI_TERMINAL_THREAD_ID!;
+  const channelId = process.env.DISCORD_AI_TERMINAL_CHANNEL_ID!;
+  const token = process.env.DISCORD_TOKEN!;
+
+  // Read the message JSON written to stdin by the main bot.
+  let stdinData = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) stdinData += chunk;
+
+  let message: WorkerMessage;
+  try {
+    message = JSON.parse(stdinData.trim());
+  } catch {
+    console.error("[worker] invalid stdin JSON:", stdinData.slice(0, 200));
+    process.exit(1);
+  }
+
+  const { prompt, agentKey, discordContext } = message;
+
+  const rest = new REST({ version: "10" }).setToken(token);
+
+  // Fetch the thread name for the mock object so status renames are accurate.
+  let threadName = `bot-${threadId.slice(-6)}`;
+  try {
+    const ch = (await rest.get(Routes.channel(threadId))) as any;
+    if (ch?.name) threadName = ch.name;
+  } catch {}
+
+  const thread = new RestThread(threadId, channelId, threadName, rest);
+
+  // SessionManager uses process.cwd() for sessions.db and runs/.
+  // We run with cwd = the worktree, so each thread gets its own isolated DB.
+  const sessionManager = new SessionManager();
+
+  await sessionManager.runAgent(
+    threadId,
+    channelId,
+    thread,
+    agentKey,
+    process.cwd(),
+    prompt,
+    discordContext
+  );
+
+  // Keep the event loop alive until the agent is done and all Discord sends land.
+  await sessionManager.waitForIdle(threadId);
+}

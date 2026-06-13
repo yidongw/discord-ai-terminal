@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { spawnSync, spawn, type ChildProcess } from "child_process";
 import {
   Client,
   GatewayIntentBits,
@@ -17,7 +18,7 @@ import { SessionManager, type QueuedMessage } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
 import { parseAgentInvocations, starterMessageText, threadName, firstLine } from "./parser.js";
 import { listAgentKeys, getAgent } from "../agents/index.js";
-import { resolveThreadWorkDir } from "../utils/path-resolver.js";
+import { resolveThreadWorkDir, mainRepoOf } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
 import { setThreadStatus, renamingClosedThreads } from "../utils/thread-status.js";
 import {
@@ -32,6 +33,7 @@ import {
 import type { MCPPermissionServer } from "../mcp/server.js";
 import type { GitHubHandler } from "../github/handler.js";
 import type { ThreadSession } from "../db/database.js";
+import type { WorkerMessage } from "./worker-mode.js";
 
 interface PendingInteraction extends QueuedMessage {}
 
@@ -50,11 +52,14 @@ export class DiscordBot {
     string,
     { msg: Message; thread: ThreadChannel; session: { agent: string; workDir: string; branch?: string; channelId: string } }
   >();
+  // Keyed by threadId. Tracks the running worker process for discord-ai-terminal threads.
+  private workerProcesses = new Map<string, ChildProcess>();
 
   constructor(
     private sessionManager: SessionManager,
     private allowedUserIds: string[],
-    private baseFolder: string
+    private baseFolder: string,
+    private discordAiTerminalChannelId?: string
   ) {
     this.client = new Client({
       intents: [
@@ -66,6 +71,111 @@ export class DiscordBot {
     });
     this.commands = new CommandHandler(sessionManager, allowedUserIds, baseFolder);
     this.setupEvents();
+  }
+
+  // ── Worker thread helpers ──────────────────────────────────────────────────
+
+  // True when this thread was created by the discord-ai-terminal channel routing.
+  private isWorkerThread(session: ThreadSession): boolean {
+    return !!this.discordAiTerminalChannelId && session.channelId === this.discordAiTerminalChannelId;
+  }
+
+  // Create a git worktree for a new discord-ai-terminal bot instance. The
+  // worktree is a snapshot of the current bot repo at origin/main so the worker
+  // always starts from the latest released code.
+  private createBotWorktree(threadId: string): string | null {
+    const botRepo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../");
+    const wtPath = path.join(this.baseFolder, "bot-worktrees", threadId.slice(-8));
+
+    if (fs.existsSync(wtPath)) return wtPath;
+
+    fs.mkdirSync(path.dirname(wtPath), { recursive: true });
+
+    // Fetch latest before creating the worktree so we get truly current code.
+    spawnSync("git", ["-C", botRepo, "fetch", "origin"], { encoding: "utf8" });
+
+    const result = spawnSync(
+      "git",
+      ["-C", botRepo, "worktree", "add", "--detach", wtPath, "origin/main"],
+      { encoding: "utf8" }
+    );
+    if (result.status !== 0) {
+      console.error(`[worker] failed to create worktree at ${wtPath}:`, result.stderr);
+      return null;
+    }
+
+    // Install dependencies using Bun's global cache — fast even per-worktree.
+    const install = spawnSync("bun", ["install", "--frozen-lockfile"], {
+      cwd: wtPath,
+      encoding: "utf8",
+    });
+    if (install.status !== 0) {
+      console.error(`[worker] bun install failed in ${wtPath}:`, install.stderr);
+    }
+
+    console.log(`[worker] created worktree for thread ${threadId} at ${wtPath}`);
+    return wtPath;
+  }
+
+  // Pull latest bot code into a worktree and re-install deps if the lockfile changed.
+  private updateBotWorktree(wtPath: string): void {
+    spawnSync("git", ["-C", wtPath, "fetch", "origin"], { encoding: "utf8" });
+    spawnSync("git", ["-C", wtPath, "reset", "--hard", "origin/main"], { encoding: "utf8" });
+    spawnSync("bun", ["install", "--frozen-lockfile"], { cwd: wtPath, encoding: "utf8" });
+  }
+
+  // Spawn a worker process for one message to a discord-ai-terminal thread.
+  // The worker runs src/index.ts from the thread's own worktree in worker mode,
+  // sending Discord output via REST. Returns immediately after spawning.
+  private spawnWorker(
+    threadId: string,
+    worktreePath: string,
+    workerMsg: WorkerMessage
+  ): ChildProcess {
+    const workerScript = path.join(worktreePath, "src/index.ts");
+    const proc = spawn("bun", ["run", workerScript], {
+      cwd: worktreePath,
+      stdio: ["pipe", "inherit", "inherit"],
+      env: {
+        ...process.env,
+        DISCORD_AI_TERMINAL_THREAD_ID: threadId,
+        DISCORD_AI_TERMINAL_CHANNEL_ID: workerMsg.discordContext.channelId !== threadId
+          ? workerMsg.discordContext.channelId
+          : (this.discordAiTerminalChannelId ?? ""),
+      },
+    });
+
+    // Write the message payload and close stdin so the worker knows it's complete.
+    proc.stdin!.write(JSON.stringify(workerMsg) + "\n");
+    proc.stdin!.end();
+
+    proc.on("exit", (code) => {
+      console.log(`[worker] thread ${threadId} exited (code=${code})`);
+      this.workerProcesses.delete(threadId);
+    });
+
+    this.workerProcesses.set(threadId, proc);
+    console.log(`[worker] spawned pid=${proc.pid} for thread ${threadId}`);
+    return proc;
+  }
+
+  // Kill the running worker for a thread (if any).
+  private killWorker(threadId: string): void {
+    const proc = this.workerProcesses.get(threadId);
+    if (!proc) return;
+    try { proc.kill("SIGTERM"); } catch {}
+    this.workerProcesses.delete(threadId);
+  }
+
+  // Remove a bot worktree (on thread close/delete). Always forces since we don't
+  // track user work inside the bot repo worktrees.
+  private removeBotWorktree(wtPath: string): void {
+    const repoPath = mainRepoOf(wtPath);
+    if (!repoPath) return;
+    spawnSync("git", ["-C", repoPath, "worktree", "remove", "--force", wtPath], {
+      encoding: "utf8",
+    });
+    spawnSync("git", ["-C", repoPath, "worktree", "prune"], { encoding: "utf8" });
   }
 
   setMCPServer(mcp: MCPPermissionServer): void {
@@ -171,7 +281,21 @@ export class DiscordBot {
   // still reachable) so nothing is silently lost — clear it later with /cleanup.
   // On "closed" (auto-archive) we keep the session so the thread can be resumed
   // by sending a new message; on "deleted" we clean up fully.
+  //
+  // Worker threads are always cleaned up fully (no keepSession) — the bot instance
+  // is gone when the thread closes.
   private cleanupThread(threadId: string, thread: ThreadChannel | null, reason: string): void {
+    const session = this.sessionManager.getDb().getThreadSession(threadId);
+
+    // Worker thread: kill any running worker and force-remove the bot worktree.
+    if (session && this.isWorkerThread(session)) {
+      this.killWorker(threadId);
+      this.removeBotWorktree(session.workDir);
+      this.sessionManager.getDb().deleteThreadSession(threadId);
+      if (reason === "closed" && thread) void setThreadStatus(thread, "closed", { archived: true });
+      return;
+    }
+
     const keepSession = reason === "closed";
     const result = this.sessionManager.cleanupThreadWorktree(threadId, false, keepSession);
     // A deleted thread is gone — no rename is possible regardless of outcome.
@@ -269,9 +393,113 @@ export class DiscordBot {
     await this.commands.handleInteraction(interaction);
   }
 
+  // Handle a message in the discord-ai-terminal channel: create a thread +
+  // worktree for the new bot instance, then spawn the first worker.
+  // Handle a message in a discord-ai-terminal worker thread.
+  private async handleWorkerThreadMessage(
+    msg: Message,
+    thread: ThreadChannel,
+    session: ThreadSession
+  ): Promise<void> {
+    if (this.workerProcesses.has(thread.id)) {
+      await msg.reply("⏳ Previous reply still running — please wait.");
+      return;
+    }
+
+    await msg.react("👀").catch(() => {});
+
+    // Pull the latest bot code before spawning the worker.
+    this.updateBotWorktree(session.workDir);
+
+    const attachments = await this.downloadMsgAttachments(msg);
+    const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
+    const discordContext = {
+      channelId: session.channelId,
+      channelName: thread.name,
+      userId: msg.author.id,
+      messageId: msg.id,
+    };
+
+    this.spawnWorker(thread.id, session.workDir, {
+      prompt: fullPrompt,
+      agentKey: session.agent,
+      discordContext,
+    });
+  }
+
+  private async handleBotInstanceChannelMessage(msg: Message, channel: TextChannel): Promise<void> {
+    const invocations = parseAgentInvocations(msg.content);
+
+    if (invocations.length === 0) {
+      // Show agent-select buttons, same as the normal flow.
+      const agentButtons = listAgentKeys().map((key) => {
+        const agent = getAgent(key)!;
+        return new ButtonBuilder()
+          .setCustomId(`agent_select_${key}_${msg.id}`)
+          .setLabel(`@${key} — ${agent.label}`)
+          .setStyle(ButtonStyle.Primary);
+      });
+      const cancelButton = new ButtonBuilder()
+        .setCustomId(`agent_cancel_${msg.id}`)
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...agentButtons, cancelButton);
+      this.pendingAgentSelectInteractions.set(msg.id, { msg, channel, prompt: msg.content });
+      await msg.reply({ content: "Mention an agent to start:", components: [row] });
+      return;
+    }
+
+    await msg.react("👀").catch(() => {});
+
+    const { agent: agentKey, prompt } = invocations[0]!;
+    const attachments = await this.downloadMsgAttachments(msg);
+    const fullPrompt = buildPromptWithAttachments(prompt, attachments);
+
+    const titleLabel = await generateThreadTitle(agentKey, prompt).catch(() => firstLine(prompt));
+    const tName = threadName(agentKey, titleLabel);
+
+    const thread = (await msg.startThread({
+      name: tName,
+      autoArchiveDuration: 1440,
+    })) as ThreadChannel;
+
+    // Create the bot worktree (git worktree of this bot repo at origin/main).
+    const wtPath = this.createBotWorktree(thread.id);
+    if (!wtPath) {
+      await thread.send("❌ Failed to create bot worktree. Check logs.");
+      return;
+    }
+
+    // Persist the thread so missed-message recovery and cleanup can find it.
+    this.sessionManager.getDb().createThreadSession({
+      threadId: thread.id,
+      channelId: channel.id,
+      agent: agentKey,
+      workDir: wtPath,
+      isWorktree: false,
+      createdAt: Date.now(),
+    });
+    this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
+
+    const discordContext = {
+      channelId: channel.id,
+      channelName: channel.name,
+      userId: msg.author.id,
+      messageId: msg.id,
+    };
+
+    this.spawnWorker(thread.id, wtPath, { prompt: fullPrompt, agentKey, discordContext });
+  }
+
   private async handleChannelMessage(msg: Message): Promise<void> {
     const channel = msg.channel as TextChannel;
     const channelName = channel.name;
+
+    // discord-ai-terminal channel: each message spawns a new bot-instance thread.
+    if (this.discordAiTerminalChannelId && channel.id === this.discordAiTerminalChannelId) {
+      await this.handleBotInstanceChannelMessage(msg, channel);
+      return;
+    }
 
     const invocations = parseAgentInvocations(msg.content);
     if (invocations.length === 0) {
@@ -380,6 +608,13 @@ export class DiscordBot {
 
     // Record this message as seen so restart recovery picks up only newer ones.
     this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
+
+    // discord-ai-terminal worker thread: kill any running worker, pull latest
+    // code, and spawn a fresh worker for this message.
+    if (this.isWorkerThread(session)) {
+      await this.handleWorkerThreadMessage(msg, thread, session);
+      return;
+    }
 
     // If the message mentions an agent, ask whether to branch into a new sibling
     // thread or just send the message to the current thread's agent.
@@ -625,15 +860,35 @@ export class DiscordBot {
     await interaction.update({ content: `✅ Starting **@${agentKey}**…`, components: [] });
 
     const { msg, channel, prompt } = pending;
-    const channelName = channel.name;
     const attachments = await this.downloadMsgAttachments(msg);
     const fullPrompt = buildPromptWithAttachments(prompt, attachments);
 
     const titleLabel = await generateThreadTitle(agentKey, fullPrompt).catch(() => firstLine(fullPrompt));
     const tName = threadName(agentKey, titleLabel);
     const thread = (await msg.startThread({ name: tName, autoArchiveDuration: 1440 })) as ThreadChannel;
-
     const discordContext = { channelId: thread.id, channelName: tName, userId: msg.author.id, messageId: msg.id };
+
+    // discord-ai-terminal channel: spawn a bot-instance worker thread.
+    if (this.discordAiTerminalChannelId && channel.id === this.discordAiTerminalChannelId) {
+      const wtPath = this.createBotWorktree(thread.id);
+      if (!wtPath) {
+        await thread.send("❌ Failed to create bot worktree. Check logs.");
+        return;
+      }
+      this.sessionManager.getDb().createThreadSession({
+        threadId: thread.id,
+        channelId: channel.id,
+        agent: agentKey,
+        workDir: wtPath,
+        isWorktree: false,
+        createdAt: Date.now(),
+      });
+      this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
+      this.spawnWorker(thread.id, wtPath, { prompt: fullPrompt, agentKey, discordContext });
+      return;
+    }
+
+    const channelName = channel.name;
     const resolved =
       resolveThreadWorkDir(channelName, thread.id, titleLabel, this.baseFolder) ??
       { workDir: this.baseFolder, repo: channelName };
@@ -780,6 +1035,36 @@ export class DiscordBot {
     // Mark all as seen up front so a crash during processing doesn't re-fetch.
     const lastMsg = ordered[ordered.length - 1]!;
     this.sessionManager.getDb().updateLastSeenMessageId(session.threadId, lastMsg.id);
+
+    // Worker thread recovery: replay missed messages as sequential worker spawns.
+    if (this.isWorkerThread(session)) {
+      const count = ordered.length;
+      const preview = ordered[0]!.content.length > 200
+        ? ordered[0]!.content.slice(0, 200) + "…"
+        : ordered[0]!.content;
+      await thread.send(
+        `📋 **Recovering ${count} missed message${count > 1 ? "s" : ""} from downtime:**\n>>> ${preview}`
+      );
+      this.updateBotWorktree(session.workDir);
+      for (const msg of ordered) {
+        const attachments = await this.downloadMsgAttachments(msg);
+        const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
+        const discordContext = {
+          channelId: session.channelId,
+          channelName: thread.name,
+          userId: msg.author.id,
+          messageId: msg.id,
+        };
+        const proc = this.spawnWorker(session.threadId, session.workDir, {
+          prompt: fullPrompt,
+          agentKey: session.agent,
+          discordContext,
+        });
+        // Wait for this worker to finish before processing the next message.
+        await new Promise<void>((resolve) => proc.on("close", resolve));
+      }
+      return;
+    }
 
     // Re-create the worktree path if it was cleaned up while the thread was archived.
     if (session.isWorktree && !fs.existsSync(session.workDir)) {
