@@ -480,6 +480,10 @@ export class DiscordBot {
         autoArchiveDuration: 1440,
       })) as ThreadChannel;
 
+      // Add the user to the new thread and notify them in the originating thread.
+      await childThread.members.add(msg.author.id).catch(() => {});
+      await msg.reply(`<@${msg.author.id}> branched → ${childThread.toString()}`).catch(() => {});
+
       const discordContext = {
         channelId: childThread.id,
         channelName: tName,
