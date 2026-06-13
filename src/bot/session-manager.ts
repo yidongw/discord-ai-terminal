@@ -555,10 +555,17 @@ export class SessionManager {
         const queued = this.dequeueMessage(threadId);
         if (queued) {
           // Restate the queued message so the user knows what's being processed.
-          const preview = queued.originalText.length > 200
-            ? queued.originalText.slice(0, 200) + "…"
+          const preview = queued.originalText.length > 500
+            ? queued.originalText.slice(0, 500) + "…"
             : queued.originalText;
-          await queued.thread.send(`📋 **Processing queued message:**\n>>> ${preview}`);
+          await queued.thread.send({
+            embeds: [
+              new EmbedBuilder()
+                .setTitle("📋 Processing queued message")
+                .setDescription(preview)
+                .setColor(0x5865f2),
+            ],
+          });
           try {
             await this.runAgent(
               threadId,

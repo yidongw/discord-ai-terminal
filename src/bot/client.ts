@@ -7,6 +7,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  EmbedBuilder,
   type Message,
   type TextChannel,
   type ThreadChannel,
@@ -365,7 +366,9 @@ export class DiscordBot {
       });
 
       const queueLen = this.sessionManager.getQueueLength(thread.id);
-      const hint = queueLen > 0 ? ` (${queueLen} already queued)` : "";
+      const queueNote = queueLen > 0
+        ? `\n${queueLen} message${queueLen === 1 ? "" : "s"} already queued.`
+        : "";
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
           .setCustomId(`msg_queue_${msg.id}`)
@@ -381,7 +384,12 @@ export class DiscordBot {
           .setStyle(ButtonStyle.Secondary)
       );
       await msg.reply({
-        content: `Agent is still running${hint}. What would you like to do?`,
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("⏸️ Agent is still running")
+            .setDescription(`What would you like to do with your message?${queueNote}`)
+            .setColor(0xffa500),
+        ],
         components: [row],
       });
       return;
@@ -432,7 +440,10 @@ export class DiscordBot {
     const msgId = interaction.customId.replace("msg_queue_", "");
     const pending = this.pendingInteractions.get(msgId);
     if (!pending) {
-      await interaction.update({ content: "⚠️ Message context expired.", components: [] });
+      await interaction.update({
+        embeds: [new EmbedBuilder().setDescription("⚠️ Message context expired.").setColor(0x99aab5)],
+        components: [],
+      });
       return;
     }
 
@@ -440,8 +451,16 @@ export class DiscordBot {
     this.pendingInteractions.delete(msgId);
 
     const queueLen = this.sessionManager.getQueueLength(pending.thread.id);
+    const preview = pending.originalText.length > 300
+      ? pending.originalText.slice(0, 300) + "…"
+      : pending.originalText;
     await interaction.update({
-      content: `✅ Queued (position ${queueLen}). Will run after the current agent finishes.`,
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(`✅ Queued — position ${queueLen}`)
+          .setDescription(preview)
+          .setColor(0x5865f2),
+      ],
       components: [],
     });
   }
@@ -450,12 +469,26 @@ export class DiscordBot {
     const msgId = interaction.customId.replace("msg_interrupt_", "");
     const pending = this.pendingInteractions.get(msgId);
     if (!pending) {
-      await interaction.update({ content: "⚠️ Message context expired.", components: [] });
+      await interaction.update({
+        embeds: [new EmbedBuilder().setDescription("⚠️ Message context expired.").setColor(0x99aab5)],
+        components: [],
+      });
       return;
     }
 
     this.pendingInteractions.delete(msgId);
-    await interaction.update({ content: "⚡ Interrupting current agent…", components: [] });
+    const preview = pending.originalText.length > 300
+      ? pending.originalText.slice(0, 300) + "…"
+      : pending.originalText;
+    await interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("⚡ Interrupting")
+          .setDescription(preview)
+          .setColor(0xff6b35),
+      ],
+      components: [],
+    });
 
     try {
       await this.sessionManager.runAgent(
@@ -475,7 +508,10 @@ export class DiscordBot {
   private async handleMsgCancel(interaction: ButtonInteraction): Promise<void> {
     const msgId = interaction.customId.replace("msg_cancel_", "");
     this.pendingInteractions.delete(msgId);
-    await interaction.update({ content: "❌ Cancelled.", components: [] });
+    await interaction.update({
+      embeds: [new EmbedBuilder().setDescription("❌ Cancelled.").setColor(0x99aab5)],
+      components: [],
+    });
   }
 
   /**
