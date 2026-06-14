@@ -465,22 +465,23 @@ export class GitHubHandler {
     if (db.isClosedNotified(linked.prNumber, linked.repo)) return;
 
     const viewResult = spawnSync(
-      "gh", ["pr", "view", linked.prNumber, "--repo", linked.repo, "--json", "state,merged,mergedBy,title"],
+      "gh", ["pr", "view", linked.prNumber, "--repo", linked.repo, "--json", "state,mergedAt,mergedBy,title"],
       { encoding: "utf8", timeout: 10000 }
     );
     if (viewResult.status !== 0 || !viewResult.stdout.trim()) return;
 
-    let prData: { state: string; merged: boolean; mergedBy: { login: string } | null; title: string };
+    let prData: { state: string; mergedAt: string | null; mergedBy: { login: string } | null; title: string };
     try { prData = JSON.parse(viewResult.stdout); }
     catch { return; }
 
     if (prData.state === "OPEN") return;
 
+    const merged = prData.state === "MERGED" || prData.mergedAt !== null;
     console.log(`[github] PR #${linked.prNumber} on thread ${threadId}: state=${prData.state} — sending close notification (fallback)`);
     await this.handlePrClosed(
       linked.repo,
       Number(linked.prNumber),
-      prData.merged,
+      merged,
       prData.mergedBy?.login ?? null,
       prData.title
     );
