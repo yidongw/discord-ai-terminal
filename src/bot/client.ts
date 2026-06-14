@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import {
+  AttachmentBuilder,
   Client,
   GatewayIntentBits,
   ChannelType,
@@ -19,6 +20,7 @@ import { parseAgentInvocations, starterMessageText, threadName, firstLine } from
 import { listAgentKeys, getAgent } from "../agents/index.js";
 import { resolveThreadWorkDir } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
+import { findLatestDownloadImage, isImageGenerationRequest } from "../utils/image-requests.js";
 import { setThreadStatus, renamingClosedThreads } from "../utils/thread-status.js";
 import {
   ensureAttachmentDir,
@@ -273,6 +275,10 @@ export class DiscordBot {
     const channel = msg.channel as TextChannel;
     const channelName = channel.name;
 
+    if (await this.trySendDownloadImage(msg)) {
+      return;
+    }
+
     const invocations = parseAgentInvocations(msg.content);
     if (invocations.length === 0) {
       const agentButtons = listAgentKeys().map((key) => {
@@ -369,6 +375,10 @@ export class DiscordBot {
         }
         return;
       }
+    }
+
+    if (await this.trySendDownloadImage(msg)) {
+      return;
     }
 
     const session = this.sessionManager.getDb().getThreadSession(thread.id);
@@ -732,6 +742,29 @@ export class DiscordBot {
       embeds: [new EmbedBuilder().setDescription("❌ Cancelled.").setColor(0x99aab5)],
       components: [],
     });
+  }
+
+  private async trySendDownloadImage(msg: Message): Promise<boolean> {
+    if (!isImageGenerationRequest(msg.content)) {
+      return false;
+    }
+
+    const imagePath = findLatestDownloadImage();
+    if (!imagePath) {
+      await msg.reply("I couldn’t find an image in `~/Downloads`.");
+      return true;
+    }
+
+    try {
+      const buffer = fs.readFileSync(imagePath);
+      await msg.reply({
+        content: `Latest image from Downloads: \`${path.basename(imagePath)}\``,
+        files: [new AttachmentBuilder(buffer, { name: path.basename(imagePath) })],
+      });
+    } catch (err: any) {
+      await msg.reply(`I found \`${imagePath}\` but couldn’t send it: ${err?.message ?? String(err)}`);
+    }
+    return true;
   }
 
   /**
