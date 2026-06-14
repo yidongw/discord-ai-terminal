@@ -268,6 +268,9 @@ export class DatabaseManager {
     if (!prCols.includes("tests_skipped")) {
       this.db.exec(`ALTER TABLE pr_threads ADD COLUMN tests_skipped INTEGER NOT NULL DEFAULT 0`);
     }
+    if (!prCols.includes("closed_notified")) {
+      this.db.exec(`ALTER TABLE pr_threads ADD COLUMN closed_notified INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 
   // ── Thread sessions ──────────────────────────────────────────────────────
@@ -699,6 +702,23 @@ export class DatabaseManager {
          ON CONFLICT (pr_number, repo) DO UPDATE SET tests_skipped = excluded.tests_skipped`
       )
       .run(prNumber, repo, skipped ? 1 : 0, Date.now());
+  }
+
+  isClosedNotified(prNumber: string, repo: string): boolean {
+    const row = this.db
+      .prepare(`SELECT closed_notified FROM pr_threads WHERE pr_number = ? AND repo = ?`)
+      .get(prNumber, repo) as any;
+    return row?.closed_notified === 1;
+  }
+
+  setClosedNotified(prNumber: string, repo: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO pr_threads (pr_number, repo, closed_notified, created_at)
+         VALUES (?, ?, 1, ?)
+         ON CONFLICT (pr_number, repo) DO UPDATE SET closed_notified = 1`
+      )
+      .run(prNumber, repo, Date.now());
   }
 
   // Find the most recent CC session whose work_dir matches a repo name.
