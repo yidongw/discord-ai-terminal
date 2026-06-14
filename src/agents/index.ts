@@ -22,7 +22,8 @@ export type AgentEvent =
   | { kind: "session_limit"; turns: number | null }
   | { kind: "rate_limit";  resetAt: number; resetLabel: string }
   | { kind: "error";      message: string; subtype?: string }
-  | { kind: "image_file"; filePath: string };
+  | { kind: "image_file"; filePath: string }
+  | { kind: "image_data"; data: string; mediaType: string; callId?: string };
 
 export interface AgentParseContext {
   // Model we passed on the CLI for this run — used when the agent's init event

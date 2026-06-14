@@ -16,6 +16,9 @@ export const codexAgent: AgentRunner = {
   parseLine(line, workDir, ctx?: AgentParseContext): AgentEvent | null {
     let msg: any;
     try { msg = JSON.parse(line); } catch { return null; }
+    if ((msg.type === "event_msg" || msg.type === "response_item") && msg.payload) {
+      msg = msg.payload;
+    }
 
     if (msg.type === "thread.started") {
       return {
@@ -24,6 +27,11 @@ export const codexAgent: AgentRunner = {
         model: msg.model ?? ctx?.requestedModel ?? DEFAULT_CODEX_MODEL,
         cwd: workDir,
       };
+    }
+
+    if (msg.type === "image_generation_end" || msg.type === "image_generation_call") {
+      const image = imageDataEvent(msg);
+      if (image) return image;
     }
 
     if (msg.type === "image_generation_end" && msg.call_id && ctx?.sessionId) {
@@ -66,6 +74,8 @@ export const codexAgent: AgentRunner = {
       }
 
       if (item?.type === "image_generation" && item.call_id && ctx?.sessionId) {
+        const image = imageDataEvent(item);
+        if (image) return image;
         return {
           kind: "image_file",
           filePath: generatedImagePath(ctx.sessionId, String(item.call_id)),
@@ -95,4 +105,14 @@ export const codexAgent: AgentRunner = {
 function generatedImagePath(sessionId: string, callId: string): string {
   const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
   return path.join(codexHome, "generated_images", sessionId, `${callId}.png`);
+}
+
+function imageDataEvent(msg: any): AgentEvent | null {
+  if (typeof msg?.result !== "string" || msg.result.length === 0) return null;
+  return {
+    kind: "image_data",
+    data: msg.result,
+    mediaType: "image/png",
+    callId: typeof msg.call_id === "string" ? msg.call_id : undefined,
+  };
 }

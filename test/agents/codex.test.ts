@@ -53,4 +53,45 @@ describe('codexAgent', () => {
       filePath: `${process.env.CODEX_HOME ?? `${process.env.HOME}/.codex`}/generated_images/thread-123/ig_abc123.png`,
     });
   });
+
+  it('maps generated image results to inline image data', () => {
+    const event = codexAgent.parseLine(
+      JSON.stringify({
+        type: 'image_generation_end',
+        call_id: 'ig_abc123',
+        status: 'generating',
+        result: 'iVBORw0KGgo=',
+      }),
+      '/test/dir'
+    );
+
+    expect(event).toEqual({
+      kind: 'image_data',
+      data: 'iVBORw0KGgo=',
+      mediaType: 'image/png',
+      callId: 'ig_abc123',
+    });
+  });
+
+  it('maps wrapped image generation calls to inline image data', () => {
+    const event = codexAgent.parseLine(
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'image_generation_call',
+          call_id: 'ig_wrapped',
+          status: 'generating',
+          result: 'iVBORw0KGgo=',
+        },
+      }),
+      '/test/dir'
+    );
+
+    expect(event).toEqual({
+      kind: 'image_data',
+      data: 'iVBORw0KGgo=',
+      mediaType: 'image/png',
+      callId: 'ig_wrapped',
+    });
+  });
 });
