@@ -181,6 +181,18 @@ export class DiscordBot {
 
   setGitHubHandler(handler: GitHubHandler): void {
     this.githubHandler = handler;
+    if (this.discordAiTerminalChannelId) {
+      handler.setWorkerDispatch(
+        this.discordAiTerminalChannelId,
+        (threadId, workDir, agentKey, prompt, channelId) => {
+          this.spawnWorker(threadId, workDir, {
+            prompt,
+            agentKey,
+            discordContext: { channelId, channelName: "", userId: "", messageId: "" },
+          });
+        }
+      );
+    }
   }
 
   async login(token: string): Promise<void> {
