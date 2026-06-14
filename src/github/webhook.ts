@@ -1,47 +1,10 @@
-import { spawn } from "child_process";
 import type { GitHubHandler } from "./handler.js";
 
-// Spawns a cloudflared quick tunnel for the given port. Resolves with the
-// public https URL and a kill() function once cloudflared reports it's ready.
-// Returns null if cloudflared is not found or the URL doesn't appear in 30s.
-export function startWebhookTunnel(port: number): Promise<{ url: string; kill: () => void } | null> {
-  return new Promise((resolve) => {
-    const proc = spawn("cloudflared", [
-      "tunnel", "--url", `http://localhost:${port}`, "--no-autoupdate",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-
-    let settled = false;
-    const settle = (result: { url: string; kill: () => void } | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
-
-    const timer = setTimeout(() => {
-      console.error("[webhook] cloudflared tunnel did not report a URL within 30s");
-      proc.kill();
-      settle(null);
-    }, 30_000);
-
-    const onData = (chunk: Buffer) => {
-      const match = chunk.toString().match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-      if (match) settle({ url: match[0], kill: () => proc.kill() });
-    };
-
-    proc.stdout?.on("data", onData);
-    proc.stderr?.on("data", onData);
-    proc.on("error", (err) => {
-      console.error("[webhook] failed to start cloudflared:", err.message);
-      settle(null);
-    });
-  });
-}
-
-// Ensures a webhook exists for `repo` pointing at `tunnelUrl`.
-// Looks for an existing trycloudflare.com webhook to update; creates one if none found.
-// GITHUB_WEBHOOK_REPOS is a comma-separated list of "owner/repo" names.
-export async function registerGitHubWebhook(repo: string, tunnelUrl: string): Promise<void> {
+// Ensures a webhook exists for `repo` pointing at `webhookUrl`.
+// Looks for an existing webhook whose URL contains `webhookUrl` (idempotent);
+// creates one with pull_request + workflow_run events if none found.
+// Reads GITHUB_TOKEN and GITHUB_WEBHOOK_SECRET from env.
+export async function registerGitHubWebhook(repo: string, webhookUrl: string): Promise<void> {
   const token = process.env.GITHUB_TOKEN ?? "";
   const secret = process.env.GITHUB_WEBHOOK_SECRET ?? "";
   const headers = {
@@ -58,14 +21,18 @@ export async function registerGitHubWebhook(repo: string, tunnelUrl: string): Pr
   }
 
   const hooks = await listRes.json() as Array<{ id: number; config: { url: string } }>;
-  const existing = hooks.find((h) => h.config.url?.includes("trycloudflare.com"));
+  const existing = hooks.find((h) => h.config.url?.includes(new URL(webhookUrl).hostname));
 
   if (existing) {
+    if (existing.config.url === webhookUrl) {
+      console.log(`[webhook] register: hook ${existing.id} for ${repo} already up to date`);
+      return;
+    }
     const res = await fetch(`https://api.github.com/repos/${repo}/hooks/${existing.id}`, {
       method: "PATCH", headers,
-      body: JSON.stringify({ config: { url: tunnelUrl, content_type: "json", secret } }),
+      body: JSON.stringify({ config: { url: webhookUrl, content_type: "json", secret } }),
     });
-    if (res.ok) console.log(`[webhook] register: updated hook ${existing.id} for ${repo} → ${tunnelUrl}`);
+    if (res.ok) console.log(`[webhook] register: updated hook ${existing.id} for ${repo} → ${webhookUrl}`);
     else console.error(`[webhook] register: PATCH failed for ${repo}: ${res.status}`);
   } else {
     const res = await fetch(`https://api.github.com/repos/${repo}/hooks`, {
@@ -73,10 +40,10 @@ export async function registerGitHubWebhook(repo: string, tunnelUrl: string): Pr
       body: JSON.stringify({
         name: "web", active: true,
         events: ["pull_request", "workflow_run"],
-        config: { url: tunnelUrl, content_type: "json", secret },
+        config: { url: webhookUrl, content_type: "json", secret },
       }),
     });
-    if (res.ok) console.log(`[webhook] register: created hook for ${repo} → ${tunnelUrl}`);
+    if (res.ok) console.log(`[webhook] register: created hook for ${repo} → ${webhookUrl}`);
     else console.error(`[webhook] register: POST failed for ${repo}: ${res.status}`);
   }
 }

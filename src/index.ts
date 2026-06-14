@@ -5,7 +5,7 @@ import { BackgroundJobManager } from "./bot/background-jobs.js";
 import { validateConfig } from "./utils/config.js";
 import { MCPPermissionServer } from "./mcp/server.js";
 import { GitHubHandler } from "./github/handler.js";
-import { GitHubWebhookServer, startWebhookTunnel, registerGitHubWebhook } from "./github/webhook.js";
+import { GitHubWebhookServer, registerGitHubWebhook } from "./github/webhook.js";
 
 async function main() {
   const config = validateConfig();
@@ -32,7 +32,6 @@ async function main() {
   mcpServer.setBackgroundJobManager(bgJobs);
 
   let shuttingDown = false;
-  let tunnelKill: (() => void) | undefined;
   const shutdown = async () => {
     if (shuttingDown) return; // a second SIGTERM during drain shouldn't re-enter
     shuttingDown = true;
@@ -40,7 +39,6 @@ async function main() {
     try { scheduler.stop(); } catch {}
     try { bgJobs.stop(); } catch {}
     try { await mcpServer.stop(); } catch {}
-    try { tunnelKill?.(); } catch {}
     // Leave in-flight agents RUNNING (detached). detachAndExit drains whatever is
     // already queued, flushes offsets, and returns; the next boot re-attaches.
     try { await sessionManager.detachAndExit(); } catch {}
@@ -114,21 +112,17 @@ async function main() {
     const webhookPort = parseInt(process.env.GITHUB_WEBHOOK_PORT ?? "3002");
     webhookServer.start(webhookPort);
 
+    const webhookUrl = process.env.GITHUB_WEBHOOK_URL;
     const repos = (process.env.GITHUB_WEBHOOK_REPOS ?? "")
       .split(",").map((s) => s.trim()).filter(Boolean);
-    if (repos.length > 0) {
-      const tunnel = await startWebhookTunnel(webhookPort);
-      if (tunnel) {
-        tunnelKill = tunnel.kill;
-        console.log(`[webhook] cloudflared tunnel ready: ${tunnel.url}`);
-        for (const repo of repos) {
-          registerGitHubWebhook(repo, tunnel.url).catch((err) =>
-            console.error(`[webhook] register failed for ${repo}:`, err)
-          );
-        }
-      } else {
-        console.error("[webhook] cloudflared tunnel failed to start — GitHub webhook not registered");
+    if (webhookUrl && repos.length > 0) {
+      for (const repo of repos) {
+        registerGitHubWebhook(repo, webhookUrl).catch((err) =>
+          console.error(`[webhook] register failed for ${repo}:`, err)
+        );
       }
+    } else if (repos.length > 0) {
+      console.warn("[webhook] GITHUB_WEBHOOK_URL not set — skipping GitHub webhook registration");
     }
   }
 
