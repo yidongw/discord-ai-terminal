@@ -47,6 +47,50 @@ const CC_ALIAS_MAP: Record<string, CcModel> = {
   haiku: "claude-haiku-4-5",
 };
 
+// Short aliases usable as @mention suffixes, e.g. @cco4.8 or @cx5.5
+export const CC_MODEL_ALIASES: Record<string, CcModel> = {
+  "s4.6": "claude-sonnet-4-6",
+  "sonnet4.6": "claude-sonnet-4-6",
+  "o4.8": "claude-opus-4-8",
+  "opus4.8": "claude-opus-4-8",
+  "o4.7": "claude-opus-4-7",
+  "opus4.7": "claude-opus-4-7",
+  "o4.6": "claude-opus-4-6",
+  "opus4.6": "claude-opus-4-6",
+  "s4.5": "claude-sonnet-4-5",
+  "sonnet4.5": "claude-sonnet-4-5",
+  "h4.5": "claude-haiku-4-5",
+  "haiku": "claude-haiku-4-5",
+  "fable": "claude-fable-5",
+};
+
+export const CODEX_MODEL_ALIASES: Record<string, CodexModel> = {
+  "5.5": "gpt-5.5",
+  "5.4": "gpt-5.4",
+  "mini": "gpt-5.4-mini",
+  "5.4-mini": "gpt-5.4-mini",
+};
+
+export const CS_MODEL_ALIASES: Record<string, CsModel> = {
+  "fast": "composer-2.5-fast",
+  "2.5fast": "composer-2.5-fast",
+  "2.5": "composer-2.5",
+};
+
+/**
+ * Resolve a model alias suffix (the part after the agent key in an @mention)
+ * to the full model value. Returns undefined if the suffix is not recognized.
+ */
+export function resolveModelAlias(agentKey: string, suffix: string): string | undefined {
+  const lower = suffix.toLowerCase();
+  switch (agentKey) {
+    case "cc": return CC_MODEL_VALUES.has(suffix) ? suffix : CC_MODEL_ALIASES[lower];
+    case "cx": return CODEX_MODEL_VALUES.has(suffix) ? suffix : CODEX_MODEL_ALIASES[lower];
+    case "cs": return CS_MODEL_VALUES.has(suffix) ? suffix : CS_MODEL_ALIASES[lower];
+    default:   return undefined;
+  }
+}
+
 export function normalizeCcModel(stored: string | undefined | null): CcModel {
   if (!stored) return DEFAULT_CC_MODEL;
   if (CC_MODEL_VALUES.has(stored)) return stored as CcModel;

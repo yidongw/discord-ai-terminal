@@ -330,7 +330,7 @@ export class SessionManager {
     workDir: string,
     prompt: string,
     discordContext: DiscordContext | undefined,
-    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; completion?: CompletionAction }
+    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; completion?: CompletionAction; modelOverride?: string }
   ): Promise<void> {
     const agent = getAgent(agentKey);
     if (!agent) throw new Error(`Unknown agent: ${agentKey}`);
@@ -339,9 +339,14 @@ export class SessionManager {
 
     const existing = this.db.getThreadSession(threadId);
     const mode = this.db.getMode(channelId);
-    const model = this.db.getModel(channelId);
-    const codexModel = this.db.getCodexModel(channelId);
-    const csModel = this.db.getCsModel(channelId);
+    let model = this.db.getModel(channelId);
+    let codexModel = this.db.getCodexModel(channelId);
+    let csModel = this.db.getCsModel(channelId);
+    if (opts?.modelOverride) {
+      if (agentKey === "cx") codexModel = opts.modelOverride as typeof codexModel;
+      else if (agentKey === "cs") csModel = opts.modelOverride as typeof csModel;
+      else model = opts.modelOverride as typeof model;
+    }
     const requestedModel = agentKey === "cx" ? codexModel : agentKey === "cs" ? csModel : model;
     const toolOverrides = this.db.getToolOverrides(channelId);
 

@@ -14,7 +14,12 @@ import { SessionManager } from "./session-manager.js";
 import { DEFAULT_HIDDEN_TOOLS, KNOWN_TOOLS, toolIsHidden } from "../db/database.js";
 import { setThreadStatus } from "../utils/thread-status.js";
 import type { PermissionMode, CcModel, CodexModel, CsModel } from "../db/database.js";
-import { CC_MODEL_CHOICES, CODEX_MODEL_CHOICES, CS_MODEL_CHOICES } from "../utils/models.js";
+import {
+  CC_MODEL_CHOICES, CODEX_MODEL_CHOICES, CS_MODEL_CHOICES,
+  CC_MODEL_ALIASES, CODEX_MODEL_ALIASES, CS_MODEL_ALIASES,
+  DEFAULT_CC_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_CS_MODEL,
+} from "../utils/models.js";
+import { getAgent, listAgentKeys } from "../agents/index.js";
 
 export class CommandHandler {
   constructor(
@@ -107,6 +112,10 @@ export class CommandHandler {
         ),
 
       new SlashCommandBuilder()
+        .setName("agents")
+        .setDescription("List available @agent mentions and their model aliases"),
+
+      new SlashCommandBuilder()
         .setName("update")
         .setDescription("Pull the latest default branch and restart the bot service"),
 
@@ -172,6 +181,7 @@ export class CommandHandler {
     if (commandName === "status") return this.handleStatus(interaction);
     if (commandName === "mode") return this.handleMode(interaction);
     if (commandName === "model") return this.handleModel(interaction);
+    if (commandName === "agents") return this.handleAgents(interaction);
     if (commandName === "tools") return this.handleTools(interaction);
     if (commandName === "update") return this.handleUpdate(interaction);
   }
@@ -296,6 +306,28 @@ export class CommandHandler {
     db.setCodexModel(channelId, model);
     await i.reply({
       embeds: [embed("✅ Codex Model Set", `Codex model set to **${model}** for this channel.`, 0x00ff00)],
+    });
+  }
+
+  private async handleAgents(i: ChatInputCommandInteraction): Promise<void> {
+    const aliasesByAgent: Record<string, { aliases: Record<string, string>; defaultModel: string }> = {
+      cc: { aliases: CC_MODEL_ALIASES, defaultModel: DEFAULT_CC_MODEL },
+      cx: { aliases: CODEX_MODEL_ALIASES, defaultModel: DEFAULT_CODEX_MODEL },
+      cs: { aliases: CS_MODEL_ALIASES, defaultModel: DEFAULT_CS_MODEL },
+    };
+
+    const sections = listAgentKeys().map((key) => {
+      const agent = getAgent(key)!;
+      const info = aliasesByAgent[key];
+      const aliasList = info
+        ? Object.keys(info.aliases).map((a) => `\`@${key}${a}\``).join(", ")
+        : "none";
+      const defaultLine = info ? ` (default: \`${info.defaultModel}\`)` : "";
+      return `**@${key}** — ${agent.label}${defaultLine}\nModel aliases: ${aliasList}`;
+    });
+
+    await i.reply({
+      embeds: [embed("Available @mentions", sections.join("\n\n"), 0x5865f2)],
     });
   }
 

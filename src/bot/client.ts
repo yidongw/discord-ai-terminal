@@ -297,7 +297,7 @@ export class DiscordBot {
     const attachments = await this.downloadMsgAttachments(msg);
 
     for (let i = 0; i < invocations.length; i++) {
-      const { agent, prompt } = invocations[i]!;
+      const { agent, prompt, model: modelOverride } = invocations[i]!;
       const fullPrompt = buildPromptWithAttachments(prompt, attachments);
 
       // Ask the same agent CLI for a concise title; fall back to first line.
@@ -346,7 +346,7 @@ export class DiscordBot {
           resolved.workDir,
           fullPrompt,
           discordContext,
-          { branch: resolved.branch, isWorktree: !!resolved.worktree }
+          { branch: resolved.branch, isWorktree: !!resolved.worktree, modelOverride }
         );
       } catch (err: any) {
         await thread.send(`❌ Failed to start **${agent}**: ${err.message}`);
@@ -525,7 +525,7 @@ export class DiscordBot {
     const invocations = parseAgentInvocations(msg.content);
 
     for (let i = 0; i < invocations.length; i++) {
-      const { agent, prompt } = invocations[i]!;
+      const { agent, prompt, model: modelOverride } = invocations[i]!;
       const fullPrompt = buildPromptWithAttachments(prompt, attachments);
 
       const titleLabel = await generateThreadTitle(agent, prompt).catch(
@@ -569,7 +569,7 @@ export class DiscordBot {
           resolved.workDir,
           fullPrompt,
           discordContext,
-          { branch: (resolved as any).branch, isWorktree: !!(resolved as any).worktree }
+          { branch: (resolved as any).branch, isWorktree: !!(resolved as any).worktree, modelOverride }
         );
       } catch (err: any) {
         await childThread.send(`❌ Failed to start **${agent}**: ${err.message}`);
