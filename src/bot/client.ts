@@ -415,7 +415,7 @@ export class DiscordBot {
       // Download attachments now so we have the full prompt ready for queue/interrupt.
       const attachments = await this.downloadMsgAttachments(msg);
       const replyContext = await this.fetchReplyContext(msg);
-      const fullPrompt = buildPromptWithAttachments(replyContext + msg.content, attachments);
+      const fullPrompt = buildPromptWithAttachments(replyContext.text + msg.content, [...replyContext.attachments, ...attachments]);
       const discordContext = {
         channelId: thread.id,
         channelName: thread.name,
@@ -481,7 +481,7 @@ export class DiscordBot {
 
     const attachments = await this.downloadMsgAttachments(msg);
     const replyContext = await this.fetchReplyContext(msg);
-    const fullPrompt = buildPromptWithAttachments(replyContext + msg.content, attachments);
+    const fullPrompt = buildPromptWithAttachments(replyContext.text + msg.content, [...replyContext.attachments, ...attachments]);
 
     const discordContext = {
       channelId: thread.id,
@@ -843,19 +843,21 @@ export class DiscordBot {
   }
 
   /**
-   * Download all attachments on a Discord message to local temp files so the
-   * agent can read them (e.g. images) by absolute path. Failures are logged
-   * and skipped so a bad attachment never blocks the agent run.
+   * Fetch text and attachments from the message the user is replying to, so
+   * the agent has full context (including images) from the original message.
    */
-  private async fetchReplyContext(msg: Message): Promise<string> {
-    if (!msg.reference?.messageId) return "";
+  private async fetchReplyContext(msg: Message): Promise<{ text: string; attachments: DownloadedAttachment[] }> {
+    if (!msg.reference?.messageId) return { text: "", attachments: [] };
     try {
       const replied = await msg.channel.messages.fetch(msg.reference.messageId);
       const text = replied.content || replied.embeds[0]?.description || "";
-      if (!text) return "";
-      return `[Replying to: ${text.slice(0, 500)}]\n\n`;
+      const replyText = text ? `[Replying to: ${text.slice(0, 500)}]\n\n` : "";
+      const attachments = replied.attachments.size > 0
+        ? await this.downloadMsgAttachments(replied)
+        : [];
+      return { text: replyText, attachments };
     } catch {
-      return "";
+      return { text: "", attachments: [] };
     }
   }
 
