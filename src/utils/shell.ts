@@ -39,7 +39,10 @@ const DISCORD_SYSTEM_PROMPT =
   "with the command and then end your turn — the bot runs it detached and " +
   "re-invokes you here with its output when it finishes (this survives bot " +
   "restarts). Use mcp__discord-permissions__list_background_jobs and " +
-  "mcp__discord-permissions__cancel_background_job to manage running ones.";
+  "mcp__discord-permissions__cancel_background_job to manage running ones. " +
+  "When the user asks for an image or other file already on disk, do not reply " +
+  "with a Markdown link or a raw filesystem path. Read the file so the bot can " +
+  "upload it as a Discord attachment, and keep any accompanying text brief.";
 
 export function buildClaudeCommand(
   workingDir: string,

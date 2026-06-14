@@ -12,6 +12,11 @@ export interface DownloadedAttachment {
   isImage: boolean;
 }
 
+export interface LocalImageReference {
+  label: string;
+  filePath: string;
+}
+
 /**
  * Ensure the temp attachment directory exists
  */
@@ -48,6 +53,65 @@ export function isImageType(contentType?: string, filename?: string): boolean {
   if (contentType?.startsWith('image/')) return true;
   if (filename && /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename)) return true;
   return false;
+}
+
+/**
+ * Find Markdown links that point at local image files, so they can be uploaded
+ * as Discord attachments instead of being shown as plain file links.
+ */
+export function extractLocalImageReferences(text: string): LocalImageReference[] {
+  const refs: LocalImageReference[] = [];
+  const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = linkPattern.exec(text)) !== null) {
+    const label = match[1]?.trim();
+    const filePath = match[2]?.trim();
+    if (!label || !filePath) continue;
+    if (!path.isAbsolute(filePath)) continue;
+    if (!isImageType(undefined, filePath)) continue;
+    refs.push({ label, filePath });
+  }
+
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || !path.isAbsolute(trimmed) || !isImageType(undefined, trimmed)) continue;
+    refs.push({ label: path.basename(trimmed), filePath: trimmed });
+  }
+
+  return refs;
+}
+
+/**
+ * Remove local image Markdown links from text after they have been uploaded as
+ * attachments. Leaves any surrounding prose intact.
+ */
+export function stripLocalImageReferences(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (trimmed && path.isAbsolute(trimmed) && isImageType(undefined, trimmed)) {
+        return "";
+      }
+
+      if (/^\[[^\]]+\]\([^)]+\)$/.test(trimmed)) {
+        const match = trimmed.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+        const label = match?.[1]?.trim();
+        const filePath = match?.[2]?.trim();
+        if (label && filePath && path.isAbsolute(filePath) && isImageType(undefined, filePath)) {
+          return "";
+        }
+      }
+
+      return line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (full, label, filePath) => {
+        if (!path.isAbsolute(String(filePath)) || !isImageType(undefined, String(filePath))) {
+          return full;
+        }
+        return String(label).trim();
+      });
+    })
+    .join("\n");
 }
 
 /** Read tool input uses `file_path` (CC) or `path` (Cursor). */

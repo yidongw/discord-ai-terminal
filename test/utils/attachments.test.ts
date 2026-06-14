@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   extractGeneratedImagePath,
+  extractLocalImageReferences,
   getToolInputPath,
   isImageType,
+  stripLocalImageReferences,
 } from "../../src/utils/attachments.js";
 
 describe("getToolInputPath", () => {
@@ -29,5 +31,52 @@ describe("isImageType", () => {
   it("detects image extensions", () => {
     expect(isImageType(undefined, "/tmp/photo.webp")).toBe(true);
     expect(isImageType(undefined, "/tmp/readme.txt")).toBe(false);
+  });
+});
+
+describe("local image references", () => {
+  it("extracts absolute markdown links to image files", () => {
+    expect(
+      extractLocalImageReferences(
+        "Here it is:\n\n[Snipaste_2026-05-08_19-49-59.png](/Users/me/Downloads/Snipaste_2026-05-08_19-49-59.png)"
+      )
+    ).toEqual([
+      {
+        label: "Snipaste_2026-05-08_19-49-59.png",
+        filePath: "/Users/me/Downloads/Snipaste_2026-05-08_19-49-59.png",
+      },
+    ]);
+  });
+
+  it("leaves non-image or non-local links alone", () => {
+    expect(
+      extractLocalImageReferences("[docs](https://example.com/pic.png)")
+    ).toEqual([]);
+  });
+
+  it("strips local image markdown links down to their labels", () => {
+    expect(
+      stripLocalImageReferences(
+        "Here’s one from Downloads:\n\n[Snipaste.png](/Users/me/Downloads/Snipaste.png)"
+      )
+    ).toBe("Here’s one from Downloads:\n\n");
+  });
+
+  it("handles a standalone absolute image path", () => {
+    expect(
+      extractLocalImageReferences(
+        "Here it is:\n\n/Users/me/Downloads/Snipaste.png"
+      )
+    ).toEqual([
+      {
+        label: "Snipaste.png",
+        filePath: "/Users/me/Downloads/Snipaste.png",
+      },
+    ]);
+    expect(
+      stripLocalImageReferences(
+        "Here it is:\n\n/Users/me/Downloads/Snipaste.png"
+      )
+    ).toBe("Here it is:\n\n");
   });
 });

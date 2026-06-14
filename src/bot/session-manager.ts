@@ -16,8 +16,10 @@ import {
 } from "./session-limit-wakeup.js";
 import {
   extractGeneratedImagePath,
+  extractLocalImageReferences,
   getToolInputPath,
   isImageType,
+  stripLocalImageReferences,
 } from "../utils/attachments.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
@@ -1241,6 +1243,22 @@ export class TypingIndicator {
 }
 
 async function sendChunked(thread: any, content: string): Promise<void> {
+  const imageRefs = extractLocalImageReferences(content);
+  if (imageRefs.length > 0) {
+    const cleaned = stripLocalImageReferences(content).trim();
+    if (cleaned) {
+      await sendChunkedText(thread, cleaned);
+    }
+    for (const ref of imageRefs) {
+      await sendImageAttachment(thread, ref.filePath);
+    }
+    return;
+  }
+
+  await sendChunkedText(thread, content);
+}
+
+async function sendChunkedText(thread: any, content: string): Promise<void> {
   const text = formatForDiscord(content);
   if (!text) return;
   if (text.length <= MAX_EMBED) {
