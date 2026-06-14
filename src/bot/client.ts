@@ -87,12 +87,15 @@ export class DiscordBot {
     const botRepo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../");
     const wtPath = path.join(this.baseFolder, "bot-worktrees", threadId.slice(-8));
 
-    if (fs.existsSync(wtPath)) return wtPath;
+    // Fetch latest so we get truly current code whether creating or updating.
+    spawnSync("git", ["-C", botRepo, "fetch", "origin"], { encoding: "utf8" });
+
+    if (fs.existsSync(wtPath)) {
+      spawnSync("git", ["-C", wtPath, "reset", "--hard", "origin/main"], { encoding: "utf8" });
+      return wtPath;
+    }
 
     fs.mkdirSync(path.dirname(wtPath), { recursive: true });
-
-    // Fetch latest before creating the worktree so we get truly current code.
-    spawnSync("git", ["-C", botRepo, "fetch", "origin"], { encoding: "utf8" });
 
     const result = spawnSync(
       "git",
