@@ -104,12 +104,8 @@ export function normalizeCodexModel(stored: string | undefined | null): CodexMod
 
 const CS_MODEL_VALUES = new Set<string>(CS_MODEL_CHOICES.map((c) => c.value));
 
-const CS_ALIAS_MAP: Record<string, CsModel> = {
-  "gpt-5.3-codex": "auto",
-};
-
 export function normalizeCsModel(stored: string | undefined | null): CsModel {
   if (!stored) return DEFAULT_CS_MODEL;
   if (CS_MODEL_VALUES.has(stored)) return stored as CsModel;
-  return CS_ALIAS_MAP[stored] ?? DEFAULT_CS_MODEL;
+  return DEFAULT_CS_MODEL;
 }
