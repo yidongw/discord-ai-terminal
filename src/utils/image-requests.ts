@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 
 const IMAGE_REQUEST_RE =
-  /(?:\b(?:send|make|create|generate|render)\b.*\b(?:pic|picture|photo|image)\b)|(?:\b(?:img gen|space pic|generate image|generate a pic|send me a pic|send me a picture|send me a photo)\b)/i;
+  /(?:\b(?:send|make|create|generate|render|give|get|show)\b.*\b(?:pic|picture|photo|image)\b)|(?:\b(?:img gen|space pic|generate image|generate a pic|send me a pic|send me a picture|send me a photo|give me a pic|give me a picture|give me a photo|show me a pic|show me a picture|show me a photo)\b)/i;
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
 
