@@ -3,9 +3,6 @@ import * as os from "os";
 import * as path from "path";
 import { $ } from "bun";
 
-const IMAGE_REQUEST_RE =
-  /(?:\b(?:send|make|create|generate|render|give|get|show)\b.*\b(?:pic|picture|photo|image)\b)|(?:\b(?:img gen|space pic|generate image|generate a pic|send me a pic|send me a picture|send me a photo|give me a pic|give me a picture|give me a photo|show me a pic|show me a picture|show me a photo)\b)/i;
-
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
 const DOWNLOAD_IMAGE_DECISION = "DOWNLOAD_IMAGE";
 const OTHER_DECISION = "OTHER";
@@ -15,14 +12,6 @@ const IMAGE_REQUEST_CLASSIFIER_PROMPT =
   "DOWNLOAD_IMAGE if the user is asking for an image/photo/pic/picture to be sent from their local Downloads folder or the latest local image; " +
   "OTHER for everything else. " +
   "If the request is ambiguous, return OTHER.\n\nMessage: ";
-
-/**
- * Heuristic for prompts that are clearly asking for an image rather than text.
- * Kept intentionally broad enough to catch casual phrasing like "send me a pic".
- */
-export function isImageGenerationRequest(text: string): boolean {
-  return IMAGE_REQUEST_RE.test(text);
-}
 
 /**
  * Parse a classifier response into the internal decision token.
@@ -47,9 +36,7 @@ export async function shouldSendLatestDownloadImage(text: string): Promise<boole
   } catch (err) {
     console.error("Image request classifier failed:", err);
   }
-
-  // Conservative fallback: only trigger on obvious local-download image asks.
-  return /(?:\bdownload(?:s)?\b.*\b(?:pic|picture|photo|image)\b)|(?:\b(?:latest|newest|recent)\b.*\b(?:image|photo|picture|pic)\b)/i.test(text);
+  return false;
 }
 
 /**

@@ -4,22 +4,8 @@ import * as os from "os";
 import * as path from "path";
 import {
   findLatestDownloadImage,
-  isImageGenerationRequest,
   parseDownloadImageDecision,
 } from "../../src/utils/image-requests.js";
-
-describe("isImageGenerationRequest", () => {
-  it("matches casual image requests", () => {
-    expect(isImageGenerationRequest("send me a pic of space")).toBe(true);
-    expect(isImageGenerationRequest("please generate an image of a fox")).toBe(true);
-    expect(isImageGenerationRequest("give me a pic from download folder")).toBe(true);
-  });
-
-  it("does not match ordinary text", () => {
-    expect(isImageGenerationRequest("what is the image size limit?")).toBe(false);
-    expect(isImageGenerationRequest("please adjust the picture frame in the layout")).toBe(false);
-  });
-});
 
 describe("findLatestDownloadImage", () => {
   it("returns the newest image file in a downloads folder", () => {
