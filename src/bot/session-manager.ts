@@ -85,6 +85,8 @@ interface ActiveSession {
   hiddenToolIds: Set<string>;
   // GenerateImage tool-use ids — image is sent from the tool result, not at call time.
   generateImageToolIds: Set<string>;
+  // Generated image call ids already uploaded from Codex image events.
+  sentGeneratedImageCallIds: Set<string>;
   // Read tool-use ids where the target was an image file. Like generateImageToolIds,
   // we defer sending until the tool result so we can use the base64 data directly
   // rather than re-reading from disk (which fails when the filename has non-ASCII
@@ -431,6 +433,7 @@ export class SessionManager {
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
       generateImageToolIds: new Set(),
+      sentGeneratedImageCallIds: new Set(),
       pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir,
@@ -743,6 +746,7 @@ export class SessionManager {
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
       generateImageToolIds: new Set(),
+      sentGeneratedImageCallIds: new Set(),
       pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir: run.workDir,
@@ -846,7 +850,17 @@ export class SessionManager {
     }
 
     if (event.kind === "image_file") {
+      const callId = generatedImageCallIdFromPath(event.filePath);
+      if (callId && session.sentGeneratedImageCallIds.has(callId)) return;
+      if (callId) session.sentGeneratedImageCallIds.add(callId);
       outbox.enqueue(async () => sendImageAttachment(thread, event.filePath));
+      return;
+    }
+
+    if (event.kind === "image_data") {
+      if (event.callId && session.sentGeneratedImageCallIds.has(event.callId)) return;
+      if (event.callId) session.sentGeneratedImageCallIds.add(event.callId);
+      outbox.enqueue(async () => sendImageFromBase64(thread, event.data, event.mediaType));
       return;
     }
 
@@ -1364,6 +1378,11 @@ async function sendImageFromBase64(thread: any, data: string, mediaType: string)
   } catch (err) {
     console.error("[image] Failed to send base64 image:", err);
   }
+}
+
+function generatedImageCallIdFromPath(filePath: string): string | undefined {
+  const name = path.basename(filePath, path.extname(filePath));
+  return name.startsWith("ig_") ? name : undefined;
 }
 
 function extractBase64ImageFromResult(content: unknown): { data: string; mediaType: string } | null {
