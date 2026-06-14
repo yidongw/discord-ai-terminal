@@ -5,7 +5,7 @@ import { BackgroundJobManager } from "./bot/background-jobs.js";
 import { validateConfig } from "./utils/config.js";
 import { MCPPermissionServer } from "./mcp/server.js";
 import { GitHubHandler } from "./github/handler.js";
-import { GitHubWebhookServer, autoRegisterWebhookUrl } from "./github/webhook.js";
+import { GitHubWebhookServer, startWebhookTunnel, registerGitHubWebhook } from "./github/webhook.js";
 
 async function main() {
   const config = validateConfig();
@@ -32,6 +32,7 @@ async function main() {
   mcpServer.setBackgroundJobManager(bgJobs);
 
   let shuttingDown = false;
+  let tunnelKill: (() => void) | undefined;
   const shutdown = async () => {
     if (shuttingDown) return; // a second SIGTERM during drain shouldn't re-enter
     shuttingDown = true;
@@ -39,6 +40,7 @@ async function main() {
     try { scheduler.stop(); } catch {}
     try { bgJobs.stop(); } catch {}
     try { await mcpServer.stop(); } catch {}
+    try { tunnelKill?.(); } catch {}
     // Leave in-flight agents RUNNING (detached). detachAndExit drains whatever is
     // already queued, flushes offsets, and returns; the next boot re-attaches.
     try { await sessionManager.detachAndExit(); } catch {}
@@ -111,11 +113,23 @@ async function main() {
     const webhookServer = new GitHubWebhookServer(githubHandler);
     const webhookPort = parseInt(process.env.GITHUB_WEBHOOK_PORT ?? "3002");
     webhookServer.start(webhookPort);
-    // Auto-update the GitHub webhook URL to match the current cloudflared tunnel.
-    // The quick tunnel URL changes on restart; this keeps the webhook pointing at the right place.
-    void autoRegisterWebhookUrl(webhookPort).catch((err) =>
-      console.error("[webhook] auto-register failed:", err)
-    );
+
+    const repos = (process.env.GITHUB_WEBHOOK_REPOS ?? "")
+      .split(",").map((s) => s.trim()).filter(Boolean);
+    if (repos.length > 0) {
+      const tunnel = await startWebhookTunnel(webhookPort);
+      if (tunnel) {
+        tunnelKill = tunnel.kill;
+        console.log(`[webhook] cloudflared tunnel ready: ${tunnel.url}`);
+        for (const repo of repos) {
+          registerGitHubWebhook(repo, tunnel.url).catch((err) =>
+            console.error(`[webhook] register failed for ${repo}:`, err)
+          );
+        }
+      } else {
+        console.error("[webhook] cloudflared tunnel failed to start — GitHub webhook not registered");
+      }
+    }
   }
 
   console.log("Agent Discord Bot started.");

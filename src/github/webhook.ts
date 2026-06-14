@@ -1,64 +1,83 @@
+import { spawn } from "child_process";
 import type { GitHubHandler } from "./handler.js";
 
-// Scans cloudflared quick-tunnel metrics ports (20241..20270) to find a tunnel
-// that routes to our webhook server. The webhook server returns 405 for GET,
-// which is unique enough to identify it. Returns the https:// URL or null.
-export async function findWebhookTunnelUrl(webhookPort: number): Promise<string | null> {
-  for (let metricsPort = 20241; metricsPort <= 20270; metricsPort++) {
-    try {
-      const meta = await fetch(`http://localhost:${metricsPort}/quicktunnel`, {
-        signal: AbortSignal.timeout(500),
-      }).then((r) => r.ok ? r.json() as Promise<{ hostname: string }> : null).catch(() => null);
-      if (!meta?.hostname) continue;
+// Spawns a cloudflared quick tunnel for the given port. Resolves with the
+// public https URL and a kill() function once cloudflared reports it's ready.
+// Returns null if cloudflared is not found or the URL doesn't appear in 30s.
+export function startWebhookTunnel(port: number): Promise<{ url: string; kill: () => void } | null> {
+  return new Promise((resolve) => {
+    const proc = spawn("cloudflared", [
+      "tunnel", "--url", `http://localhost:${port}`, "--no-autoupdate",
+    ], { stdio: ["ignore", "pipe", "pipe"] });
 
-      const url = `https://${meta.hostname}`;
-      const probe = await fetch(url, { signal: AbortSignal.timeout(4000) }).catch(() => null);
-      if (probe?.status === 405) return url;
-    } catch {}
-  }
-  return null;
+    let settled = false;
+    const settle = (result: { url: string; kill: () => void } | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      console.error("[webhook] cloudflared tunnel did not report a URL within 30s");
+      proc.kill();
+      settle(null);
+    }, 30_000);
+
+    const onData = (chunk: Buffer) => {
+      const match = chunk.toString().match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+      if (match) settle({ url: match[0], kill: () => proc.kill() });
+    };
+
+    proc.stdout?.on("data", onData);
+    proc.stderr?.on("data", onData);
+    proc.on("error", (err) => {
+      console.error("[webhook] failed to start cloudflared:", err.message);
+      settle(null);
+    });
+  });
 }
 
-// Updates the GitHub webhook URL for a repo. Reads GITHUB_TOKEN and
-// GITHUB_WEBHOOK_SECRET from env. GITHUB_WEBHOOK_REPOS is a comma-separated
-// list of "owner/repo:hookId" pairs (e.g. "yidongw/carbon:641327968").
-export async function autoRegisterWebhookUrl(webhookPort: number): Promise<void> {
-  const reposEnv = process.env.GITHUB_WEBHOOK_REPOS ?? "";
-  if (!reposEnv) return;
-
+// Ensures a webhook exists for `repo` pointing at `tunnelUrl`.
+// Looks for an existing trycloudflare.com webhook to update; creates one if none found.
+// GITHUB_WEBHOOK_REPOS is a comma-separated list of "owner/repo" names.
+export async function registerGitHubWebhook(repo: string, tunnelUrl: string): Promise<void> {
   const token = process.env.GITHUB_TOKEN ?? "";
   const secret = process.env.GITHUB_WEBHOOK_SECRET ?? "";
+  const headers = {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+    "Accept": "application/vnd.github+json",
+  };
 
-  const tunnelUrl = await findWebhookTunnelUrl(webhookPort);
-  if (!tunnelUrl) {
-    console.log("[webhook] auto-register: no cloudflared quick tunnel found — skipping URL update");
+  const listRes = await fetch(`https://api.github.com/repos/${repo}/hooks`, { headers })
+    .catch((err) => { console.error(`[webhook] register: list hooks failed for ${repo}:`, err); return null; });
+  if (!listRes?.ok) {
+    console.error(`[webhook] register: list hooks returned ${listRes?.status} for ${repo}`);
     return;
   }
 
-  for (const entry of reposEnv.split(",").map((s) => s.trim()).filter(Boolean)) {
-    const [repo, hookId] = entry.split(":") as [string, string | undefined];
-    if (!repo || !hookId) {
-      console.warn(`[webhook] auto-register: invalid GITHUB_WEBHOOK_REPOS entry "${entry}" — expected "owner/repo:hookId"`);
-      continue;
-    }
-    try {
-      const res = await fetch(`https://api.github.com/repos/${repo}/hooks/${hookId}`, {
-        method: "PATCH",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "Accept": "application/vnd.github+json",
-        },
-        body: JSON.stringify({ config: { url: tunnelUrl, content_type: "json", secret } }),
-      });
-      if (res.ok) {
-        console.log(`[webhook] auto-register: updated ${repo} hook ${hookId} → ${tunnelUrl}`);
-      } else {
-        console.error(`[webhook] auto-register: failed to update ${repo} hook ${hookId}: ${res.status}`);
-      }
-    } catch (err) {
-      console.error(`[webhook] auto-register: error updating ${repo} hook ${hookId}:`, err);
-    }
+  const hooks = await listRes.json() as Array<{ id: number; config: { url: string } }>;
+  const existing = hooks.find((h) => h.config.url?.includes("trycloudflare.com"));
+
+  if (existing) {
+    const res = await fetch(`https://api.github.com/repos/${repo}/hooks/${existing.id}`, {
+      method: "PATCH", headers,
+      body: JSON.stringify({ config: { url: tunnelUrl, content_type: "json", secret } }),
+    });
+    if (res.ok) console.log(`[webhook] register: updated hook ${existing.id} for ${repo} → ${tunnelUrl}`);
+    else console.error(`[webhook] register: PATCH failed for ${repo}: ${res.status}`);
+  } else {
+    const res = await fetch(`https://api.github.com/repos/${repo}/hooks`, {
+      method: "POST", headers,
+      body: JSON.stringify({
+        name: "web", active: true,
+        events: ["pull_request", "workflow_run"],
+        config: { url: tunnelUrl, content_type: "json", secret },
+      }),
+    });
+    if (res.ok) console.log(`[webhook] register: created hook for ${repo} → ${tunnelUrl}`);
+    else console.error(`[webhook] register: POST failed for ${repo}: ${res.status}`);
   }
 }
 
