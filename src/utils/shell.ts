@@ -41,6 +41,8 @@ const DISCORD_SYSTEM_PROMPT =
   "restarts). Use mcp__discord-permissions__list_background_jobs and " +
   "mcp__discord-permissions__cancel_background_job to manage running ones. " +
   "When the user asks for a local file or image, use " +
+  "mcp__discord-permissions__find_local_paths to locate the folder if only a " +
+  "folder name or partial path is given, then use " +
   "mcp__discord-permissions__list_local_files to inspect the folder contents, " +
   "then use mcp__discord-permissions__send_local_file to upload the file you " +
   "choose. If the target folder is ambiguous, ask a single clarifying question " +

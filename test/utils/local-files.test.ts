@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { listLocalFiles } from "../../src/utils/local-files.js";
+import { findLocalPaths, listLocalFiles } from "../../src/utils/local-files.js";
 
 describe("listLocalFiles", () => {
   it("lists a directory with image metadata", () => {
@@ -32,5 +32,25 @@ describe("listLocalFiles", () => {
     const result = listLocalFiles(root, { recursive: true, maxEntries: 1 });
     expect(result.truncated).toBe(true);
     expect(result.entries.length).toBe(1);
+  });
+
+  it("finds matching local paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "local-find-"));
+    const carbon = path.join(root, "carbon");
+    const nested = path.join(carbon, "assets");
+    const logo = path.join(carbon, "logo.png");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(logo, "img");
+
+    const result = findLocalPaths("carbon", {
+      roots: [root],
+      recursive: true,
+      maxEntries: 10,
+      directoriesOnly: true,
+    });
+
+    expect(result.truncated).toBe(false);
+    expect(result.entries[0]?.path).toBe(path.resolve(carbon));
+    expect(result.entries[0]?.kind).toBe("directory");
   });
 });

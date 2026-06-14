@@ -122,6 +122,30 @@ const TOOLS = [
     },
   },
   {
+    name: 'find_local_paths',
+    description:
+      'Search local folders and files by name or partial path so you can locate ' +
+      'the correct directory before listing it. Use this when the user names a ' +
+      'folder but does not give a full absolute path.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Folder name, file name, or partial path to search for.' },
+        roots: {
+          type: 'array',
+          description: 'Optional root directories to search within.',
+          items: { type: 'string' },
+        },
+        recursive: { type: 'boolean', description: 'Whether to recurse into subdirectories.' },
+        max_entries: { type: 'number', description: 'Maximum number of matches to return.' },
+        max_depth: { type: 'number', description: 'Maximum recursion depth.' },
+        include_hidden: { type: 'boolean', description: 'Whether to include hidden files and directories.' },
+        directories_only: { type: 'boolean', description: 'Whether to limit results to directories.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'list_local_files',
     description:
       'List the contents of a local directory so you can inspect candidate files ' +

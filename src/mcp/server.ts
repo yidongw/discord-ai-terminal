@@ -9,7 +9,7 @@ import { AttachmentBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, Butto
 import type { DatabaseManager } from '../db/database.js';
 import { parseInterval, formatInterval, MIN_INTERVAL_SECONDS } from '../bot/scheduler.js';
 import type { BackgroundJobManager } from '../bot/background-jobs.js';
-import { listLocalFiles as scanLocalFiles } from '../utils/local-files.js';
+import { findLocalPaths as scanLocalPaths, listLocalFiles as scanLocalFiles } from '../utils/local-files.js';
 
 export class MCPPermissionServer {
   private app: express.Application;
@@ -211,6 +211,27 @@ export class MCPPermissionServer {
     };
   }
 
+  private async findLocalPaths(
+    query: string,
+    options: { roots?: string[]; recursive?: boolean; maxEntries?: number; maxDepth?: number; includeHidden?: boolean; directoriesOnly?: boolean } = {}
+  ): Promise<{ query: string; roots: string[]; entries: Array<Record<string, unknown>>; truncated: boolean }> {
+    const result = scanLocalPaths(query, options);
+    return {
+      query: result.query,
+      roots: result.roots,
+      truncated: result.truncated,
+      entries: result.entries.map((entry) => ({
+        path: entry.path,
+        name: entry.name,
+        kind: entry.kind,
+        size: entry.size,
+        mtimeMs: entry.mtimeMs,
+        isImage: entry.isImage,
+        score: entry.score,
+      })),
+    };
+  }
+
   private async sendLocalFile(
     filePath: string,
     discordContext: { channelId: string; channelName: string; userId: string; messageId?: string },
@@ -395,6 +416,53 @@ export class MCPPermissionServer {
                   text: JSON.stringify({
                     answers: {},
                     error: error instanceof Error ? error.message : String(error)
+                  }),
+                }],
+              };
+            }
+          }
+        );
+
+        mcpServer.tool(
+          'find_local_paths',
+          {
+            query: z.string().describe('A folder name, file name, or partial path to search for locally'),
+            roots: z.array(z.string()).optional().describe('Optional root directories to search within'),
+            recursive: z.boolean().optional().describe('Whether to recurse into subdirectories'),
+            max_entries: z.number().int().positive().optional().describe('Maximum number of matches to return'),
+            max_depth: z.number().int().nonnegative().optional().describe('Maximum recursion depth'),
+            include_hidden: z.boolean().optional().describe('Whether to include dotfiles and hidden directories'),
+            directories_only: z.boolean().optional().describe('Whether to limit results to directories'),
+            discord_context: z.object({
+              channelId: z.string(),
+              channelName: z.string(),
+              userId: z.string(),
+              messageId: z.string().optional(),
+            }).optional().describe('Discord context'),
+          },
+          async ({ query, roots, recursive, max_entries, max_depth, include_hidden, directories_only }) => {
+            console.log('MCP Server: Find local paths received:', { query, roots, recursive, max_entries, max_depth, include_hidden, directories_only });
+            try {
+              const result = await this.findLocalPaths(query, {
+                roots,
+                recursive,
+                maxEntries: max_entries,
+                maxDepth: max_depth,
+                includeHidden: include_hidden,
+                directoriesOnly: directories_only,
+              });
+              return {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify(result),
+                }],
+              };
+            } catch (error) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    error: error instanceof Error ? error.message : String(error),
                   }),
                 }],
               };
@@ -614,6 +682,25 @@ export class MCPPermissionServer {
         res.json(result);
       } catch (error) {
         console.error('HTTP list_local_files error:', error);
+        res.json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
+    this.app.post('/tool/find_local_paths', async (req, res) => {
+      console.log('HTTP find_local_paths request:', req.body);
+      try {
+        const { query, roots, recursive, max_entries, max_depth, include_hidden, directories_only } = req.body ?? {};
+        const result = await this.findLocalPaths(query, {
+          roots,
+          recursive,
+          maxEntries: max_entries,
+          maxDepth: max_depth,
+          includeHidden: include_hidden,
+          directoriesOnly: directories_only,
+        });
+        res.json(result);
+      } catch (error) {
+        console.error('HTTP find_local_paths error:', error);
         res.json({ error: error instanceof Error ? error.message : String(error) });
       }
     });
