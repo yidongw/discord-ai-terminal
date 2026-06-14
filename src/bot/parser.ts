@@ -1,37 +1,58 @@
 import { listAgentKeys } from "../agents/index.js";
+import { resolveModelAlias } from "../utils/models.js";
 
 export interface ParsedInvocation {
   agent: string;
   prompt: string;
+  /** Model override from @mention suffix (e.g. @cx5.5 → "gpt-5.5"). Undefined means use channel default. */
+  model?: string;
 }
 
 /**
  * Parse @agent mentions from a Discord message.
  * Returns one entry per mentioned agent with all other @agent tags stripped from the prompt.
+ * Supports optional model suffix: @cx5.5 selects agent "cx" with model "gpt-5.5".
  * If no agents are mentioned, returns an empty array.
  */
 export function parseAgentInvocations(content: string): ParsedInvocation[] {
   const knownAgents = new Set(listAgentKeys());
-  const mentionPattern = /@([a-zA-Z0-9_-]+)/g;
+  // Include '.' so versions like @cx5.5 are captured in one token
+  const mentionPattern = /@([a-zA-Z0-9_.-]+)/g;
 
-  const mentionedAgents: string[] = [];
+  const invocations: Array<{ agent: string; model?: string }> = [];
+  const matched = new Set<string>(); // deduplicate by agent key
   let match: RegExpExecArray | null;
 
   while ((match = mentionPattern.exec(content)) !== null) {
-    const key = match[1]!.toLowerCase();
-    if (knownAgents.has(key) && !mentionedAgents.includes(key)) {
-      mentionedAgents.push(key);
+    const token = match[1]!.toLowerCase();
+
+    // Exact agent key match
+    if (knownAgents.has(token) && !matched.has(token)) {
+      matched.add(token);
+      invocations.push({ agent: token });
+      continue;
+    }
+
+    // Agent key prefix + model suffix (e.g. "cx5.5" → agent "cx", suffix "5.5")
+    for (const key of knownAgents) {
+      if (!matched.has(key) && token.startsWith(key) && token.length > key.length) {
+        const suffix = token.slice(key.length);
+        const model = resolveModelAlias(key, suffix);
+        if (model !== undefined) {
+          matched.add(key);
+          invocations.push({ agent: key, model });
+          break;
+        }
+      }
     }
   }
 
-  if (mentionedAgents.length === 0) return [];
+  if (invocations.length === 0) return [];
 
-  // Strip ALL @agent mentions to build the clean prompt. Collapse only
-  // horizontal whitespace and tidy spaces around newlines — newlines are kept
-  // so the agent sees the real multi-line message and firstLine() (used for the
-  // thread/worktree name) can take just the first line.
+  // Strip ALL @agent mentions (with any trailing model suffix) to build the
+  // clean prompt. Collapse only horizontal whitespace; preserve newlines.
   const allAgentPattern = new RegExp(
-    `@(${Array.from(knownAgents).join("|")})`,
+    `@(${Array.from(knownAgents).join("|")})[a-zA-Z0-9._-]*`,
     "gi"
   );
   const cleanPrompt = content
@@ -40,7 +61,7 @@ export function parseAgentInvocations(content: string): ParsedInvocation[] {
     .replace(/ *\n */g, "\n")
     .trim();
 
-  return mentionedAgents.map((agent) => ({ agent, prompt: cleanPrompt }));
+  return invocations.map(({ agent, model }) => ({ agent, prompt: cleanPrompt, model }));
 }
 
 /** The first line of a message (text before the first newline), trimmed. */
