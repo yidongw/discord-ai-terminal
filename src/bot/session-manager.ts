@@ -344,10 +344,13 @@ export class SessionManager {
     let model = this.db.getModel(channelId);
     let codexModel = this.db.getCodexModel(channelId);
     let csModel = this.db.getCsModel(channelId);
-    if (opts?.modelOverride) {
-      if (agentKey === "cx") codexModel = opts.modelOverride as typeof codexModel;
-      else if (agentKey === "cs") csModel = opts.modelOverride as typeof csModel;
-      else model = opts.modelOverride as typeof model;
+    // An explicit per-message override wins; otherwise fall back to the model
+    // stored on the thread so @mention-selected models persist across messages.
+    const effectiveModelOverride = opts?.modelOverride ?? existing?.modelOverride;
+    if (effectiveModelOverride) {
+      if (agentKey === "cx") codexModel = effectiveModelOverride as typeof codexModel;
+      else if (agentKey === "cs") csModel = effectiveModelOverride as typeof csModel;
+      else model = effectiveModelOverride as typeof model;
     }
     const requestedModel = agentKey === "cx" ? codexModel : agentKey === "cs" ? csModel : model;
     const toolOverrides = this.db.getToolOverrides(channelId);
@@ -455,7 +458,10 @@ export class SessionManager {
         branch: opts?.branch ?? existing?.branch,
         isWorktree: opts?.isWorktree ?? existing?.isWorktree ?? false,
         createdAt: existing?.createdAt ?? Date.now(),
+        modelOverride: effectiveModelOverride,
       });
+    } else if (effectiveModelOverride !== existing.modelOverride) {
+      this.db.updateModelOverride(threadId, effectiveModelOverride ?? null);
     }
 
     // Capture the exit code so the tailer can surface an abnormal exit. (A

@@ -50,6 +50,9 @@ export interface ThreadSession {
   // Discord message ID of the last user message we handled. Used on restart to
   // fetch and replay any messages that arrived during downtime.
   lastSeenMessageId?: string;
+  // Model override set via @mention suffix (e.g. @cx5.5). Persisted so all
+  // follow-up messages in the thread use the same model, not the channel default.
+  modelOverride?: string;
 }
 
 // A run whose agent process is detached and surviving across bot restarts. The
@@ -130,7 +133,8 @@ export class DatabaseManager {
         branch                TEXT,
         is_worktree           INTEGER NOT NULL DEFAULT 0,
         created_at            INTEGER NOT NULL,
-        last_seen_message_id  TEXT
+        last_seen_message_id  TEXT,
+        model_override        TEXT
       );
 
       CREATE TABLE IF NOT EXISTS channel_modes (
@@ -246,6 +250,9 @@ export class DatabaseManager {
     if (!cols.includes("last_seen_message_id")) {
       this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN last_seen_message_id TEXT`);
     }
+    if (!cols.includes("model_override")) {
+      this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN model_override TEXT`);
+    }
     // active_runs shipped before completion_json existed, so a DB created by that
     // build has the table but not the column. initializeTables() runs first, so
     // the table always exists here — just add the column when it's missing.
@@ -276,8 +283,8 @@ export class DatabaseManager {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO thread_sessions
-         (thread_id, channel_id, agent, session_id, work_dir, branch, is_worktree, created_at, last_seen_message_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (thread_id, channel_id, agent, session_id, work_dir, branch, is_worktree, created_at, last_seen_message_id, model_override)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         ts.threadId,
@@ -288,8 +295,15 @@ export class DatabaseManager {
         ts.branch ?? null,
         ts.isWorktree ? 1 : 0,
         ts.createdAt,
-        ts.lastSeenMessageId ?? null
+        ts.lastSeenMessageId ?? null,
+        ts.modelOverride ?? null
       );
+  }
+
+  updateModelOverride(threadId: string, modelOverride: string | null): void {
+    this.db
+      .prepare(`UPDATE thread_sessions SET model_override = ? WHERE thread_id = ?`)
+      .run(modelOverride, threadId);
   }
 
   getThreadSession(threadId: string): ThreadSession | null {
@@ -311,6 +325,7 @@ export class DatabaseManager {
       isWorktree: !!row.is_worktree,
       createdAt: row.created_at,
       lastSeenMessageId: row.last_seen_message_id ?? undefined,
+      modelOverride: row.model_override ?? undefined,
     };
   }
 
