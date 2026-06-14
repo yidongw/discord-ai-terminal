@@ -14,7 +14,11 @@ import {
   SESSION_LIMIT_CONTINUATION_PROMPT,
   registerSessionLimitWakeup,
 } from "./session-limit-wakeup.js";
-import { isImageType } from "../utils/attachments.js";
+import {
+  extractGeneratedImagePath,
+  getToolInputPath,
+  isImageType,
+} from "../utils/attachments.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -77,6 +81,8 @@ interface ActiveSession {
   // tool_done / tool_result events are dropped without enqueuing anything, so a
   // hidden tool's result can't seal the running "N hidden" summary embed.
   hiddenToolIds: Set<string>;
+  // GenerateImage tool-use ids — image is sent from the tool result, not at call time.
+  generateImageToolIds: Set<string>;
   // Live task list built from TaskCreate/TaskUpdate calls, keyed by task ID.
   taskList: Map<number, { subject: string; status: string }>;
   workDir: string;
@@ -409,6 +415,7 @@ export class SessionManager {
       thread,
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
+      generateImageToolIds: new Set(),
       taskList: new Map(),
       workDir,
       requestedModel,
@@ -713,6 +720,7 @@ export class SessionManager {
       thread,
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
+      generateImageToolIds: new Set(),
       taskList: new Map(),
       workDir: run.workDir,
       requestedModel: run.agent === "cx"
@@ -811,6 +819,11 @@ export class SessionManager {
     if (event.kind === "text") {
       this.noteUsageLimitReset(session, event.content);
       outbox.pushText(event.content);
+      return;
+    }
+
+    if (event.kind === "image_file") {
+      outbox.enqueue(async () => sendImageAttachment(thread, event.filePath));
       return;
     }
 
@@ -986,22 +999,18 @@ export class SessionManager {
           session.hiddenToolIds.add(tool.id);
           continue;
         }
-        if (tool.name === "Read" && tool.input?.file_path) {
-          const filePath = String(tool.input.file_path);
-          if (isImageType(undefined, filePath)) {
+        if (tool.name === "GenerateImage") {
+          session.hiddenToolIds.add(tool.id);
+          session.generateImageToolIds.add(tool.id);
+          outbox.pushHiddenTool(tool.name);
+          continue;
+        }
+        if (tool.name === "Read") {
+          const filePath = getToolInputPath(tool.input);
+          if (filePath && isImageType(undefined, filePath)) {
             session.hiddenToolIds.add(tool.id);
             outbox.pushHiddenTool(tool.name);
-            outbox.enqueue(async () => {
-              try {
-                if (fs.existsSync(filePath)) {
-                  const ext = path.extname(filePath).slice(1).toLowerCase().replace("jpeg", "jpg") || "png";
-                  const buffer = fs.readFileSync(filePath);
-                  await thread.send({ files: [new AttachmentBuilder(buffer, { name: `image.${ext}` })] });
-                }
-              } catch (err) {
-                console.error(`[image] Failed to send image ${filePath}:`, err);
-              }
-            });
+            outbox.enqueue(async () => sendImageAttachment(thread, filePath));
             continue;
           }
         }
@@ -1019,6 +1028,14 @@ export class SessionManager {
     }
     if (raw.kind === "_sdk_tool_results") {
       for (const result of (raw.results ?? [])) {
+        if (session.generateImageToolIds.has(result.tool_use_id)) {
+          session.generateImageToolIds.delete(result.tool_use_id);
+          const imagePath = extractGeneratedImagePath(result.content);
+          if (imagePath) {
+            outbox.enqueue(async () => sendImageAttachment(thread, imagePath));
+          }
+          continue;
+        }
         // Drop results for hidden tools entirely — enqueuing a no-op op would
         // seal the running summary between two batches of hidden calls.
         if (session.hiddenToolIds.has(result.tool_use_id)) continue;
@@ -1275,6 +1292,18 @@ function splitText(text: string, max: number): string[] {
 // blocks (e.g. [{type:"text", text:"..."}]). MCP tools return the array form, so
 // String(content) would render "[object Object]". Flatten to the text we can
 // preview.
+async function sendImageAttachment(thread: any, filePath: string): Promise<void> {
+  try {
+    if (fs.existsSync(filePath)) {
+      const ext = path.extname(filePath).slice(1).toLowerCase().replace("jpeg", "jpg") || "png";
+      const buffer = fs.readFileSync(filePath);
+      await thread.send({ files: [new AttachmentBuilder(buffer, { name: `image.${ext}` })] });
+    }
+  } catch (err) {
+    console.error(`[image] Failed to send image ${filePath}:`, err);
+  }
+}
+
 function toolResultText(content: any): string {
   if (content == null) return "";
   if (typeof content === "string") return content;
@@ -1295,7 +1324,8 @@ function toolResultText(content: any): string {
 function formatToolCall(tool: any, workDir: string): string {
   const clean = (v: string) => v.startsWith(workDir + "/") ? v.replace(workDir + "/", "./") : v === workDir ? "." : v;
   if (tool.name === "Bash" && tool.input?.command) return `🔧 **Bash**\n\`\`\`bash\n${clean(String(tool.input.command)).slice(0, 400)}\n\`\`\``;
-  if (tool.name === "Read"  && tool.input?.file_path) return `🔧 **Read** \`${clean(String(tool.input.file_path))}\``;
+  const readPath = getToolInputPath(tool.input);
+  if (tool.name === "Read" && readPath) return `🔧 **Read** \`${clean(readPath)}\``;
   if (tool.name === "Edit"  && tool.input?.file_path) return `🔧 **Edit** \`${clean(String(tool.input.file_path))}\``;
   if (tool.name === "Write" && tool.input?.file_path) return `🔧 **Write** \`${clean(String(tool.input.file_path))}\``;
   if (tool.name === "Glob"  && tool.input?.pattern)   return `🔧 **Glob** \`${tool.input.pattern}\``;
