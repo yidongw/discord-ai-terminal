@@ -194,6 +194,13 @@ export class SessionManager {
     return this.messageQueues.get(threadId)?.length ?? 0;
   }
 
+  // Resolves once the thread's agent process has finished and its outbox is drained.
+  async waitForIdle(threadId: string): Promise<void> {
+    while (this.hasActiveProcess(threadId)) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+    }
+  }
+
   // A thread is "active" while its run is in flight OR its outbox still has
   // queued/in-flight messages. We check the in-memory map AND the persisted
   // active_runs table — the latter covers the window on startup after a restart,
@@ -836,10 +843,12 @@ export class SessionManager {
 
     if (event.kind === "init") {
       this.db.updateSessionId(threadId, event.sessionId);
-      const displayModel = session.requestedModel || event.model;
-      outbox.enqueue(() =>
-        thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${displayModel}`, 0x00ff00)] })
-      );
+      if (!session.wasResume) {
+        const displayModel = session.requestedModel || event.model;
+        outbox.enqueue(() =>
+          thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${displayModel}`, 0x00ff00)] })
+        );
+      }
       return;
     }
 

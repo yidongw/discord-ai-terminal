@@ -20,12 +20,36 @@ import {
 import { repoPathFor } from "../utils/path-resolver.js";
 import { setPrInThreadName } from "../utils/thread-status.js";
 
+// Called by DiscordBot when a GitHub event targets a worker thread so the
+// handler can spawn a worker process instead of using sessionManager.runAgent.
+export type WorkerDispatch = (
+  threadId: string,
+  workDir: string,
+  agentKey: string,
+  prompt: string,
+  channelId: string
+) => void;
+
 export class GitHubHandler {
+  private discordAiTerminalChannelId?: string;
+  private workerDispatch?: WorkerDispatch;
+
   constructor(
     private client: Client,
     private sessionManager: SessionManager,
     private baseFolder: string
   ) {}
+
+  setWorkerDispatch(channelId: string, fn: WorkerDispatch): void {
+    this.discordAiTerminalChannelId = channelId;
+    this.workerDispatch = fn;
+  }
+
+  private isWorkerThread(makerThreadId: string): boolean {
+    if (!this.discordAiTerminalChannelId || !this.workerDispatch) return false;
+    const session = this.sessionManager.getDb().getThreadSession(makerThreadId);
+    return !!session && session.channelId === this.discordAiTerminalChannelId;
+  }
 
   // Called when pull_request.{opened,reopened,ready_for_review} fires. Links the PR
   // to the maker thread, renames it with the PR number, and pins the PR URL.
@@ -347,6 +371,20 @@ export class GitHubHandler {
       });
     }
 
+    const session = db.getThreadSession(makerThreadId);
+    if (!session) {
+      console.log(`[github] CI failure: no thread session for ${makerThreadId}, cannot auto-fix`);
+      return;
+    }
+
+    // Worker thread: dispatch via worker process instead of the main SessionManager.
+    if (this.isWorkerThread(makerThreadId)) {
+      await thread.send(`⚠️ GitHub Actions failed for ${label}: ${workflowLink}`);
+      this.workerDispatch!(makerThreadId, session.workDir, session.agent, fixPrompt, session.channelId);
+      console.log(`[github] CI failure: spawned worker fix run in ${makerThreadId}`);
+      return;
+    }
+
     const isBusy = this.sessionManager.hasActiveProcess(makerThreadId);
 
     if (isBusy) {
@@ -357,11 +395,6 @@ export class GitHubHandler {
       console.log(`[github] CI failure queued for ${makerThreadId} (busy)`);
     } else {
       await thread.send(`⚠️ GitHub Actions failed for ${label}: ${workflowLink}`);
-      const session = db.getThreadSession(makerThreadId);
-      if (!session) {
-        console.log(`[github] CI failure: no thread session for ${makerThreadId}, cannot auto-fix`);
-        return;
-      }
       try {
         await this.sessionManager.runAgent(
           makerThreadId,
