@@ -851,8 +851,9 @@ export class DiscordBot {
     if (!msg.reference?.messageId) return "";
     try {
       const replied = await msg.channel.messages.fetch(msg.reference.messageId);
-      if (!replied.content) return "";
-      return `[Replying to: ${replied.content}]\n\n`;
+      const text = replied.content || replied.embeds[0]?.description || "";
+      if (!text) return "";
+      return `[Replying to: ${text.slice(0, 500)}]\n\n`;
     } catch {
       return "";
     }
