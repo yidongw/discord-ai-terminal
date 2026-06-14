@@ -2,6 +2,7 @@ import { spawnSync } from "child_process";
 import {
   ChannelType,
   type Client,
+  type TextBasedChannel,
   type TextChannel,
   type ThreadChannel,
 } from "discord.js";
@@ -69,18 +70,18 @@ export class GitHubHandler {
     if (!makerThreadId) return;
 
     const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
-    const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
-    if (!thread) return;
+    const textCh = ch?.isTextBased() ? (ch as TextBasedChannel) : null;
+    if (!textCh) return;
 
-    if (thread.archived) {
-      await thread.edit({ archived: false }).catch((err) => {
+    if (ch?.isThread() && (ch as ThreadChannel).archived) {
+      await (ch as ThreadChannel).edit({ archived: false }).catch((err) => {
         console.error(`[github] PR #${prNumber}: failed to unarchive thread for sync:`, err);
       });
     }
 
     const shortSha = headSha ? ` — \`${headSha.slice(0, 7)}\`` : "";
     const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
-    await thread
+    await textCh
       .send(`🔄 New commits pushed to PR #${prNumber}${shortSha}\n${prUrl}`)
       .catch((err) => console.error(`[github] PR #${prNumber}: failed to notify new commits:`, err));
   }
@@ -112,11 +113,11 @@ export class GitHubHandler {
     }
 
     const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
-    const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
-    if (!thread) return;
+    const textCh = ch?.isTextBased() ? (ch as TextBasedChannel) : null;
+    if (!textCh) return;
 
-    if (thread.archived) {
-      await thread.edit({ archived: false }).catch((err) => {
+    if (ch?.isThread() && (ch as ThreadChannel).archived) {
+      await (ch as ThreadChannel).edit({ archived: false }).catch((err) => {
         console.error(`[github] PR #${prNumber}: failed to unarchive thread for close:`, err);
       });
     }
@@ -128,7 +129,7 @@ export class GitHubHandler {
       : `🚫 PR #${prNumber}${titleStr} was closed without merging.\n${prUrl}`;
 
     db.setClosedNotified(String(prNumber), repo);
-    await thread
+    await textCh
       .send(msg)
       .catch((err) => console.error(`[github] PR #${prNumber}: failed to post close/merge notification:`, err));
   }
@@ -152,8 +153,8 @@ export class GitHubHandler {
     }
 
     const makerThreadId = ref.startsWith("discord/")
-      ? (db.findThreadByBranch(ref) ?? db.findMakerThreadForRepo(repoName))
-      : db.findMakerThreadForRepo(repoName);
+      ? (db.findThreadByBranch(ref) ?? await this.findDefaultChannelForRepo(repoName))
+      : await this.findDefaultChannelForRepo(repoName);
 
     if (!makerThreadId) {
       console.log(
@@ -167,22 +168,21 @@ export class GitHubHandler {
     console.log(`[github] PR #${prNumber} linked to maker thread ${makerThreadId}`);
     try {
       const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
-      const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
-      if (!thread) {
-        console.error(`[github] PR #${prNumber}: channel ${makerThreadId} not found or not a thread`);
+      const textCh = ch?.isTextBased() ? (ch as TextBasedChannel) : null;
+      if (!textCh) {
+        console.error(`[github] PR #${prNumber}: channel ${makerThreadId} not found or not text-based`);
         return makerThreadId;
       }
-      // Unarchive before renaming or sending — Discord rejects both on archived
-      // threads with a 400 error. Opening a PR is a natural signal to reactivate.
-      if (thread.archived) {
-        await thread.edit({ archived: false }).catch((err) => {
+      if (ch?.isThread() && (ch as ThreadChannel).archived) {
+        await (ch as ThreadChannel).edit({ archived: false }).catch((err) => {
           console.error(`[github] PR #${prNumber}: failed to unarchive thread:`, err);
         });
       }
-      void setPrInThreadName(thread, prNumber);
+      // Only rename if it's actually a thread (text channels don't have PR names)
+      if (ch?.isThread()) void setPrInThreadName(ch as ThreadChannel, prNumber);
       const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
       try {
-        const msg = await thread.send(prUrl);
+        const msg = await textCh.send(prUrl);
         await msg.pin();
       } catch (err) {
         console.error(`[github] PR #${prNumber}: failed to post/pin PR URL:`, err);
@@ -192,6 +192,23 @@ export class GitHubHandler {
     }
 
     return makerThreadId;
+  }
+
+  // Find the Discord text channel whose name matches the repo short name.
+  // Used as fallback when no specific maker thread is linked for a PR.
+  private async findDefaultChannelForRepo(repoName: string): Promise<string | null> {
+    let guild = this.client.guilds.cache.first();
+    if (!guild) return null;
+    if (guild.channels.cache.size === 0) await guild.channels.fetch();
+    const ch = guild.channels.cache.find(
+      (c) => c.name === repoName && c.type === ChannelType.GuildText
+    );
+    if (ch) {
+      console.log(`[github] using default channel #${repoName} (${ch.id}) for PR notifications`);
+      return ch.id;
+    }
+    console.log(`[github] no default channel found for repo ${repoName}`);
+    return null;
   }
 
   // Called when the user types /test in a PR maker thread. Builds a smart test
