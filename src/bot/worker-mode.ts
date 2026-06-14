@@ -1,5 +1,7 @@
+import { spawnSync } from "child_process";
 import { REST, Routes } from "discord.js";
 import { SessionManager } from "./session-manager.js";
+import { DatabaseManager } from "../db/database.js";
 import type { DiscordContext } from "../utils/shell.js";
 
 // REST-based Discord message — matches the subset of discord.js Message that
@@ -108,6 +110,47 @@ function firstEmbedDescription(data: any): string | undefined {
   return undefined;
 }
 
+// After the agent run, check if it pushed a branch with an open PR and write
+// the PR→thread link into the MAIN BOT's sessions.db so that CI failure
+// webhooks can find this worker thread and dispatch the fix prompt.
+function linkOpenPrToMainDb(threadId: string, workDir: string, mainDbPath: string): void {
+  const branchResult = spawnSync(
+    "git", ["-C", workDir, "rev-parse", "--abbrev-ref", "HEAD"],
+    { encoding: "utf8" }
+  );
+  const branch = branchResult.stdout.trim();
+  if (!branch || branch === "HEAD") return; // detached HEAD — nothing to link
+
+  const remoteResult = spawnSync(
+    "git", ["-C", workDir, "remote", "get-url", "origin"],
+    { encoding: "utf8", timeout: 5000 }
+  );
+  if (remoteResult.status !== 0 || !remoteResult.stdout.trim()) return;
+
+  const repoMatch = remoteResult.stdout.trim().match(/github\.com[:/](.+?)(?:\.git)?$/);
+  if (!repoMatch) return;
+  const repo = repoMatch[1]!;
+
+  const prResult = spawnSync(
+    "gh", ["pr", "list", "--head", branch, "--json", "number", "--repo", repo],
+    { encoding: "utf8", timeout: 10000 }
+  );
+  if (prResult.status !== 0 || !prResult.stdout.trim()) return;
+
+  let prs: Array<{ number: number }>;
+  try { prs = JSON.parse(prResult.stdout); } catch { return; }
+  if (prs.length === 0) return;
+
+  const prNumber = prs[0]!.number;
+  try {
+    const mainDb = new DatabaseManager(mainDbPath);
+    mainDb.setPrMakerThread(String(prNumber), repo, threadId);
+    console.log(`[worker] linked PR #${prNumber} (${repo}) → thread ${threadId} in main DB`);
+  } catch (err) {
+    console.error("[worker] failed to link PR in main DB:", err);
+  }
+}
+
 export interface WorkerMessage {
   prompt: string;
   agentKey: string;
@@ -118,6 +161,7 @@ export async function runWorkerMode(): Promise<void> {
   const threadId = process.env.DISCORD_AI_TERMINAL_THREAD_ID!;
   const channelId = process.env.DISCORD_AI_TERMINAL_CHANNEL_ID!;
   const token = process.env.DISCORD_TOKEN!;
+  const mainDbPath = process.env.WORKER_MAIN_DB_PATH;
 
   // Read the message JSON written to stdin by the main bot.
   let stdinData = "";
@@ -161,4 +205,10 @@ export async function runWorkerMode(): Promise<void> {
 
   // Keep the event loop alive until the agent is done and all Discord sends land.
   await sessionManager.waitForIdle(threadId);
+
+  // If the agent pushed a branch with an open PR, register the PR→thread link
+  // in the main bot's DB so CI failure webhooks can route back to this thread.
+  if (mainDbPath) {
+    linkOpenPrToMainDb(threadId, process.cwd(), mainDbPath);
+  }
 }

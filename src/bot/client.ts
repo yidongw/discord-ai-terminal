@@ -135,6 +135,9 @@ export class DiscordBot {
         DISCORD_AI_TERMINAL_CHANNEL_ID: workerMsg.discordContext.channelId !== threadId
           ? workerMsg.discordContext.channelId
           : (this.discordAiTerminalChannelId ?? ""),
+        // Path to the main bot's sessions.db so the worker can write PR→thread
+        // links that CI failure webhooks can resolve back to this worker thread.
+        WORKER_MAIN_DB_PATH: path.join(process.cwd(), "sessions.db"),
       },
     });
 
