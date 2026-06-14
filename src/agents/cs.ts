@@ -1,6 +1,6 @@
 import type { AgentRunner, AgentRunOptions, AgentEvent } from "./index.js";
 import { escapeShellString } from "../utils/shell.js";
-import { parseSdkLine } from "./sdk-parser.js";
+import { parseCsLine } from "./cs-parser.js";
 
 export const cursorAgent: AgentRunner = {
   key: "cs",
@@ -25,7 +25,7 @@ export const cursorAgent: AgentRunner = {
     return parts.join(" ");
   },
 
-  parseLine(line, workDir, ctx) { return parseSdkLine(line, workDir, ctx); },
+  parseLine(line, workDir, ctx) { return parseCsLine(line, workDir, ctx); },
 
   titleCommand(prompt) {
     // --print without --output-format stream-json gives plain text output.

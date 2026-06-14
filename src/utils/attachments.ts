@@ -50,6 +50,34 @@ export function isImageType(contentType?: string, filename?: string): boolean {
   return false;
 }
 
+/** Read tool input uses `file_path` (CC) or `path` (Cursor). */
+export function getToolInputPath(input: unknown): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const record = input as Record<string, unknown>;
+  const p = record.file_path ?? record.path;
+  return p != null ? String(p) : undefined;
+}
+
+/** Parse the absolute path from a GenerateImage tool result. */
+export function extractGeneratedImagePath(content: unknown): string | undefined {
+  const text = toolResultText(content);
+  const match = text.match(/Successfully generated image at:\s*(.+)/);
+  return match?.[1]?.trim();
+}
+
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => (typeof block === "object" && block && "text" in block ? String((block as { text: unknown }).text) : ""))
+      .join("");
+  }
+  if (content && typeof content === "object" && "text" in content) {
+    return String((content as { text: unknown }).text);
+  }
+  return "";
+}
+
 /**
  * Build an enhanced prompt with attachment references appended
  */
