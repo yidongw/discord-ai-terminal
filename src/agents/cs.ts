@@ -28,7 +28,7 @@ export const cursorAgent: AgentRunner = {
   parseLine(line, workDir, ctx) { return parseCsLine(line, workDir, ctx); },
 
   titleCommand(prompt) {
-    // --print without --output-format stream-json gives plain text output.
-    return `cursor agent --print --yolo --trust --model auto ${escapeShellString(prompt)}`;
+    // ask mode is read-only — title generation must not run tools or return images.
+    return `cursor agent --print --mode ask --trust --model auto ${escapeShellString(prompt)}`;
   },
 };
