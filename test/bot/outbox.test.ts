@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
 // session-manager transitively imports DatabaseManager (bun:sqlite), which the
 // vitest/node runner can't resolve. Stub it so the module loads.
@@ -130,6 +133,24 @@ describe("Outbox", () => {
 
     expect(descOf(thread.sends[0])).toContain("after error");
     errSpy.mockRestore();
+  });
+
+  it("uploads URL-encoded local markdown images as Discord files", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "discord-ai-terminal-image-"));
+    const imagePath = path.join(dir, "Screenshot 2026-04-22 at 2.16.28\u202fAM.png");
+    fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const thread = makeThread();
+    const outbox = new Outbox(thread);
+
+    outbox.pushText(`Here it is:\n\n![Screenshot](${encodeURI(imagePath)})`);
+    await outbox.drain();
+
+    expect(thread.send).toHaveBeenCalledTimes(2);
+    expect(descOf(thread.sends[0])).toBe("Here it is:");
+    expect(thread.sends[1].files).toHaveLength(1);
+    expect(thread.sends[1].files[0].name).toBe("image.png");
+
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 
