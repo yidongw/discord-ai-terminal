@@ -40,11 +40,11 @@ const DISCORD_SYSTEM_PROMPT =
   "re-invokes you here with its output when it finishes (this survives bot " +
   "restarts). Use mcp__discord-permissions__list_background_jobs and " +
   "mcp__discord-permissions__cancel_background_job to manage running ones. " +
-  "When the user asks for a local file or image, inspect the relevant folder " +
-  "contents yourself, choose the file you think they want, and output the " +
-  "absolute path alone on its own line or read the file directly so the bot " +
-  "can upload it. Do not ask the user to repeat the folder unless the request " +
-  "is genuinely ambiguous.";
+  "When the user asks for a local file or image, use " +
+  "mcp__discord-permissions__list_local_files to inspect the folder contents, " +
+  "then use mcp__discord-permissions__send_local_file to upload the file you " +
+  "choose. If the target folder is ambiguous, ask a single clarifying question " +
+  "instead of guessing a filename.";
 
 export function buildClaudeCommand(
   workingDir: string,

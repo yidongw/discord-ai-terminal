@@ -122,6 +122,37 @@ const TOOLS = [
     },
   },
   {
+    name: 'list_local_files',
+    description:
+      'List the contents of a local directory so you can inspect candidate files ' +
+      'before choosing one. Use this when the user asks for a local file or image ' +
+      'and you need to see what is actually in a folder.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to a local directory.' },
+        recursive: { type: 'boolean', description: 'Whether to recurse into subdirectories.' },
+        max_entries: { type: 'number', description: 'Maximum number of entries to return.' },
+        include_hidden: { type: 'boolean', description: 'Whether to include hidden files.' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'send_local_file',
+    description:
+      'Upload a local file to Discord as an attachment. Use this after you have ' +
+      'inspected local files and decided which one the user wants.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the file to upload.' },
+        caption: { type: 'string', description: 'Optional message to send with the file.' },
+      },
+      required: ['path'],
+    },
+  },
+  {
     name: 'approve_tool',
     description:
       'Request permission from the Discord user before running a tool. ' +

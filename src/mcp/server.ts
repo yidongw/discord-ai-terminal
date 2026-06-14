@@ -1,12 +1,15 @@
 import express from 'express';
+import * as fs from 'fs';
+import * as path from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { PermissionManager } from './permission-manager.js';
-import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { AttachmentBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
 import type { DatabaseManager } from '../db/database.js';
 import { parseInterval, formatInterval, MIN_INTERVAL_SECONDS } from '../bot/scheduler.js';
 import type { BackgroundJobManager } from '../bot/background-jobs.js';
+import { listLocalFiles as scanLocalFiles } from '../utils/local-files.js';
 
 export class MCPPermissionServer {
   private app: express.Application;
@@ -189,6 +192,59 @@ export class MCPPermissionServer {
     return answers;
   }
 
+  private async listLocalFiles(
+    rootPath: string,
+    options: { recursive?: boolean; maxEntries?: number; includeHidden?: boolean } = {}
+  ): Promise<{ root: string; entries: Array<Record<string, unknown>>; truncated: boolean }> {
+    const result = scanLocalFiles(rootPath, options);
+    return {
+      root: result.root,
+      truncated: result.truncated,
+      entries: result.entries.map((entry) => ({
+        path: entry.path,
+        name: entry.name,
+        kind: entry.kind,
+        size: entry.size,
+        mtimeMs: entry.mtimeMs,
+        isImage: entry.isImage,
+      })),
+    };
+  }
+
+  private async sendLocalFile(
+    filePath: string,
+    discordContext: { channelId: string; channelName: string; userId: string; messageId?: string },
+    caption?: string
+  ): Promise<{ ok: boolean; path: string; name: string }> {
+    if (!this.discordBot) {
+      throw new Error('Discord bot not available');
+    }
+
+    const absPath = filePath.trim();
+    if (!path.isAbsolute(absPath)) {
+      throw new Error(`Path must be absolute: ${absPath}`);
+    }
+
+    const stats = fs.statSync(absPath);
+    if (!stats.isFile()) {
+      throw new Error(`Not a file: ${absPath}`);
+    }
+
+    const channel = await this.discordBot.client.channels.fetch(discordContext.channelId);
+    if (!channel || !channel.isTextBased?.()) {
+      throw new Error(`Could not find Discord channel: ${discordContext.channelId}`);
+    }
+
+    const buffer = fs.readFileSync(absPath);
+    const name = path.basename(absPath);
+    await channel.send({
+      content: caption?.trim() || undefined,
+      files: [new AttachmentBuilder(buffer, { name })],
+    });
+
+    return { ok: true, path: absPath, name };
+  }
+
   /**
    * Extract Discord context from HTTP headers
    */
@@ -346,6 +402,92 @@ export class MCPPermissionServer {
           }
         );
 
+        mcpServer.tool(
+          'list_local_files',
+          {
+            path: z.string().describe('Absolute path to a local directory to inspect'),
+            recursive: z.boolean().optional().describe('Whether to recurse into subdirectories'),
+            max_entries: z.number().int().positive().optional().describe('Maximum number of entries to return'),
+            include_hidden: z.boolean().optional().describe('Whether to include dotfiles and hidden directories'),
+            discord_context: z.object({
+              channelId: z.string(),
+              channelName: z.string(),
+              userId: z.string(),
+              messageId: z.string().optional(),
+            }).optional().describe('Discord context'),
+          },
+          async ({ path: rootPath, recursive, max_entries, include_hidden }) => {
+            console.log('MCP Server: List local files received:', { path: rootPath, recursive, max_entries, include_hidden });
+            try {
+              const result = await this.listLocalFiles(rootPath, {
+                recursive,
+                maxEntries: max_entries,
+                includeHidden: include_hidden,
+              });
+              return {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify(result),
+                }],
+              };
+            } catch (error) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    error: error instanceof Error ? error.message : String(error),
+                  }),
+                }],
+              };
+            }
+          }
+        );
+
+        mcpServer.tool(
+          'send_local_file',
+          {
+            path: z.string().describe('Absolute path to the local file to upload'),
+            caption: z.string().optional().describe('Optional text to send with the file'),
+            discord_context: z.object({
+              channelId: z.string(),
+              channelName: z.string(),
+              userId: z.string(),
+              messageId: z.string().optional(),
+            }).optional().describe('Discord context'),
+          },
+          async ({ path: filePath, caption, discord_context }) => {
+            console.log('MCP Server: Send local file received:', { path: filePath, caption, discord_context });
+            const effectiveDiscordContext = discord_context || discordContextFromHeaders;
+            if (!effectiveDiscordContext || !this.discordBot) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({ error: 'No Discord context available' }),
+                }],
+              };
+            }
+
+            try {
+              const result = await this.sendLocalFile(filePath, effectiveDiscordContext, caption);
+              return {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify(result),
+                }],
+              };
+            } catch (error) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    error: error instanceof Error ? error.message : String(error),
+                  }),
+                }],
+              };
+            }
+          }
+        );
+
         // Create transport for this request
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: undefined, // Stateless
@@ -457,6 +599,40 @@ export class MCPPermissionServer {
           answers: {},
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+    });
+
+    this.app.post('/tool/list_local_files', async (req, res) => {
+      console.log('HTTP list_local_files request:', req.body);
+      try {
+        const { path: rootPath, recursive, max_entries, include_hidden } = req.body ?? {};
+        const result = await this.listLocalFiles(rootPath, {
+          recursive,
+          maxEntries: max_entries,
+          includeHidden: include_hidden,
+        });
+        res.json(result);
+      } catch (error) {
+        console.error('HTTP list_local_files error:', error);
+        res.json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
+    this.app.post('/tool/send_local_file', async (req, res) => {
+      console.log('HTTP send_local_file request:', req.body);
+
+      const discordContext = this.extractDiscordContext(req) || req.body.discord_context;
+      if (!discordContext || !this.discordBot) {
+        res.json({ error: 'No Discord context available' });
+        return;
+      }
+
+      try {
+        const result = await this.sendLocalFile(req.body?.path, discordContext, req.body?.caption);
+        res.json(result);
+      } catch (error) {
+        console.error('HTTP send_local_file error:', error);
+        res.json({ error: error instanceof Error ? error.message : String(error) });
       }
     });
 
