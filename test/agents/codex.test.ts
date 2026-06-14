@@ -36,4 +36,21 @@ describe('codexAgent', () => {
       cwd: '/test/dir',
     });
   });
+
+  it('maps generated image events to saved image files', () => {
+    const event = codexAgent.parseLine(
+      JSON.stringify({
+        type: 'image_generation_end',
+        call_id: 'ig_abc123',
+        status: 'completed',
+      }),
+      '/test/dir',
+      { sessionId: 'thread-123' }
+    );
+
+    expect(event).toEqual({
+      kind: 'image_file',
+      filePath: `${process.env.CODEX_HOME ?? `${process.env.HOME}/.codex`}/generated_images/thread-123/ig_abc123.png`,
+    });
+  });
 });

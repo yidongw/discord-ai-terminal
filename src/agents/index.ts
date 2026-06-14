@@ -28,6 +28,9 @@ export interface AgentParseContext {
   // Model we passed on the CLI for this run — used when the agent's init event
   // omits or misreports it (Codex thread.started often has no model field).
   requestedModel?: string;
+  // Agent session/thread id for the current run. Codex image generation events
+  // only expose the image call id, while the saved file lives under this id.
+  sessionId?: string;
 }
 
 export interface AgentRunner {

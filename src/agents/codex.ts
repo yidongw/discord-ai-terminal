@@ -1,6 +1,8 @@
 import type { AgentRunner, AgentRunOptions, AgentEvent, AgentParseContext } from "./index.js";
 import { buildCodexCommand, escapeShellString } from "../utils/shell.js";
 import { DEFAULT_CODEX_MODEL } from "../utils/models.js";
+import * as os from "os";
+import * as path from "path";
 
 export const codexAgent: AgentRunner = {
   key: "cx",
@@ -21,6 +23,13 @@ export const codexAgent: AgentRunner = {
         sessionId: msg.thread_id,
         model: msg.model ?? ctx?.requestedModel ?? DEFAULT_CODEX_MODEL,
         cwd: workDir,
+      };
+    }
+
+    if (msg.type === "image_generation_end" && msg.call_id && ctx?.sessionId) {
+      return {
+        kind: "image_file",
+        filePath: generatedImagePath(ctx.sessionId, String(msg.call_id)),
       };
     }
 
@@ -55,6 +64,13 @@ export const codexAgent: AgentRunner = {
         const lines = changes.map((c: any) => `• ${c.kind ?? "edit"}: \`${String(c.path ?? "").replace(workDir + "/", "./")}\``);
         return { kind: "text", content: `📝 **File changes**\n${lines.join("\n")}` };
       }
+
+      if (item?.type === "image_generation" && item.call_id && ctx?.sessionId) {
+        return {
+          kind: "image_file",
+          filePath: generatedImagePath(ctx.sessionId, String(item.call_id)),
+        };
+      }
     }
 
     if (msg.type === "turn.completed") {
@@ -75,3 +91,8 @@ export const codexAgent: AgentRunner = {
     return `codex exec --dangerously-bypass-approvals-and-sandbox ${escapeShellString(prompt)}`;
   },
 };
+
+function generatedImagePath(sessionId: string, callId: string): string {
+  const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+  return path.join(codexHome, "generated_images", sessionId, `${callId}.png`);
+}

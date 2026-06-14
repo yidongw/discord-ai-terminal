@@ -499,7 +499,10 @@ export class SessionManager {
       startOffset,
       isAlive,
       onLine: (line) => {
-        const event = agent.parseLine(line, session.workDir, { requestedModel: session.requestedModel });
+        const event = agent.parseLine(line, session.workDir, {
+          requestedModel: session.requestedModel,
+          sessionId: this.db.getThreadSession(threadId)?.sessionId,
+        });
         if (event) {
           try { this.handleEvent(threadId, event, session); }
           catch (err) { console.error(err); }
