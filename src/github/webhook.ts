@@ -11,19 +11,22 @@ export class GitHubWebhookServer {
     this.server = Bun.serve({
       port,
       async fetch(req) {
+        const pathname = new URL(req.url).pathname;
         if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
 
         const body = await req.text();
 
-        if (new URL(req.url).pathname === "/preview-ready") {
+        if (pathname === "/preview-ready") {
           return handlePreviewReady(handler, req, body);
         }
 
         const event = req.headers.get("x-github-event");
         const sig = req.headers.get("x-hub-signature-256") ?? "";
 
+        console.log(`[webhook] received event=${event ?? "(none)"} sig=${sig ? "present" : "missing"} path=${pathname}`);
+
         if (!await verifySignature(body, sig)) {
-          console.warn("[webhook] Invalid signature");
+          console.warn("[webhook] Invalid signature — check GITHUB_WEBHOOK_SECRET matches the secret set on GitHub");
           return new Response("Unauthorized", { status: 401 });
         }
 
@@ -33,6 +36,8 @@ export class GitHubWebhookServer {
         } catch {
           return new Response("Bad Request", { status: 400 });
         }
+
+        console.log(`[webhook] dispatching event=${event} action=${payload?.action ?? "(none)"} repo=${payload?.repository?.full_name ?? "(none)"}`);
 
         // Handle asynchronously — GitHub expects a fast 200
         setImmediate(() => dispatch(handler, event ?? "", payload).catch(console.error));
