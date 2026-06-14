@@ -117,13 +117,6 @@ export class DiscordBot {
     return wtPath;
   }
 
-  // Pull latest bot code into a worktree and re-install deps if the lockfile changed.
-  private updateBotWorktree(wtPath: string): void {
-    spawnSync("git", ["-C", wtPath, "fetch", "origin"], { encoding: "utf8" });
-    spawnSync("git", ["-C", wtPath, "reset", "--hard", "origin/main"], { encoding: "utf8" });
-    spawnSync("bun", ["install", "--frozen-lockfile"], { cwd: wtPath, encoding: "utf8" });
-  }
-
   // Spawn a worker process for one message to a discord-ai-terminal thread.
   // The worker runs src/index.ts from the thread's own worktree in worker mode,
   // sending Discord output via REST. Returns immediately after spawning.
@@ -407,9 +400,6 @@ export class DiscordBot {
     }
 
     await msg.react("👀").catch(() => {});
-
-    // Pull the latest bot code before spawning the worker.
-    this.updateBotWorktree(session.workDir);
 
     const attachments = await this.downloadMsgAttachments(msg);
     const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
@@ -1047,7 +1037,6 @@ export class DiscordBot {
       await thread.send(
         `📋 **Recovering ${count} missed message${count > 1 ? "s" : ""} from downtime:**\n>>> ${preview}`
       );
-      this.updateBotWorktree(session.workDir);
       for (const msg of ordered) {
         const attachments = await this.downloadMsgAttachments(msg);
         const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
