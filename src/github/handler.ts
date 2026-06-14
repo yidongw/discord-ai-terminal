@@ -58,12 +58,17 @@ export class GitHubHandler {
 
   // Called when pull_request.closed fires. Notifies the maker thread whether the
   // PR was merged or closed without merging.
-  async handlePrClosed(repo: string, prNumber: number, merged: boolean, mergedBy: string | null, prTitle: string): Promise<void> {
+  async handlePrClosed(repo: string, prNumber: number, merged: boolean, mergedBy: string | null, prTitle: string, headRef: string = ""): Promise<void> {
     const db = this.sessionManager.getDb();
     const repoName = repo.split("/")[1] ?? repo;
-    const makerThreadId =
+    let makerThreadId: string | null | undefined =
       db.getPrThreads(String(prNumber), repo)?.makerThreadId ??
       db.getPrThreads(String(prNumber), repoName)?.makerThreadId;
+
+    if (!makerThreadId) {
+      // PR may not have been linked yet (bot missed opened/synchronize events) — try now
+      makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
+    }
 
     if (!makerThreadId) {
       console.log(`[github] PR #${prNumber} closed/merged but no maker thread found`);

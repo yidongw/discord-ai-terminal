@@ -104,7 +104,7 @@ async function dispatch(handler: GitHubHandler, event: string, payload: any): Pr
         const merged: boolean = !!payload.pull_request?.merged;
         const mergedBy: string | null = payload.pull_request?.merged_by?.login ?? null;
         const prTitle: string = payload.pull_request?.title ?? "";
-        await handler.handlePrClosed(repo, prNumber, merged, mergedBy, prTitle);
+        await handler.handlePrClosed(repo, prNumber, merged, mergedBy, prTitle, headRef);
       }
       return;
     }
