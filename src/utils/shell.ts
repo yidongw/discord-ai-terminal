@@ -40,9 +40,11 @@ const DISCORD_SYSTEM_PROMPT =
   "re-invokes you here with its output when it finishes (this survives bot " +
   "restarts). Use mcp__discord-permissions__list_background_jobs and " +
   "mcp__discord-permissions__cancel_background_job to manage running ones. " +
-  "When the user asks for an image or other file already on disk, do not reply " +
-  "with a Markdown link or a raw filesystem path. Read the file so the bot can " +
-  "upload it as a Discord attachment, and keep any accompanying text brief.";
+  "When the user asks for a local file or image, inspect the relevant folder " +
+  "contents yourself, choose the file you think they want, and output the " +
+  "absolute path alone on its own line or read the file directly so the bot " +
+  "can upload it. Do not ask the user to repeat the folder unless the request " +
+  "is genuinely ambiguous.";
 
 export function buildClaudeCommand(
   workingDir: string,
