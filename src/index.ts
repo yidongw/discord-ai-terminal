@@ -5,7 +5,7 @@ import { BackgroundJobManager } from "./bot/background-jobs.js";
 import { validateConfig } from "./utils/config.js";
 import { MCPPermissionServer } from "./mcp/server.js";
 import { GitHubHandler } from "./github/handler.js";
-import { GitHubWebhookServer } from "./github/webhook.js";
+import { GitHubWebhookServer, registerGitHubWebhook } from "./github/webhook.js";
 
 async function main() {
   const config = validateConfig();
@@ -111,6 +111,19 @@ async function main() {
     const webhookServer = new GitHubWebhookServer(githubHandler);
     const webhookPort = parseInt(process.env.GITHUB_WEBHOOK_PORT ?? "3002");
     webhookServer.start(webhookPort);
+
+    const webhookUrl = process.env.GITHUB_WEBHOOK_URL;
+    const repos = (process.env.GITHUB_WEBHOOK_REPOS ?? "")
+      .split(",").map((s) => s.trim()).filter(Boolean);
+    if (webhookUrl && repos.length > 0) {
+      for (const repo of repos) {
+        registerGitHubWebhook(repo, webhookUrl).catch((err) =>
+          console.error(`[webhook] register failed for ${repo}:`, err)
+        );
+      }
+    } else if (repos.length > 0) {
+      console.warn("[webhook] GITHUB_WEBHOOK_URL not set — skipping GitHub webhook registration");
+    }
   }
 
   console.log("Agent Discord Bot started.");

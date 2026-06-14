@@ -30,6 +30,11 @@ export class GitHubHandler {
   // Called when pull_request.{opened,reopened,ready_for_review} fires. Links the PR
   // to the maker thread, renames it with the PR number, and pins the PR URL.
   async handlePrOpened(repo: string, prNumber: number, headRef: string = ""): Promise<void> {
+    // Clear the closed flag so a reopened PR will notify again on next close/merge.
+    const db = this.sessionManager.getDb();
+    const repoName = repo.split("/")[1] ?? repo;
+    db.clearClosedNotified(String(prNumber), repo);
+    db.clearClosedNotified(String(prNumber), repoName);
     await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
   }
 
@@ -58,12 +63,24 @@ export class GitHubHandler {
 
   // Called when pull_request.closed fires. Notifies the maker thread whether the
   // PR was merged or closed without merging.
-  async handlePrClosed(repo: string, prNumber: number, merged: boolean, mergedBy: string | null, prTitle: string): Promise<void> {
+  async handlePrClosed(repo: string, prNumber: number, merged: boolean, mergedBy: string | null, prTitle: string, headRef: string = ""): Promise<void> {
     const db = this.sessionManager.getDb();
     const repoName = repo.split("/")[1] ?? repo;
-    const makerThreadId =
+
+    // Idempotency: skip if already notified (e.g. both webhook and fallback fire)
+    if (db.isClosedNotified(String(prNumber), repo) || db.isClosedNotified(String(prNumber), repoName)) {
+      console.log(`[github] PR #${prNumber}: close notification already sent — skipping`);
+      return;
+    }
+
+    let makerThreadId: string | null | undefined =
       db.getPrThreads(String(prNumber), repo)?.makerThreadId ??
       db.getPrThreads(String(prNumber), repoName)?.makerThreadId;
+
+    if (!makerThreadId) {
+      // PR may not have been linked yet (bot missed opened/synchronize events) — try now
+      makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
+    }
 
     if (!makerThreadId) {
       console.log(`[github] PR #${prNumber} closed/merged but no maker thread found`);
@@ -86,6 +103,7 @@ export class GitHubHandler {
       ? `✅ PR #${prNumber}${titleStr} was merged${mergedBy ? ` by @${mergedBy}` : ""}.\n${prUrl}`
       : `🚫 PR #${prNumber}${titleStr} was closed without merging.\n${prUrl}`;
 
+    db.setClosedNotified(String(prNumber), repo);
     await thread
       .send(msg)
       .catch((err) => console.error(`[github] PR #${prNumber}: failed to post close/merge notification:`, err));
@@ -426,11 +444,46 @@ export class GitHubHandler {
     let prs: Array<{ number: number }>;
     try { prs = JSON.parse(prResult.stdout); }
     catch { return; }
-    if (prs.length === 0) return;
+    if (prs.length === 0) {
+      // No open PR — check if a linked PR was merged/closed without webhook delivery
+      await this.checkLinkedPrClosed(threadId, repo);
+      return;
+    }
 
     const prNumber = prs[0]!.number;
     console.log(`[github] thread ${threadId}: found PR #${prNumber} on ${branch} — linking (webhook fallback)`);
     await this.ensurePrLinkedToMakerThread(repo, prNumber, branch);
+  }
+
+  // Called when checkAndLinkPrForBranch finds no open PR. Checks if there is a
+  // linked PR for this thread that was merged/closed without the webhook firing.
+  private async checkLinkedPrClosed(threadId: string, repo: string): Promise<void> {
+    const db = this.sessionManager.getDb();
+    const linked = db.findPrForMakerThread(threadId);
+    if (!linked) return;
+
+    if (db.isClosedNotified(linked.prNumber, linked.repo)) return;
+
+    const viewResult = spawnSync(
+      "gh", ["pr", "view", linked.prNumber, "--repo", linked.repo, "--json", "state,merged,mergedBy,title"],
+      { encoding: "utf8", timeout: 10000 }
+    );
+    if (viewResult.status !== 0 || !viewResult.stdout.trim()) return;
+
+    let prData: { state: string; merged: boolean; mergedBy: { login: string } | null; title: string };
+    try { prData = JSON.parse(viewResult.stdout); }
+    catch { return; }
+
+    if (prData.state === "OPEN") return;
+
+    console.log(`[github] PR #${linked.prNumber} on thread ${threadId}: state=${prData.state} — sending close notification (fallback)`);
+    await this.handlePrClosed(
+      linked.repo,
+      Number(linked.prNumber),
+      prData.merged,
+      prData.mergedBy?.login ?? null,
+      prData.title
+    );
   }
 
   private async getOrCreateTestThread(
