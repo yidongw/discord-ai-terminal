@@ -85,6 +85,11 @@ interface ActiveSession {
   hiddenToolIds: Set<string>;
   // GenerateImage tool-use ids — image is sent from the tool result, not at call time.
   generateImageToolIds: Set<string>;
+  // Read tool-use ids where the target was an image file. Like generateImageToolIds,
+  // we defer sending until the tool result so we can use the base64 data directly
+  // rather than re-reading from disk (which fails when the filename has non-ASCII
+  // whitespace like U+202F that gets normalized to U+0020 in the tool input JSON).
+  pendingImageReadIds: Map<string, string>; // tool_id → file_path fallback
   // Live task list built from TaskCreate/TaskUpdate calls, keyed by task ID.
   taskList: Map<number, { subject: string; status: string }>;
   workDir: string;
@@ -426,6 +431,7 @@ export class SessionManager {
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
       generateImageToolIds: new Set(),
+      pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir,
       requestedModel,
@@ -734,6 +740,7 @@ export class SessionManager {
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
       generateImageToolIds: new Set(),
+      pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir: run.workDir,
       requestedModel: run.agent === "cx"
@@ -1022,8 +1029,8 @@ export class SessionManager {
           const filePath = getToolInputPath(tool.input);
           if (filePath && isImageType(undefined, filePath)) {
             session.hiddenToolIds.add(tool.id);
+            session.pendingImageReadIds.set(tool.id, filePath);
             outbox.pushHiddenTool(tool.name);
-            outbox.enqueue(async () => sendImageAttachment(thread, filePath));
             continue;
           }
         }
@@ -1048,6 +1055,17 @@ export class SessionManager {
             outbox.enqueue(async () => sendImageAttachment(thread, imagePath));
           }
           continue;
+        }
+        if (session.pendingImageReadIds.has(result.tool_use_id)) {
+          const fallbackPath = session.pendingImageReadIds.get(result.tool_use_id)!;
+          session.pendingImageReadIds.delete(result.tool_use_id);
+          const b64 = extractBase64ImageFromResult(result.content);
+          if (b64) {
+            outbox.enqueue(async () => sendImageFromBase64(thread, b64.data, b64.mediaType));
+          } else {
+            outbox.enqueue(async () => sendImageAttachment(thread, fallbackPath));
+          }
+          // Still drop the result from the visible tool-call feed.
         }
         // Drop results for hidden tools entirely — enqueuing a no-op op would
         // seal the running summary between two batches of hidden calls.
@@ -1327,10 +1345,32 @@ async function sendImageAttachment(thread: any, filePath: string): Promise<void>
       const ext = path.extname(filePath).slice(1).toLowerCase().replace("jpeg", "jpg") || "png";
       const buffer = fs.readFileSync(filePath);
       await thread.send({ files: [new AttachmentBuilder(buffer, { name: `image.${ext}` })] });
+    } else {
+      console.warn(`[image] File not found, skipping: ${filePath}`);
     }
   } catch (err) {
     console.error(`[image] Failed to send image ${filePath}:`, err);
   }
+}
+
+async function sendImageFromBase64(thread: any, data: string, mediaType: string): Promise<void> {
+  try {
+    const ext = (mediaType.split("/")[1] ?? "png").replace("jpeg", "jpg");
+    const buffer = Buffer.from(data, "base64");
+    await thread.send({ files: [new AttachmentBuilder(buffer, { name: `image.${ext}` })] });
+  } catch (err) {
+    console.error("[image] Failed to send base64 image:", err);
+  }
+}
+
+function extractBase64ImageFromResult(content: unknown): { data: string; mediaType: string } | null {
+  if (!Array.isArray(content)) return null;
+  for (const block of content) {
+    if (block?.type === "image" && block?.source?.type === "base64" && typeof block.source.data === "string") {
+      return { data: block.source.data, mediaType: block.source.media_type ?? "image/png" };
+    }
+  }
+  return null;
 }
 
 function toolResultText(content: any): string {
