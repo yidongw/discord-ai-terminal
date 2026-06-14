@@ -26,7 +26,6 @@ export const CS_MODEL_CHOICES = [
   { name: "Opus 4.8", value: "claude-opus-4-8-high" },
   { name: "GPT-5.5", value: "gpt-5.5-medium" },
   { name: "Sonnet 4.6", value: "claude-4.6-sonnet-medium" },
-  { name: "Codex 5.3", value: "gpt-5.3-codex" },
 ] as const;
 
 export type CcModel = (typeof CC_MODEL_CHOICES)[number]["value"];
@@ -105,8 +104,12 @@ export function normalizeCodexModel(stored: string | undefined | null): CodexMod
 
 const CS_MODEL_VALUES = new Set<string>(CS_MODEL_CHOICES.map((c) => c.value));
 
+const CS_ALIAS_MAP: Record<string, CsModel> = {
+  "gpt-5.3-codex": "auto",
+};
+
 export function normalizeCsModel(stored: string | undefined | null): CsModel {
   if (!stored) return DEFAULT_CS_MODEL;
   if (CS_MODEL_VALUES.has(stored)) return stored as CsModel;
-  return DEFAULT_CS_MODEL;
+  return CS_ALIAS_MAP[stored] ?? DEFAULT_CS_MODEL;
 }
