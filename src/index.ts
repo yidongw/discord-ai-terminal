@@ -5,7 +5,7 @@ import { BackgroundJobManager } from "./bot/background-jobs.js";
 import { validateConfig } from "./utils/config.js";
 import { MCPPermissionServer } from "./mcp/server.js";
 import { GitHubHandler } from "./github/handler.js";
-import { GitHubWebhookServer } from "./github/webhook.js";
+import { GitHubWebhookServer, autoRegisterWebhookUrl } from "./github/webhook.js";
 
 async function main() {
   const config = validateConfig();
@@ -111,6 +111,11 @@ async function main() {
     const webhookServer = new GitHubWebhookServer(githubHandler);
     const webhookPort = parseInt(process.env.GITHUB_WEBHOOK_PORT ?? "3002");
     webhookServer.start(webhookPort);
+    // Auto-update the GitHub webhook URL to match the current cloudflared tunnel.
+    // The quick tunnel URL changes on restart; this keeps the webhook pointing at the right place.
+    void autoRegisterWebhookUrl(webhookPort).catch((err) =>
+      console.error("[webhook] auto-register failed:", err)
+    );
   }
 
   console.log("Agent Discord Bot started.");

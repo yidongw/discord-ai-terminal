@@ -1,5 +1,67 @@
 import type { GitHubHandler } from "./handler.js";
 
+// Scans cloudflared quick-tunnel metrics ports (20241..20270) to find a tunnel
+// that routes to our webhook server. The webhook server returns 405 for GET,
+// which is unique enough to identify it. Returns the https:// URL or null.
+export async function findWebhookTunnelUrl(webhookPort: number): Promise<string | null> {
+  for (let metricsPort = 20241; metricsPort <= 20270; metricsPort++) {
+    try {
+      const meta = await fetch(`http://localhost:${metricsPort}/quicktunnel`, {
+        signal: AbortSignal.timeout(500),
+      }).then((r) => r.ok ? r.json() as Promise<{ hostname: string }> : null).catch(() => null);
+      if (!meta?.hostname) continue;
+
+      const url = `https://${meta.hostname}`;
+      const probe = await fetch(url, { signal: AbortSignal.timeout(4000) }).catch(() => null);
+      if (probe?.status === 405) return url;
+    } catch {}
+  }
+  return null;
+}
+
+// Updates the GitHub webhook URL for a repo. Reads GITHUB_TOKEN and
+// GITHUB_WEBHOOK_SECRET from env. GITHUB_WEBHOOK_REPOS is a comma-separated
+// list of "owner/repo:hookId" pairs (e.g. "yidongw/carbon:641327968").
+export async function autoRegisterWebhookUrl(webhookPort: number): Promise<void> {
+  const reposEnv = process.env.GITHUB_WEBHOOK_REPOS ?? "";
+  if (!reposEnv) return;
+
+  const token = process.env.GITHUB_TOKEN ?? "";
+  const secret = process.env.GITHUB_WEBHOOK_SECRET ?? "";
+
+  const tunnelUrl = await findWebhookTunnelUrl(webhookPort);
+  if (!tunnelUrl) {
+    console.log("[webhook] auto-register: no cloudflared quick tunnel found — skipping URL update");
+    return;
+  }
+
+  for (const entry of reposEnv.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const [repo, hookId] = entry.split(":") as [string, string | undefined];
+    if (!repo || !hookId) {
+      console.warn(`[webhook] auto-register: invalid GITHUB_WEBHOOK_REPOS entry "${entry}" — expected "owner/repo:hookId"`);
+      continue;
+    }
+    try {
+      const res = await fetch(`https://api.github.com/repos/${repo}/hooks/${hookId}`, {
+        method: "PATCH",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "Accept": "application/vnd.github+json",
+        },
+        body: JSON.stringify({ config: { url: tunnelUrl, content_type: "json", secret } }),
+      });
+      if (res.ok) {
+        console.log(`[webhook] auto-register: updated ${repo} hook ${hookId} → ${tunnelUrl}`);
+      } else {
+        console.error(`[webhook] auto-register: failed to update ${repo} hook ${hookId}: ${res.status}`);
+      }
+    } catch (err) {
+      console.error(`[webhook] auto-register: error updating ${repo} hook ${hookId}:`, err);
+    }
+  }
+}
+
 export class GitHubWebhookServer {
   private server?: ReturnType<typeof Bun.serve>;
 
