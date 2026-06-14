@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { isImageGenerationRequest, findLatestDownloadImage } from "../../src/utils/image-requests.js";
+import {
+  findLatestDownloadImage,
+  isImageGenerationRequest,
+  parseDownloadImageDecision,
+} from "../../src/utils/image-requests.js";
 
 describe("isImageGenerationRequest", () => {
   it("matches casual image requests", () => {
@@ -32,5 +36,13 @@ describe("findLatestDownloadImage", () => {
     fs.utimesSync(newer, now, now);
 
     expect(findLatestDownloadImage(dir)).toBe(newer);
+  });
+});
+
+describe("parseDownloadImageDecision", () => {
+  it("recognizes the classifier tokens", () => {
+    expect(parseDownloadImageDecision("DOWNLOAD_IMAGE")).toBe(true);
+    expect(parseDownloadImageDecision("OTHER")).toBe(false);
+    expect(parseDownloadImageDecision("DOWNLOAD_IMAGE\n")).toBe(true);
   });
 });

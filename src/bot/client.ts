@@ -20,7 +20,7 @@ import { parseAgentInvocations, starterMessageText, threadName, firstLine } from
 import { listAgentKeys, getAgent } from "../agents/index.js";
 import { resolveThreadWorkDir } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
-import { findLatestDownloadImage, isImageGenerationRequest } from "../utils/image-requests.js";
+import { findLatestDownloadImage, shouldSendLatestDownloadImage } from "../utils/image-requests.js";
 import { setThreadStatus, renamingClosedThreads } from "../utils/thread-status.js";
 import {
   ensureAttachmentDir,
@@ -745,7 +745,7 @@ export class DiscordBot {
   }
 
   private async trySendDownloadImage(msg: Message): Promise<boolean> {
-    if (!isImageGenerationRequest(msg.content)) {
+    if (!(await shouldSendLatestDownloadImage(msg.content))) {
       return false;
     }
 
