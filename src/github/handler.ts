@@ -30,6 +30,11 @@ export class GitHubHandler {
   // Called when pull_request.{opened,reopened,ready_for_review} fires. Links the PR
   // to the maker thread, renames it with the PR number, and pins the PR URL.
   async handlePrOpened(repo: string, prNumber: number, headRef: string = ""): Promise<void> {
+    // Clear the closed flag so a reopened PR will notify again on next close/merge.
+    const db = this.sessionManager.getDb();
+    const repoName = repo.split("/")[1] ?? repo;
+    db.clearClosedNotified(String(prNumber), repo);
+    db.clearClosedNotified(String(prNumber), repoName);
     await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
   }
 

@@ -721,6 +721,12 @@ export class DatabaseManager {
       .run(prNumber, repo, Date.now());
   }
 
+  clearClosedNotified(prNumber: string, repo: string): void {
+    this.db
+      .prepare(`UPDATE pr_threads SET closed_notified = 0 WHERE pr_number = ? AND repo = ?`)
+      .run(prNumber, repo);
+  }
+
   // Find the most recent CC session whose work_dir matches a repo name.
   // Used to link a newly opened PR back to the Discord thread that created it.
   findMakerThreadForRepo(repoName: string): string | null {
