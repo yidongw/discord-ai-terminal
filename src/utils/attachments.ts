@@ -61,22 +61,21 @@ export function isImageType(contentType?: string, filename?: string): boolean {
  */
 export function extractLocalImageReferences(text: string): LocalImageReference[] {
   const refs: LocalImageReference[] = [];
-  const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
+  const linkPattern = /!?\[([^\]]+)\]\(([^)]+)\)/g;
   let match: RegExpExecArray | null;
 
   while ((match = linkPattern.exec(text)) !== null) {
     const label = match[1]?.trim();
-    const filePath = match[2]?.trim();
+    const filePath = normalizeLocalImagePath(match[2]?.trim());
     if (!label || !filePath) continue;
-    if (!path.isAbsolute(filePath)) continue;
-    if (!isImageType(undefined, filePath)) continue;
     refs.push({ label, filePath });
   }
 
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || !path.isAbsolute(trimmed) || !isImageType(undefined, trimmed)) continue;
-    refs.push({ label: path.basename(trimmed), filePath: trimmed });
+    const filePath = normalizeLocalImagePath(trimmed);
+    if (!filePath) continue;
+    refs.push({ label: path.basename(filePath), filePath });
   }
 
   return refs;
@@ -91,27 +90,38 @@ export function stripLocalImageReferences(text: string): string {
     .split("\n")
     .map((line) => {
       const trimmed = line.trim();
-      if (trimmed && path.isAbsolute(trimmed) && isImageType(undefined, trimmed)) {
+      if (normalizeLocalImagePath(trimmed)) {
         return "";
       }
 
-      if (/^\[[^\]]+\]\([^)]+\)$/.test(trimmed)) {
-        const match = trimmed.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-        const label = match?.[1]?.trim();
-        const filePath = match?.[2]?.trim();
-        if (label && filePath && path.isAbsolute(filePath) && isImageType(undefined, filePath)) {
+      if (/^!?\[[^\]]+\]\([^)]+\)$/.test(trimmed)) {
+        const match = trimmed.match(/^(!?)\[([^\]]+)\]\(([^)]+)\)$/);
+        const filePath = normalizeLocalImagePath(match?.[3]?.trim());
+        if (filePath) {
           return "";
         }
       }
 
-      return line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (full, label, filePath) => {
-        if (!path.isAbsolute(String(filePath)) || !isImageType(undefined, String(filePath))) {
+      return line.replace(/(!?)\[([^\]]+)\]\(([^)]+)\)/g, (full, bang, label, filePath) => {
+        if (!normalizeLocalImagePath(String(filePath))) {
           return full;
         }
+        if (bang === "!") return "";
         return String(label).trim();
       });
     })
     .join("\n");
+}
+
+function normalizeLocalImagePath(rawPath?: string): string | undefined {
+  if (!rawPath) return undefined;
+  let filePath = rawPath;
+  try {
+    filePath = decodeURI(filePath);
+  } catch {}
+  if (!path.isAbsolute(filePath)) return undefined;
+  if (!isImageType(undefined, filePath)) return undefined;
+  return filePath;
 }
 
 /** Read tool input uses `file_path` (CC) or `path` (Cursor). */

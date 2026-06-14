@@ -48,16 +48,56 @@ describe("local image references", () => {
     ]);
   });
 
+  it("extracts absolute markdown image links to image files", () => {
+    expect(
+      extractLocalImageReferences(
+        "Here it is:\n\n![Screenshot 2026-04-22 at 2.16.28 AM](/Users/me/Downloads/Screenshot 2026-04-22 at 2.16.28 AM.png)"
+      )
+    ).toEqual([
+      {
+        label: "Screenshot 2026-04-22 at 2.16.28 AM",
+        filePath: "/Users/me/Downloads/Screenshot 2026-04-22 at 2.16.28 AM.png",
+      },
+    ]);
+  });
+
+  it("decodes URL-encoded absolute markdown image paths", () => {
+    expect(
+      extractLocalImageReferences(
+        "Here it is:\n\n![Screenshot](/Users/me/Downloads/Screenshot%202026-04-22%20at%202.16.28%E2%80%AFAM.png)"
+      )
+    ).toEqual([
+      {
+        label: "Screenshot",
+        filePath: "/Users/me/Downloads/Screenshot 2026-04-22 at 2.16.28 AM.png",
+      },
+    ]);
+  });
+
   it("leaves non-image or non-local links alone", () => {
     expect(
       extractLocalImageReferences("[docs](https://example.com/pic.png)")
     ).toEqual([]);
   });
 
+  it("does not strip remote markdown image links", () => {
+    expect(stripLocalImageReferences("![remote](https://example.com/pic.png)")).toBe(
+      "![remote](https://example.com/pic.png)"
+    );
+  });
+
   it("strips local image markdown links down to their labels", () => {
     expect(
       stripLocalImageReferences(
         "Here’s one from Downloads:\n\n[Snipaste.png](/Users/me/Downloads/Snipaste.png)"
+      )
+    ).toBe("Here’s one from Downloads:\n\n");
+  });
+
+  it("strips standalone local markdown image links", () => {
+    expect(
+      stripLocalImageReferences(
+        "Here’s one from Downloads:\n\n![Screenshot](/Users/me/Downloads/Screenshot.png)"
       )
     ).toBe("Here’s one from Downloads:\n\n");
   });
