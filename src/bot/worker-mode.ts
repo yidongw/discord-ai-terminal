@@ -193,6 +193,15 @@ export async function runWorkerMode(): Promise<void> {
   // We run with cwd = the worktree, so each thread gets its own isolated DB.
   const sessionManager = new SessionManager();
 
+  // Wire up the gh wrapper so agents in this worker also link PRs to the thread.
+  // Port and secret are inherited from the main bot's environment.
+  const linkerPortStr = process.env.GITHUB_PR_LINKER_PORT;
+  const linkerSecret =
+    process.env.GITHUB_PR_LINKER_SECRET ?? process.env.GITHUB_WEBHOOK_SECRET;
+  if (linkerPortStr && linkerSecret) {
+    sessionManager.setGhLinkerConfig(parseInt(linkerPortStr), linkerSecret);
+  }
+
   // Mirror active_run mutations into the main bot's DB so the main bot can
   // re-attach to this worker's detached agent after a service restart. The
   // worker process is a child of the main bot and gets killed on restart, but

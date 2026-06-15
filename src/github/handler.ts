@@ -133,27 +133,51 @@ export class GitHubHandler {
       .catch((err) => console.error(`[github] PR #${prNumber}: failed to post close/merge notification:`, err));
   }
 
+  // Called by the local PR linker server when an agent's gh wrapper reports a
+  // successful `gh pr create`. We know exactly which thread made the PR so we
+  // can link it definitively, overriding any earlier guessed linking.
+  async handlePrLinkedByThread(
+    threadId: string,
+    repo: string,
+    prNumber: number
+  ): Promise<void> {
+    console.log(
+      `[github] PR #${prNumber} (${repo}): gh wrapper linked to thread ${threadId}`
+    );
+    await this.ensurePrLinkedToMakerThread(repo, prNumber, "", threadId);
+  }
+
   // Idempotent: link PR → maker thread, rename, and pin. Skips if already linked.
   // headRef is optional — fetched from the GitHub API when missing (preview-ready path).
+  // knownMakerThreadId is set when the gh wrapper told us exactly which thread
+  // created the PR; it overrides any previous guessed linking so we correct races
+  // where the webhook fires before the wrapper's link-pr call lands.
   async ensurePrLinkedToMakerThread(
     repo: string,
     prNumber: number,
-    headRef: string = ""
+    headRef: string = "",
+    knownMakerThreadId?: string
   ): Promise<string | null> {
     const db = this.sessionManager.getDb();
     const existing = db.getPrThreads(String(prNumber), repo)?.makerThreadId;
-    if (existing) return existing;
+    // Already linked to the correct thread — nothing to do.
+    if (existing && existing === knownMakerThreadId) return existing;
+    // Without a definitive override don't relink if already linked (idempotent).
+    if (existing && !knownMakerThreadId) return existing;
 
     const repoName = repo.split("/")[1] ?? repo;
     let ref = headRef;
-    if (!ref) {
+    // Only hit the GitHub API when we have neither a known thread nor a headRef.
+    if (!ref && !knownMakerThreadId) {
       const pr = await getPr(repo, prNumber);
       ref = pr?.head?.ref ?? "";
     }
 
-    const makerThreadId = ref.startsWith("discord/")
-      ? (db.findThreadByBranch(ref) ?? db.findMakerThreadForRepo(repoName))
-      : db.findMakerThreadForRepo(repoName);
+    const makerThreadId =
+      knownMakerThreadId ??
+      (ref.startsWith("discord/")
+        ? (db.findThreadByBranch(ref) ?? db.findMakerThreadForRepo(repoName))
+        : db.findMakerThreadForRepo(repoName));
 
     if (!makerThreadId) {
       console.log(
@@ -164,7 +188,10 @@ export class GitHubHandler {
     }
 
     db.setPrMakerThread(String(prNumber), repo, makerThreadId);
-    console.log(`[github] PR #${prNumber} linked to maker thread ${makerThreadId}`);
+    console.log(
+      `[github] PR #${prNumber} linked to maker thread ${makerThreadId}` +
+        (knownMakerThreadId ? " (via gh wrapper)" : "")
+    );
     try {
       const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
       const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
