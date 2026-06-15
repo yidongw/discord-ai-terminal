@@ -20,6 +20,11 @@ export const codexAgent: AgentRunner = {
       msg = msg.payload;
     }
 
+    const assistantText = assistantMessageText(msg);
+    if (assistantText) {
+      return { kind: "text", content: assistantText };
+    }
+
     if (msg.type === "thread.started") {
       return {
         kind: "init",
@@ -115,4 +120,21 @@ function imageDataEvent(msg: any): AgentEvent | null {
     mediaType: "image/png",
     callId: typeof msg.call_id === "string" ? msg.call_id : undefined,
   };
+}
+
+function assistantMessageText(msg: any): string | null {
+  if (msg?.type === "agent_message" && typeof msg.message === "string") {
+    return msg.message;
+  }
+
+  if (msg?.type !== "message" || msg.role !== "assistant" || !Array.isArray(msg.content)) {
+    return null;
+  }
+
+  const text = msg.content
+    .filter((block: any) => block?.type === "output_text" && typeof block.text === "string")
+    .map((block: any) => block.text)
+    .join("");
+
+  return text || null;
 }

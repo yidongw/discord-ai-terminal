@@ -1,4 +1,5 @@
 import { spawnSync } from "child_process";
+import * as path from "path";
 import { REST, Routes } from "discord.js";
 import { SessionManager } from "./session-manager.js";
 import { DatabaseManager } from "../db/database.js";
@@ -46,8 +47,10 @@ class RestThread {
 
   async send(data: any): Promise<RestMessage> {
     try {
+      const payload = serializeRestMessagePayload(data);
       const response = (await this.rest.post(Routes.channelMessages(this.id), {
-        body: serializeBody(data),
+        body: payload.body,
+        files: payload.files,
       })) as any;
       const desc = response.embeds?.[0]?.description ?? "";
       return new RestMessage(response.id, desc, this.rest, this.id);
@@ -75,6 +78,31 @@ class RestThread {
   toString(): string {
     return `<#${this.id}>`;
   }
+}
+
+export function serializeRestMessagePayload(data: any): { body: any; files?: Array<{ data: any; name: string }> } {
+  const { files: rawFiles, ...bodySource } = data ?? {};
+  const files = serializeFiles(rawFiles);
+  const body = serializeBody(bodySource);
+  return files.length > 0 ? { body, files } : { body };
+}
+
+function serializeFiles(files: unknown): Array<{ data: any; name: string }> {
+  if (!Array.isArray(files)) return [];
+  return files.flatMap((file, index) => {
+    if (!file) return [];
+    if (typeof file === "string") {
+      return [{ data: file, name: path.basename(file) || `file-${index}` }];
+    }
+    if (Buffer.isBuffer(file)) {
+      return [{ data: file, name: `file-${index}` }];
+    }
+    if (typeof file === "object" && "attachment" in file) {
+      const attachment = file as { attachment: unknown; name?: unknown };
+      return [{ data: attachment.attachment, name: String(attachment.name ?? `file-${index}`) }];
+    }
+    return [];
+  });
 }
 
 // Recursively serialize an object that may contain discord.js builder instances
