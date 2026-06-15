@@ -304,11 +304,16 @@ export class SessionManager {
   // messages land after the leftovers instead of interleaving with them).
   private getOutbox(threadId: string, thread: any): Outbox {
     let outbox = this.outboxes.get(threadId);
+    const onLocalImageReference = (filePath: string) => {
+      const callId = generatedImageCallIdFromPath(filePath);
+      if (!callId) return;
+      this.active.get(threadId)?.sentGeneratedImageCallIds.add(callId);
+    };
     if (!outbox) {
-      outbox = new Outbox(thread);
+      outbox = new Outbox(thread, onLocalImageReference);
       this.outboxes.set(threadId, outbox);
     } else {
-      outbox.updateThread(thread);
+      outbox.updateThread(thread, onLocalImageReference);
     }
     return outbox;
   }
@@ -1082,6 +1087,8 @@ export class SessionManager {
           session.generateImageToolIds.delete(result.tool_use_id);
           const imagePath = extractGeneratedImagePath(result.content);
           if (imagePath) {
+            const callId = generatedImageCallIdFromPath(imagePath);
+            if (callId) session.sentGeneratedImageCallIds.add(callId);
             outbox.enqueue(async () => sendImageAttachment(thread, imagePath));
           }
           continue;
@@ -1173,10 +1180,16 @@ export class Outbox {
   private hiddenMessage: any = null;
   private hiddenCounts: Map<string, number> | null = null;
 
-  constructor(private thread: any) {}
+  constructor(
+    private thread: any,
+    private onLocalImageReference?: (filePath: string) => void
+  ) {}
 
   // Point the outbox at the latest thread object when a new run reuses it.
-  updateThread(thread: any): void { this.thread = thread; }
+  updateThread(thread: any, onLocalImageReference?: (filePath: string) => void): void {
+    this.thread = thread;
+    this.onLocalImageReference = onLocalImageReference;
+  }
 
   private get busy(): boolean {
     return this.running || this.queue.length > 0;
@@ -1187,6 +1200,11 @@ export class Outbox {
   // as one message.
   pushText(content: string): void {
     if (!content) return;
+    if (this.onLocalImageReference) {
+      for (const ref of extractLocalImageReferences(content)) {
+        this.onLocalImageReference(ref.filePath);
+      }
+    }
     const last = this.queue[this.queue.length - 1];
     if (last && last.type === "text") last.content += content;
     else this.queue.push({ type: "text", content });

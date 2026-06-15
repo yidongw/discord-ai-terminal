@@ -152,6 +152,24 @@ describe("Outbox", () => {
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  it("reports local markdown images as soon as text is queued", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "discord-ai-terminal-image-"));
+    const imagePath = path.join(dir, "ig_generated.png");
+    fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const thread = makeThread();
+    const reported: string[] = [];
+    const outbox = new Outbox(thread, (filePath: string) => reported.push(filePath));
+
+    thread.openGate();
+    outbox.pushText(`Here it is:\n\n![image](${imagePath})`);
+
+    expect(reported).toEqual([imagePath]);
+
+    thread.releaseGate();
+    await outbox.drain();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe("Codex generated image discovery", () => {
