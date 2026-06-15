@@ -843,12 +843,10 @@ export class SessionManager {
 
     if (event.kind === "init") {
       this.db.updateSessionId(threadId, event.sessionId);
-      if (!session.wasResume) {
-        const displayModel = session.requestedModel || event.model;
-        outbox.enqueue(() =>
-          thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${displayModel}`, 0x00ff00)] })
-        );
-      }
+      const displayModel = session.requestedModel || event.model;
+      outbox.enqueue(() =>
+        thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${displayModel}`, 0x00ff00)] })
+      );
       return;
     }
 
