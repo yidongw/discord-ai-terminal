@@ -193,6 +193,16 @@ export async function runWorkerMode(): Promise<void> {
   // We run with cwd = the worktree, so each thread gets its own isolated DB.
   const sessionManager = new SessionManager();
 
+  // Mirror active_run mutations into the main bot's DB so the main bot can
+  // re-attach to this worker's detached agent after a service restart. The
+  // worker process is a child of the main bot and gets killed on restart, but
+  // the agent it spawns is detached and keeps running — the main bot needs to
+  // find it in its own active_runs table.
+  if (mainDbPath) {
+    const mainDb = new DatabaseManager(mainDbPath);
+    sessionManager.getDb().setMirrorDb(mainDb);
+  }
+
   await sessionManager.runAgent(
     threadId,
     channelId,

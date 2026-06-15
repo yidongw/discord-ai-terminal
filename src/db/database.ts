@@ -114,12 +114,20 @@ export interface ScheduledTask {
 
 export class DatabaseManager {
   private db: Database;
+  // When set, active_run mutations are mirrored here so a separate bot process
+  // (e.g. the main bot after a restart) can re-attach to runs started by a
+  // worker that used an isolated DB.
+  private mirrorDb?: DatabaseManager;
 
   constructor(dbPath?: string) {
     const finalPath = dbPath || path.join(process.cwd(), "sessions.db");
     this.db = new Database(finalPath);
     this.initializeTables();
     this.migrate();
+  }
+
+  setMirrorDb(db: DatabaseManager): void {
+    this.mirrorDb = db;
   }
 
   private initializeTables(): void {
@@ -576,22 +584,26 @@ export class DatabaseManager {
         run.startedAt,
         run.completionJson ?? null
       );
+    this.mirrorDb?.createActiveRun(run);
   }
 
   // Synchronous offset checkpoint — called at the end of each tail tick so a
   // restart resumes from the last fully-consumed line boundary.
   updateActiveRunOffset(runId: string, offset: number): void {
     this.db.prepare(`UPDATE active_runs SET stdout_offset = ? WHERE run_id = ?`).run(offset, runId);
+    this.mirrorDb?.updateActiveRunOffset(runId, offset);
   }
 
   deleteActiveRun(runId: string): void {
     this.db.prepare(`DELETE FROM active_runs WHERE run_id = ?`).run(runId);
+    this.mirrorDb?.deleteActiveRun(runId);
   }
 
   // Forget every run for a thread (e.g. a new run is replacing it, or the
   // thread/worktree is being torn down).
   deleteActiveRunsForThread(threadId: string): void {
     this.db.prepare(`DELETE FROM active_runs WHERE thread_id = ?`).run(threadId);
+    this.mirrorDb?.deleteActiveRunsForThread(threadId);
   }
 
   listActiveRuns(): ActiveRun[] {
