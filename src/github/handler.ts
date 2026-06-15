@@ -485,57 +485,34 @@ export class GitHubHandler {
     if (!repoMatch) return;
     const repo = repoMatch[1]!;
 
+    // Check all PRs (open and closed) for this branch so we never miss a
+    // merged/closed PR that was created while the bot was down.
     const prResult = spawnSync(
-      "gh", ["pr", "list", "--head", branch, "--json", "number", "--repo", repo],
+      "gh", ["pr", "list", "--head", branch, "--state", "all",
+             "--json", "number,state,mergedAt,mergedBy,title", "--repo", repo],
       { encoding: "utf8", timeout: 10000 }
     );
     if (prResult.status !== 0 || !prResult.stdout.trim()) return;
 
-    let prs: Array<{ number: number }>;
+    let prs: Array<{ number: number; state: string; mergedAt: string | null; mergedBy: { login: string } | null; title: string }>;
     try { prs = JSON.parse(prResult.stdout); }
     catch { return; }
-    if (prs.length === 0) {
-      // No open PR — check if a linked PR was merged/closed without webhook delivery
-      await this.checkLinkedPrClosed(threadId, repo);
-      return;
-    }
+    if (prs.length === 0) return;
 
-    const prNumber = prs[0]!.number;
-    console.log(`[github] thread ${threadId}: found PR #${prNumber} on ${branch} — linking (webhook fallback)`);
+    // Sort: open first so an active PR takes priority over an old closed one.
+    prs.sort((a, b) => (a.state === "OPEN" ? -1 : 1) - (b.state === "OPEN" ? -1 : 1));
+    const pr = prs[0]!;
+    const prNumber = pr.number;
+
+    console.log(`[github] thread ${threadId}: found PR #${prNumber} (${pr.state}) on ${branch} — linking (webhook fallback)`);
     await this.ensurePrLinkedToMakerThread(repo, prNumber, branch);
+
+    if (pr.state !== "OPEN") {
+      const merged = pr.state === "MERGED" || pr.mergedAt !== null;
+      await this.handlePrClosed(repo, prNumber, merged, pr.mergedBy?.login ?? null, pr.title, branch);
+    }
   }
 
-  // Called when checkAndLinkPrForBranch finds no open PR. Checks if there is a
-  // linked PR for this thread that was merged/closed without the webhook firing.
-  private async checkLinkedPrClosed(threadId: string, repo: string): Promise<void> {
-    const db = this.sessionManager.getDb();
-    const linked = db.findPrForMakerThread(threadId);
-    if (!linked) return;
-
-    if (db.isClosedNotified(linked.prNumber, linked.repo)) return;
-
-    const viewResult = spawnSync(
-      "gh", ["pr", "view", linked.prNumber, "--repo", linked.repo, "--json", "state,mergedAt,mergedBy,title"],
-      { encoding: "utf8", timeout: 10000 }
-    );
-    if (viewResult.status !== 0 || !viewResult.stdout.trim()) return;
-
-    let prData: { state: string; mergedAt: string | null; mergedBy: { login: string } | null; title: string };
-    try { prData = JSON.parse(viewResult.stdout); }
-    catch { return; }
-
-    if (prData.state === "OPEN") return;
-
-    const merged = prData.state === "MERGED" || prData.mergedAt !== null;
-    console.log(`[github] PR #${linked.prNumber} on thread ${threadId}: state=${prData.state} — sending close notification (fallback)`);
-    await this.handlePrClosed(
-      linked.repo,
-      Number(linked.prNumber),
-      merged,
-      prData.mergedBy?.login ?? null,
-      prData.title
-    );
-  }
 
   private async getOrCreateTestThread(
     repoName: string,
