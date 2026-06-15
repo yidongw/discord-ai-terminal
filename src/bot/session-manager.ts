@@ -738,6 +738,13 @@ export class SessionManager {
     }
 
     const alive = isPidAlive(run.pid);
+    const existingSession = this.db.getThreadSession(run.threadId);
+    const modelOverride = existingSession?.modelOverride;
+    const requestedModel = run.agent === "cx"
+      ? (modelOverride ?? this.db.getCodexModel(run.channelId))
+      : run.agent === "cs"
+        ? (modelOverride ?? this.db.getCsModel(run.channelId))
+        : (modelOverride ?? this.db.getModel(run.channelId));
     const session: ActiveSession = {
       runId: run.runId,
       pid: run.pid,
@@ -757,11 +764,7 @@ export class SessionManager {
       pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir: run.workDir,
-      requestedModel: run.agent === "cx"
-        ? this.db.getCodexModel(run.channelId)
-        : run.agent === "cs"
-          ? this.db.getCsModel(run.channelId)
-          : this.db.getModel(run.channelId),
+      requestedModel,
       toolOverrides: this.db.getToolOverrides(run.channelId),
       outbox: this.getOutbox(run.threadId, thread),
       done: false,
