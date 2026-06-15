@@ -1,4 +1,5 @@
 import { DiscordBot } from "./bot/client.js";
+import { GatewayWatchdog } from "./bot/gateway-watchdog.js";
 import { SessionManager } from "./bot/session-manager.js";
 import { Scheduler } from "./bot/scheduler.js";
 import { BackgroundJobManager } from "./bot/background-jobs.js";
@@ -39,11 +40,16 @@ async function main() {
   const bgJobs = new BackgroundJobManager(bot.client, sessionManager, sessionManager.getDb());
   mcpServer.setBackgroundJobManager(bgJobs);
 
+  // Restarts the process if the Discord gateway wedges (see GatewayWatchdog).
+  // Created after the gateway is READY below; declared here so shutdown can stop it.
+  let watchdog: GatewayWatchdog | undefined;
+
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return; // a second SIGTERM during drain shouldn't re-enter
     shuttingDown = true;
     console.log("Shutting down...");
+    try { watchdog?.stop(); } catch {}
     try { scheduler.stop(); } catch {}
     try { bgJobs.stop(); } catch {}
     try { await mcpServer.stop(); } catch {}
@@ -63,6 +69,12 @@ async function main() {
   if (!bot.client.isReady()) {
     await new Promise<void>((resolve) => bot.client.once("ready", () => resolve()));
   }
+
+  // Now that the gateway is up, guard it: if it later disconnects and can't
+  // recover, exit so launchd/systemd KeepAlive restarts us with a fresh
+  // connection instead of leaving a half-up process the health server masks.
+  watchdog = new GatewayWatchdog(bot.client);
+  watchdog.start();
 
   // Build the GitHub handler (if enabled) and register its completion handler
   // BEFORE reattach, so a PR run that finished while the bot was down still posts
