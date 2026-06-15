@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { AttachmentBuilder, EmbedBuilder, type Client } from "discord.js";
 import { formatForDiscord } from "../utils/discord-format.js";
@@ -303,11 +304,16 @@ export class SessionManager {
   // messages land after the leftovers instead of interleaving with them).
   private getOutbox(threadId: string, thread: any): Outbox {
     let outbox = this.outboxes.get(threadId);
+    const onLocalImageReference = (filePath: string) => {
+      const callId = generatedImageCallIdFromPath(filePath);
+      if (!callId) return;
+      this.active.get(threadId)?.sentGeneratedImageCallIds.add(callId);
+    };
     if (!outbox) {
-      outbox = new Outbox(thread);
+      outbox = new Outbox(thread, onLocalImageReference);
       this.outboxes.set(threadId, outbox);
     } else {
-      outbox.updateThread(thread);
+      outbox.updateThread(thread, onLocalImageReference);
     }
     return outbox;
   }
@@ -440,7 +446,7 @@ export class SessionManager {
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
       generateImageToolIds: new Set(),
-      sentGeneratedImageCallIds: new Set(),
+      sentGeneratedImageCallIds: new Set(listCodexGeneratedImageIds(resumeSessionId)),
       pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir,
@@ -549,6 +555,8 @@ export class SessionManager {
         session.thread.send({ embeds: [embed("❌ Process Failed", `Exit code: ${code}`, 0xff0000)] })
       );
     }
+
+    this.enqueueDiscoveredCodexImages(threadId, session);
 
     // Deliver everything already queued before marking the thread idle.
     await session.outbox.drain();
@@ -760,7 +768,7 @@ export class SessionManager {
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
       generateImageToolIds: new Set(),
-      sentGeneratedImageCallIds: new Set(),
+      sentGeneratedImageCallIds: new Set(listCodexGeneratedImageIds(existingSession?.sessionId)),
       pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir: run.workDir,
@@ -1079,6 +1087,8 @@ export class SessionManager {
           session.generateImageToolIds.delete(result.tool_use_id);
           const imagePath = extractGeneratedImagePath(result.content);
           if (imagePath) {
+            const callId = generatedImageCallIdFromPath(imagePath);
+            if (callId) session.sentGeneratedImageCallIds.add(callId);
             outbox.enqueue(async () => sendImageAttachment(thread, imagePath));
           }
           continue;
@@ -1108,6 +1118,16 @@ export class SessionManager {
           });
         });
       }
+    }
+  }
+
+  private enqueueDiscoveredCodexImages(threadId: string, session: ActiveSession): void {
+    if (session.agentKey !== "cx") return;
+    const sessionId = this.db.getThreadSession(threadId)?.sessionId;
+    for (const filePath of listNewCodexGeneratedImages(sessionId, session.sentGeneratedImageCallIds)) {
+      const callId = path.basename(filePath, path.extname(filePath));
+      session.sentGeneratedImageCallIds.add(callId);
+      session.outbox.enqueue(async () => sendImageAttachment(session.thread, filePath));
     }
   }
 
@@ -1160,10 +1180,16 @@ export class Outbox {
   private hiddenMessage: any = null;
   private hiddenCounts: Map<string, number> | null = null;
 
-  constructor(private thread: any) {}
+  constructor(
+    private thread: any,
+    private onLocalImageReference?: (filePath: string) => void
+  ) {}
 
   // Point the outbox at the latest thread object when a new run reuses it.
-  updateThread(thread: any): void { this.thread = thread; }
+  updateThread(thread: any, onLocalImageReference?: (filePath: string) => void): void {
+    this.thread = thread;
+    this.onLocalImageReference = onLocalImageReference;
+  }
 
   private get busy(): boolean {
     return this.running || this.queue.length > 0;
@@ -1174,6 +1200,11 @@ export class Outbox {
   // as one message.
   pushText(content: string): void {
     if (!content) return;
+    if (this.onLocalImageReference) {
+      for (const ref of extractLocalImageReferences(content)) {
+        this.onLocalImageReference(ref.filePath);
+      }
+    }
     const last = this.queue[this.queue.length - 1];
     if (last && last.type === "text") last.content += content;
     else this.queue.push({ type: "text", content });
@@ -1393,6 +1424,36 @@ async function sendImageFromBase64(thread: any, data: string, mediaType: string)
 function generatedImageCallIdFromPath(filePath: string): string | undefined {
   const name = path.basename(filePath, path.extname(filePath));
   return name.startsWith("ig_") ? name : undefined;
+}
+
+export function listNewCodexGeneratedImages(sessionId: string | undefined, sentIds: Set<string>): string[] {
+  if (!sessionId) return [];
+  const dir = codexGeneratedImageDir(sessionId);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+
+  return entries
+    .map((name) => path.join(dir, name))
+    .filter((filePath) => {
+      const id = path.basename(filePath, path.extname(filePath));
+      return isImageType(undefined, filePath) && !sentIds.has(id);
+    })
+    .sort();
+}
+
+function listCodexGeneratedImageIds(sessionId: string | undefined): string[] {
+  return listNewCodexGeneratedImages(sessionId, new Set()).map((filePath) =>
+    path.basename(filePath, path.extname(filePath))
+  );
+}
+
+function codexGeneratedImageDir(sessionId: string): string {
+  const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+  return path.join(codexHome, "generated_images", sessionId);
 }
 
 function extractBase64ImageFromResult(content: unknown): { data: string; mediaType: string } | null {
