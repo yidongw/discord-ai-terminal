@@ -624,14 +624,6 @@ export class DiscordBot {
       return;
     }
 
-    // Worktree session: dispatch to worker running from the worktree so code
-    // changes in the worktree take effect. Must come before hasActiveProcess so
-    // re-attached in-flight runs cannot intercept and bypass this routing.
-    if (session.isWorktree) {
-      await this.handleWorkerThreadMessage(msg, thread, session);
-      return;
-    }
-
     // If the message mentions an agent, ask whether to branch into a new sibling
     // thread or just send the message to the current thread's agent.
     const invocations = parseAgentInvocations(msg.content);
