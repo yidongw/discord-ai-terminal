@@ -18,6 +18,8 @@ import {
 import {
   extractGeneratedImagePath,
   extractLocalImageReferences,
+  normalizeImagePathKey,
+  tryClaimImageSend,
   getToolInputPath,
   isImageType,
   stripLocalImageReferences,
@@ -88,6 +90,8 @@ interface ActiveSession {
   generateImageToolIds: Set<string>;
   // Generated image call ids already uploaded from Codex image events.
   sentGeneratedImageCallIds: Set<string>;
+  // Normalized local image paths already sent (or queued) this run.
+  sentImagePaths: Set<string>;
   // Read tool-use ids where the target was an image file. Like generateImageToolIds,
   // we defer sending until the tool result so we can use the base64 data directly
   // rather than re-reading from disk (which fails when the filename has non-ASCII
@@ -309,11 +313,16 @@ export class SessionManager {
       if (!callId) return;
       this.active.get(threadId)?.sentGeneratedImageCallIds.add(callId);
     };
+    const claimImagePath = (filePath: string) => {
+      const session = this.active.get(threadId);
+      if (!session) return true;
+      return tryClaimImageSend(session.sentImagePaths, filePath);
+    };
     if (!outbox) {
-      outbox = new Outbox(thread, onLocalImageReference);
+      outbox = new Outbox(thread, onLocalImageReference, claimImagePath);
       this.outboxes.set(threadId, outbox);
     } else {
-      outbox.updateThread(thread, onLocalImageReference);
+      outbox.updateThread(thread, onLocalImageReference, claimImagePath);
     }
     return outbox;
   }
@@ -447,6 +456,9 @@ export class SessionManager {
       hiddenToolIds: new Set(),
       generateImageToolIds: new Set(),
       sentGeneratedImageCallIds: new Set(listCodexGeneratedImageIds(resumeSessionId)),
+      sentImagePaths: new Set(
+        listNewCodexGeneratedImages(resumeSessionId, new Set()).map((p) => normalizeImagePathKey(p))
+      ),
       pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir,
@@ -769,6 +781,11 @@ export class SessionManager {
       hiddenToolIds: new Set(),
       generateImageToolIds: new Set(),
       sentGeneratedImageCallIds: new Set(listCodexGeneratedImageIds(existingSession?.sessionId)),
+      sentImagePaths: new Set(
+        listNewCodexGeneratedImages(existingSession?.sessionId, new Set()).map((p) =>
+          normalizeImagePathKey(p)
+        )
+      ),
       pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir: run.workDir,
@@ -868,8 +885,8 @@ export class SessionManager {
     }
 
     if (event.kind === "image_file") {
+      if (!tryClaimImageSend(session.sentImagePaths, event.filePath)) return;
       const callId = generatedImageCallIdFromPath(event.filePath);
-      if (callId && session.sentGeneratedImageCallIds.has(callId)) return;
       if (callId) session.sentGeneratedImageCallIds.add(callId);
       outbox.enqueue(async () => sendImageAttachment(thread, event.filePath));
       return;
@@ -1086,7 +1103,7 @@ export class SessionManager {
         if (session.generateImageToolIds.has(result.tool_use_id)) {
           session.generateImageToolIds.delete(result.tool_use_id);
           const imagePath = extractGeneratedImagePath(result.content);
-          if (imagePath) {
+          if (imagePath && tryClaimImageSend(session.sentImagePaths, imagePath)) {
             const callId = generatedImageCallIdFromPath(imagePath);
             if (callId) session.sentGeneratedImageCallIds.add(callId);
             outbox.enqueue(async () => sendImageAttachment(thread, imagePath));
@@ -1099,7 +1116,7 @@ export class SessionManager {
           const b64 = extractBase64ImageFromResult(result.content);
           if (b64) {
             outbox.enqueue(async () => sendImageFromBase64(thread, b64.data, b64.mediaType));
-          } else {
+          } else if (tryClaimImageSend(session.sentImagePaths, fallbackPath)) {
             outbox.enqueue(async () => sendImageAttachment(thread, fallbackPath));
           }
           // Still drop the result from the visible tool-call feed.
@@ -1125,6 +1142,7 @@ export class SessionManager {
     if (session.agentKey !== "cx") return;
     const sessionId = this.db.getThreadSession(threadId)?.sessionId;
     for (const filePath of listNewCodexGeneratedImages(sessionId, session.sentGeneratedImageCallIds)) {
+      if (!tryClaimImageSend(session.sentImagePaths, filePath)) continue;
       const callId = path.basename(filePath, path.extname(filePath));
       session.sentGeneratedImageCallIds.add(callId);
       session.outbox.enqueue(async () => sendImageAttachment(session.thread, filePath));
@@ -1182,13 +1200,19 @@ export class Outbox {
 
   constructor(
     private thread: any,
-    private onLocalImageReference?: (filePath: string) => void
+    private onLocalImageReference?: (filePath: string) => void,
+    private claimImagePath?: (filePath: string) => boolean
   ) {}
 
   // Point the outbox at the latest thread object when a new run reuses it.
-  updateThread(thread: any, onLocalImageReference?: (filePath: string) => void): void {
+  updateThread(
+    thread: any,
+    onLocalImageReference?: (filePath: string) => void,
+    claimImagePath?: (filePath: string) => boolean
+  ): void {
     this.thread = thread;
     this.onLocalImageReference = onLocalImageReference;
+    this.claimImagePath = claimImagePath;
   }
 
   private get busy(): boolean {
@@ -1248,7 +1272,7 @@ export class Outbox {
             // Any visible message ends the current hidden run: drop the summary
             // reference so the next hidden tool opens a new embed below this one.
             this.sealHidden();
-            if (item.type === "text") await sendChunked(this.thread, item.content);
+            if (item.type === "text") await sendChunked(this.thread, item.content, this.claimImagePath);
             else await item.run();
           }
         } catch (err) {
@@ -1324,7 +1348,11 @@ export class TypingIndicator {
   }
 }
 
-async function sendChunked(thread: any, content: string): Promise<void> {
+async function sendChunked(
+  thread: any,
+  content: string,
+  claimImagePath?: (filePath: string) => boolean
+): Promise<void> {
   const imageRefs = extractLocalImageReferences(content);
   if (imageRefs.length > 0) {
     const cleaned = stripLocalImageReferences(content).trim();
@@ -1332,6 +1360,7 @@ async function sendChunked(thread: any, content: string): Promise<void> {
       await sendChunkedText(thread, cleaned);
     }
     for (const ref of imageRefs) {
+      if (claimImagePath && !claimImagePath(ref.filePath)) continue;
       await sendImageAttachment(thread, ref.filePath);
     }
     return;
