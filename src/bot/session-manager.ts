@@ -92,6 +92,9 @@ interface ActiveSession {
   // rather than re-reading from disk (which fails when the filename has non-ASCII
   // whitespace like U+202F that gets normalized to U+0020 in the tool input JSON).
   pendingImageReadIds: Map<string, string>; // tool_id → file_path fallback
+  // Bash tool-use ids for `gh pr create/edit` — on result we extract the PR URL
+  // and immediately record threadId → prNumber in the DB.
+  pendingPrCreateToolIds: Set<string>;
   // Live task list built from TaskCreate/TaskUpdate calls, keyed by task ID.
   taskList: Map<number, { subject: string; status: string }>;
   workDir: string;
@@ -442,6 +445,7 @@ export class SessionManager {
       generateImageToolIds: new Set(),
       sentGeneratedImageCallIds: new Set(),
       pendingImageReadIds: new Map(),
+      pendingPrCreateToolIds: new Set(),
       taskList: new Map(),
       workDir,
       requestedModel,
@@ -755,6 +759,7 @@ export class SessionManager {
       generateImageToolIds: new Set(),
       sentGeneratedImageCallIds: new Set(),
       pendingImageReadIds: new Map(),
+      pendingPrCreateToolIds: new Set(),
       taskList: new Map(),
       workDir: run.workDir,
       requestedModel: run.agent === "cx"
@@ -1065,6 +1070,11 @@ export class SessionManager {
           outbox.pushHiddenTool(tool.name);
           continue;
         }
+        // Track gh pr create/edit so we can extract the PR URL from the result
+        // and immediately link it to this thread — reliable regardless of branch name.
+        if (tool.name === "Bash" && /gh pr (create|edit)/.test(tool.input?.command ?? "")) {
+          session.pendingPrCreateToolIds.add(tool.id);
+        }
         const label = formatToolCall(tool, session.workDir);
         outbox.enqueue(async () => {
           const msg = await thread.send({ embeds: [new EmbedBuilder().setDescription(`⏳ ${label}`).setColor(0x0099ff)] });
@@ -1074,6 +1084,16 @@ export class SessionManager {
     }
     if (raw.kind === "_sdk_tool_results") {
       for (const result of (raw.results ?? [])) {
+        if (session.pendingPrCreateToolIds.has(result.tool_use_id)) {
+          session.pendingPrCreateToolIds.delete(result.tool_use_id);
+          const output = toolResultText(result.content);
+          const urlMatch = output.match(/https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/);
+          if (urlMatch) {
+            const [, repo, prNum] = urlMatch;
+            this.db.setPrMakerThread(prNum!, repo!, threadId);
+            console.log(`[github] PR #${prNum} on ${repo} linked to thread ${threadId} (intercepted gh pr create)`);
+          }
+        }
         if (session.generateImageToolIds.has(result.tool_use_id)) {
           session.generateImageToolIds.delete(result.tool_use_id);
           const imagePath = extractGeneratedImagePath(result.content);
