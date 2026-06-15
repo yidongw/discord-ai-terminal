@@ -86,6 +86,9 @@ export function buildClaudeCommand(
     commandParts.push("--dangerously-skip-permissions");
   }
 
+  // Disable the built-in AskUserQuestion tool so Claude uses mcp__discord-permissions__ask_user_question
+  commandParts.push("--disallowedTools", "AskUserQuestion");
+
   if (sessionId) {
     commandParts.splice(3, 0, "--resume", sessionId);
   }
