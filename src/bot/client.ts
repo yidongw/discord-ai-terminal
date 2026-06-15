@@ -624,6 +624,14 @@ export class DiscordBot {
       return;
     }
 
+    // Bot PR worktree thread: dispatch to a worker running from the worktree
+    // so code changes there take effect. Guarded by src/bot/client.ts existence
+    // so regular project worktrees (carbon, etc.) still go through runAgent.
+    if (session.isWorktree && fs.existsSync(path.join(session.workDir, "src", "bot", "client.ts"))) {
+      await this.handleWorkerThreadMessage(msg, thread, session);
+      return;
+    }
+
     // If the message mentions an agent, ask whether to branch into a new sibling
     // thread or just send the message to the current thread's agent.
     const invocations = parseAgentInvocations(msg.content);
