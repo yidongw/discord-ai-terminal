@@ -428,9 +428,20 @@ export class DiscordBot {
       messageId: msg.id,
     };
 
+    // Propagate any per-message model override (@cx5.5, @cco4.8, etc.) to the
+    // worker. Fall back to whatever the thread already has stored. On change,
+    // update the main DB so future follow-ups inherit the right model.
+    const invocations = parseAgentInvocations(msg.content);
+    const explicitModel = invocations.length > 0 ? invocations[0]!.model : undefined;
+    const modelOverride = explicitModel ?? session.modelOverride;
+    if (explicitModel !== undefined && explicitModel !== session.modelOverride) {
+      this.sessionManager.getDb().updateModelOverride(thread.id, explicitModel);
+    }
+
     this.spawnWorker(thread.id, session.workDir, {
       prompt: fullPrompt,
       agentKey: session.agent,
+      modelOverride,
       discordContext,
     });
   }
@@ -459,7 +470,7 @@ export class DiscordBot {
 
     await msg.react("👀").catch(() => {});
 
-    const { agent: agentKey, prompt } = invocations[0]!;
+    const { agent: agentKey, prompt, model: modelOverride } = invocations[0]!;
     const attachments = await this.downloadMsgAttachments(msg);
     const fullPrompt = buildPromptWithAttachments(prompt, attachments);
 
@@ -486,6 +497,7 @@ export class DiscordBot {
       workDir: wtPath,
       isWorktree: false,
       createdAt: Date.now(),
+      modelOverride,
     });
     this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
 
@@ -496,7 +508,7 @@ export class DiscordBot {
       messageId: msg.id,
     };
 
-    this.spawnWorker(thread.id, wtPath, { prompt: fullPrompt, agentKey, discordContext });
+    this.spawnWorker(thread.id, wtPath, { prompt: fullPrompt, agentKey, modelOverride, discordContext });
   }
 
   private async handleChannelMessage(msg: Message): Promise<void> {
@@ -1072,9 +1084,17 @@ export class DiscordBot {
           userId: msg.author.id,
           messageId: msg.id,
         };
+        const invocations = parseAgentInvocations(msg.content);
+        const explicitModel = invocations.length > 0 ? invocations[0]!.model : undefined;
+        const modelOverride = explicitModel ?? session.modelOverride;
+        if (explicitModel !== undefined && explicitModel !== session.modelOverride) {
+          session = { ...session, modelOverride: explicitModel };
+          this.sessionManager.getDb().updateModelOverride(session.threadId, explicitModel);
+        }
         const proc = this.spawnWorker(session.threadId, session.workDir, {
           prompt: fullPrompt,
           agentKey: session.agent,
+          modelOverride,
           discordContext,
         });
         // Wait for this worker to finish before processing the next message.
