@@ -14,6 +14,7 @@ vi.mock("bun:sqlite", () => ({
 }));
 
 import { Outbox, listNewCodexGeneratedImages } from "../../src/bot/session-manager.js";
+import { tryClaimImageSend } from "../../src/utils/attachments.js";
 
 // A fake Discord thread whose send() resolves only when we tell it to, so we
 // can simulate a rate-limited backlog and assert ordering/batching/draining.
@@ -168,6 +169,24 @@ describe("Outbox", () => {
 
     thread.releaseGate();
     await outbox.drain();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("uploads the same local markdown image only once per run", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "discord-ai-terminal-image-"));
+    const imagePath = path.join(dir, "jesus.png");
+    fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const thread = makeThread();
+    const sent = new Set<string>();
+    const outbox = new Outbox(thread, undefined, (p) => tryClaimImageSend(sent, p));
+
+    outbox.pushText(`![first](${imagePath})`);
+    outbox.pushText(`![second](${imagePath})`);
+    await outbox.drain();
+
+    const fileSends = thread.sends.filter((payload) => payload.files?.length);
+    expect(fileSends).toHaveLength(1);
+
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

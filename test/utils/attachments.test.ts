@@ -4,7 +4,9 @@ import {
   extractLocalImageReferences,
   getToolInputPath,
   isImageType,
+  normalizeImagePathKey,
   stripLocalImageReferences,
+  tryClaimImageSend,
 } from "../../src/utils/attachments.js";
 
 describe("getToolInputPath", () => {
@@ -24,6 +26,22 @@ describe("extractGeneratedImagePath", () => {
     expect(extractGeneratedImagePath(content)).toBe(
       "/Users/me/.cursor/projects/foo/assets/pic.png"
     );
+  });
+});
+
+describe("image path deduplication", () => {
+  it("claims a path only once", () => {
+    const sent = new Set<string>();
+    expect(tryClaimImageSend(sent, "/tmp/jesus.png")).toBe(true);
+    expect(tryClaimImageSend(sent, "/tmp/jesus.png")).toBe(false);
+  });
+
+  it("treats URL-encoded paths as the same file", () => {
+    const sent = new Set<string>();
+    const raw = "/tmp/Screenshot 2026.png";
+    expect(tryClaimImageSend(sent, raw)).toBe(true);
+    expect(tryClaimImageSend(sent, encodeURI(raw))).toBe(false);
+    expect(normalizeImagePathKey(encodeURI(raw))).toBe(normalizeImagePathKey(raw));
   });
 });
 
