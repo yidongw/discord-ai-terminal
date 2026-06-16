@@ -116,6 +116,10 @@ export class CommandHandler {
         .setDescription("List available @agent mentions and their model aliases"),
 
       new SlashCommandBuilder()
+        .setName("queue")
+        .setDescription("View messages queued to run after the current agent finishes"),
+
+      new SlashCommandBuilder()
         .setName("update")
         .setDescription("Pull the latest default branch and restart the bot service"),
 
@@ -183,6 +187,7 @@ export class CommandHandler {
     if (commandName === "model") return this.handleModel(interaction);
     if (commandName === "agents") return this.handleAgents(interaction);
     if (commandName === "tools") return this.handleTools(interaction);
+    if (commandName === "queue") return this.handleQueue(interaction);
     if (commandName === "update") return this.handleUpdate(interaction);
   }
 
@@ -366,6 +371,56 @@ export class CommandHandler {
           0x00ff00
         ),
       ],
+    });
+  }
+
+  private async handleQueue(i: ChatInputCommandInteraction): Promise<void> {
+    const ch = i.channel;
+
+    if (ch?.isThread()) {
+      const threadId = ch.id;
+      const queue = this.sessionManager.listQueuedMessages(threadId);
+      const usageWait = this.sessionManager.getUsageLimitWait(threadId);
+
+      if (queue.length === 0) {
+        const extra = usageWait.waiting
+          ? `\n\n⏸️ Waiting for usage limit reset at **${usageWait.resetLabel}**.`
+          : "";
+        await i.reply({
+          embeds: [embed("📋 Queue", `No messages queued in this thread.${extra}`, 0x888888)],
+        });
+        return;
+      }
+
+      const lines = queue.map((m) => `**${m.position}.** ${m.preview}`).join("\n\n");
+      const waitNote = usageWait.waiting
+        ? `\n\n⏸️ Usage limit resets at **${usageWait.resetLabel}** — queued messages run after auto-resume.`
+        : "";
+      await i.reply({
+        embeds: [embed(`📋 Queue (${queue.length})`, lines + waitNote, 0x5865f2)],
+      });
+      return;
+    }
+
+    const channelId = i.channelId;
+    const groups = this.sessionManager.listQueuedMessagesForChannel(channelId);
+    if (groups.length === 0) {
+      await i.reply({
+        embeds: [embed("📋 Channel Queue", "No messages queued in this channel.", 0x888888)],
+      });
+      return;
+    }
+
+    const total = groups.reduce((n, g) => n + g.messages.length, 0);
+    const sections = groups
+      .map((g) => {
+        const lines = g.messages.map((m) => `  **${m.position}.** ${m.preview}`).join("\n");
+        return `**${g.threadName}** (${g.messages.length})\n${lines}`;
+      })
+      .join("\n\n");
+
+    await i.reply({
+      embeds: [embed(`📋 Channel Queue (${total} in ${groups.length} thread${groups.length === 1 ? "" : "s"})`, sections, 0x5865f2)],
     });
   }
 

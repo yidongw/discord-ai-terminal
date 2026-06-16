@@ -689,7 +689,10 @@ export class DiscordBot {
       return;
     }
 
-    if (this.sessionManager.hasActiveProcess(thread.id)) {
+    const isBusy = this.sessionManager.hasActiveProcess(thread.id);
+    const usageLimitWait = this.sessionManager.getUsageLimitWait(thread.id);
+
+    if (isBusy || usageLimitWait.waiting) {
       // Download attachments now so we have the full prompt ready for queue/interrupt.
       const attachments = await this.downloadMsgAttachments(msg);
       const replyContext = await this.fetchReplyContext(msg);
@@ -715,25 +718,38 @@ export class DiscordBot {
       const queueNote = queueLen > 0
         ? `\n${queueLen} message${queueLen === 1 ? "" : "s"} already queued.`
         : "";
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      const limitNote = usageLimitWait.waiting
+        ? `\nUsage limit resets at **${usageLimitWait.resetLabel}**.`
+        : "";
+      const buttons = [
         new ButtonBuilder()
           .setCustomId(`msg_queue_${msg.id}`)
           .setLabel("Queue")
           .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId(`msg_interrupt_${msg.id}`)
-          .setLabel("Interrupt")
-          .setStyle(ButtonStyle.Danger),
+      ];
+      if (isBusy) {
+        buttons.push(
+          new ButtonBuilder()
+            .setCustomId(`msg_interrupt_${msg.id}`)
+            .setLabel("Interrupt")
+            .setStyle(ButtonStyle.Danger)
+        );
+      }
+      buttons.push(
         new ButtonBuilder()
           .setCustomId(`msg_cancel_${msg.id}`)
           .setLabel("Cancel")
           .setStyle(ButtonStyle.Secondary)
       );
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons);
+      const title = usageLimitWait.waiting && !isBusy
+        ? "⏸️ Session limit — waiting to resume"
+        : "⏸️ Agent is still running";
       await msg.reply({
         embeds: [
           new EmbedBuilder()
-            .setTitle("⏸️ Agent is still running")
-            .setDescription(`What would you like to do with your message?${queueNote}`)
+            .setTitle(title)
+            .setDescription(`What would you like to do with your message?${limitNote}${queueNote}`)
             .setColor(0xffa500),
         ],
         components: [row],

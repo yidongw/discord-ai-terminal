@@ -14,6 +14,7 @@ import { parseSessionLimitReset } from "../utils/session-limit-reset.js";
 import {
   SESSION_LIMIT_CONTINUATION_PROMPT,
   registerSessionLimitWakeup,
+  sessionLimitTaskId,
 } from "./session-limit-wakeup.js";
 import {
   extractGeneratedImagePath,
@@ -197,6 +198,51 @@ export class SessionManager {
   // Number of user messages waiting in the queue for a thread.
   getQueueLength(threadId: string): number {
     return this.messageQueues.get(threadId)?.length ?? 0;
+  }
+
+  // Preview each queued message in a thread (position is 1-based FIFO order).
+  listQueuedMessages(threadId: string): { position: number; preview: string }[] {
+    const queue = this.messageQueues.get(threadId) ?? [];
+    return queue.map((msg, i) => ({
+      position: i + 1,
+      preview: previewQueuedText(msg.originalText),
+    }));
+  }
+
+  // All non-empty queues whose parent channel matches (for /queue in a text channel).
+  listQueuedMessagesForChannel(channelId: string): {
+    threadId: string;
+    threadName: string;
+    messages: { position: number; preview: string }[];
+  }[] {
+    const groups: {
+      threadId: string;
+      threadName: string;
+      messages: { position: number; preview: string }[];
+    }[] = [];
+    for (const [threadId, queue] of this.messageQueues) {
+      if (queue.length === 0 || queue[0]!.channelId !== channelId) continue;
+      groups.push({
+        threadId,
+        threadName: queue[0]!.thread?.name ?? threadId,
+        messages: queue.map((msg, i) => ({
+          position: i + 1,
+          preview: previewQueuedText(msg.originalText),
+        })),
+      });
+    }
+    return groups.sort((a, b) => a.threadName.localeCompare(b.threadName));
+  }
+
+  // True while a session-limit wakeup is scheduled and still in the future.
+  getUsageLimitWait(threadId: string): { waiting: boolean; resetLabel?: string } {
+    const task = this.db.getScheduledTask(sessionLimitTaskId(threadId));
+    if (!task?.enabled || task.nextRunAt <= Date.now()) return { waiting: false };
+    return { waiting: true, resetLabel: new Date(task.nextRunAt).toLocaleString() };
+  }
+
+  isWaitingForUsageLimitReset(threadId: string): boolean {
+    return this.getUsageLimitWait(threadId).waiting;
   }
 
   // Resolves once the thread's agent process has finished and its outbox is drained.
@@ -855,7 +901,8 @@ export class SessionManager {
         embeds: [
           embed(
             "⏸️ Session limit reached",
-            `Usage limit hit — will resume at **${label}** and continue where you left off.`,
+            `Usage limit hit — will resume at **${label}** and continue where you left off.\n\n` +
+              `New messages can be **queued** or **cancelled** — use \`/queue\` to see what's waiting.`,
             0xffd700
           ),
         ],
@@ -1382,6 +1429,12 @@ async function sendChunkedText(thread: any, content: string): Promise<void> {
       embeds: [new EmbedBuilder().setDescription(chunks[i] ?? "").setColor(0x7289da).setFooter(i > 0 ? { text: `(${i + 1}/${chunks.length})` } : null)],
     });
   }
+}
+
+function previewQueuedText(text: string, max = 200): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed || "(empty)";
+  return trimmed.slice(0, max) + "…";
 }
 
 function embed(title: string, description: string, color: number) {
