@@ -24,6 +24,7 @@ import {
   isImageType,
   stripLocalImageReferences,
 } from "../utils/attachments.js";
+import { getChannelModelForAgent } from "../utils/models.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -370,12 +371,20 @@ export class SessionManager {
 
     const existing = this.db.getThreadSession(threadId);
     const mode = this.db.getMode(channelId);
+    const channelDefault = getChannelModelForAgent(this.db, agentKey, channelId);
     let model = this.db.getModel(channelId);
     let codexModel = this.db.getCodexModel(channelId);
     let csModel = this.db.getCsModel(channelId);
-    // An explicit per-message override wins; otherwise fall back to the model
-    // stored on the thread so @mention-selected models persist across messages.
-    const effectiveModelOverride = opts?.modelOverride ?? existing?.modelOverride;
+    // @mention wins, then thread /model override, then channel default. Freeze the
+    // inherited default into the thread so a later channel /model doesn't switch
+    // threads that never set their own override.
+    let effectiveModelOverride = opts?.modelOverride ?? existing?.modelOverride;
+    if (effectiveModelOverride === undefined) {
+      effectiveModelOverride = channelDefault;
+      if (existing?.modelOverride === undefined) {
+        this.db.updateModelOverride(threadId, channelDefault);
+      }
+    }
     if (effectiveModelOverride) {
       if (agentKey === "cx") codexModel = effectiveModelOverride as typeof codexModel;
       else if (agentKey === "cs") csModel = effectiveModelOverride as typeof csModel;
