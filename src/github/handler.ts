@@ -106,32 +106,44 @@ export class GitHubHandler {
       makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
     }
 
-    if (!makerThreadId) {
-      console.log(`[github] PR #${prNumber} closed/merged but no maker thread found`);
-      return;
-    }
-
-    const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
-    const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
-    if (!thread) return;
-
-    if (thread.archived) {
-      await thread.edit({ archived: false }).catch((err) => {
-        console.error(`[github] PR #${prNumber}: failed to unarchive thread for close:`, err);
-      });
-    }
-
     const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
     const titleStr = prTitle ? ` — ${prTitle}` : "";
     const msg = merged
       ? `✅ PR #${prNumber}${titleStr} was merged${mergedBy ? ` by @${mergedBy}` : ""}.\n${prUrl}`
       : `🚫 PR #${prNumber}${titleStr} was closed without merging.\n${prUrl}`;
 
+    let target: ThreadChannel | TextChannel | null = null;
+    let targetLabel = "";
+
+    if (makerThreadId) {
+      const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
+      const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
+      if (thread) {
+        if (thread.archived) {
+          await thread.edit({ archived: false }).catch((err) => {
+            console.error(`[github] PR #${prNumber}: failed to unarchive thread for close:`, err);
+          });
+        }
+        target = thread;
+        targetLabel = `thread ${makerThreadId}`;
+      }
+    }
+
+    if (!target) {
+      target = await this.findRepoTextChannel(repoName);
+      targetLabel = target ? `channel #${repoName}` : "";
+    }
+
+    if (!target) {
+      console.log(`[github] PR #${prNumber} closed/merged but no maker thread or repo channel found`);
+      return;
+    }
+
     try {
-      await thread.send(msg);
+      await target.send(msg);
       db.setClosedNotified(String(prNumber), repo);
       db.setClosedNotified(String(prNumber), repoName);
-      console.log(`[github] PR #${prNumber}: posted close/merge notification to thread ${makerThreadId}`);
+      console.log(`[github] PR #${prNumber}: posted close/merge notification to ${targetLabel}`);
     } catch (err) {
       console.error(`[github] PR #${prNumber}: failed to post close/merge notification:`, err);
     }
@@ -525,20 +537,7 @@ export class GitHubHandler {
     );
   }
 
-  private async getOrCreateTestThread(
-    repoName: string,
-    prNumber: number
-  ): Promise<ThreadChannel | null> {
-    const db = this.sessionManager.getDb();
-    const existing = db.getPrThreads(String(prNumber), repoName);
-
-    if (existing?.testThreadId) {
-      const cached = await this.client.channels
-        .fetch(existing.testThreadId)
-        .catch(() => null);
-      if (cached?.isThread()) return cached as ThreadChannel;
-    }
-
+  private async findRepoTextChannel(repoName: string): Promise<TextChannel | null> {
     let guild = this.client.guilds.cache.first();
     if (!guild) {
       console.error("[github] No guild in cache — bot not ready?");
@@ -559,6 +558,26 @@ export class GitHubHandler {
       );
       return null;
     }
+
+    return channel;
+  }
+
+  private async getOrCreateTestThread(
+    repoName: string,
+    prNumber: number
+  ): Promise<ThreadChannel | null> {
+    const db = this.sessionManager.getDb();
+    const existing = db.getPrThreads(String(prNumber), repoName);
+
+    if (existing?.testThreadId) {
+      const cached = await this.client.channels
+        .fetch(existing.testThreadId)
+        .catch(() => null);
+      if (cached?.isThread()) return cached as ThreadChannel;
+    }
+
+    const channel = await this.findRepoTextChannel(repoName);
+    if (!channel) return null;
 
     const name = `🔄 #${prNumber} • Test`;
     console.log(`[github] Creating test thread "${name}" in #${repoName}`);
