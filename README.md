@@ -291,7 +291,7 @@ Create a channel in your Discord server whose name **exactly matches the repo na
 
 ### 2. Add the agent-trigger workflow
 
-Copy `.github/workflows/agent-trigger.yml` from this repo into the target repo (unchanged). This workflow fires on `pull_request` (opened/reopened/ready_for_review) and `issue_comment` events and forwards them to the bot's webhook server at `http://localhost:3002`.
+Copy `.github/workflows/agent-trigger.yml` from this repo into the target repo (unchanged). This workflow fires on `pull_request` (opened/reopened/ready_for_review/synchronize/closed) and `issue_comment` events and forwards them to the bot's webhook server at `http://localhost:3002`.
 
 ### 3. Set the `AGENT_WEBHOOK_SECRET` repo secret
 
