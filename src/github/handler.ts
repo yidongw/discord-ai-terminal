@@ -127,10 +127,14 @@ export class GitHubHandler {
       ? `✅ PR #${prNumber}${titleStr} was merged${mergedBy ? ` by @${mergedBy}` : ""}.\n${prUrl}`
       : `🚫 PR #${prNumber}${titleStr} was closed without merging.\n${prUrl}`;
 
-    db.setClosedNotified(String(prNumber), repo);
-    await thread
-      .send(msg)
-      .catch((err) => console.error(`[github] PR #${prNumber}: failed to post close/merge notification:`, err));
+    try {
+      await thread.send(msg);
+      db.setClosedNotified(String(prNumber), repo);
+      db.setClosedNotified(String(prNumber), repoName);
+      console.log(`[github] PR #${prNumber}: posted close/merge notification to thread ${makerThreadId}`);
+    } catch (err) {
+      console.error(`[github] PR #${prNumber}: failed to post close/merge notification:`, err);
+    }
   }
 
   // Idempotent: link PR → maker thread, rename, and pin. Skips if already linked.
@@ -486,6 +490,7 @@ export class GitHubHandler {
     const prNumber = prs[0]!.number;
     console.log(`[github] thread ${threadId}: found PR #${prNumber} on ${branch} — linking (webhook fallback)`);
     await this.ensurePrLinkedToMakerThread(repo, prNumber, branch);
+    await this.checkLinkedPrClosed(threadId, repo);
   }
 
   // Called when checkAndLinkPrForBranch finds no open PR. Checks if there is a
