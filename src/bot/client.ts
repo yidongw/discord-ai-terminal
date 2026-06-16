@@ -202,10 +202,13 @@ export class DiscordBot {
       handler.setWorkerDispatch(
         this.discordAiTerminalChannelId,
         (threadId, workDir, agentKey, prompt, channelId) => {
+          const threadSession = this.sessionManager.getDb().getThreadSession(threadId);
           this.spawnWorker(threadId, workDir, {
             prompt,
             agentKey,
-            modelOverride: this.resolveWorkerModel(agentKey, channelId),
+            modelOverride: this.resolveWorkerModel(agentKey, channelId, {
+              threadModelOverride: threadSession?.modelOverride,
+            }),
             discordContext: { channelId, channelName: "", userId: "", messageId: "" },
           });
         }
@@ -440,21 +443,24 @@ export class DiscordBot {
       messageId: msg.id,
     };
 
-    // Resolve model from @mention suffix, thread override, or channel /model setting.
+    // Re-fetch session so a /model run in this thread is picked up immediately.
+    const freshSession = this.sessionManager.getDb().getThreadSession(thread.id) ?? session;
+
+    // Resolve model from @mention suffix, thread /model override, or channel default.
     // Workers have an isolated DB, so the main bot must pass the effective model.
     const invocations = parseAgentInvocations(msg.content);
     const explicitModel = invocations.length > 0 ? invocations[0]!.model : undefined;
-    const modelOverride = this.resolveWorkerModel(session.agent, session.channelId, {
-      threadModelOverride: session.modelOverride,
+    const modelOverride = this.resolveWorkerModel(freshSession.agent, freshSession.channelId, {
+      threadModelOverride: freshSession.modelOverride,
       explicitModel,
     });
-    if (explicitModel !== undefined && explicitModel !== session.modelOverride) {
+    if (explicitModel !== undefined && explicitModel !== freshSession.modelOverride) {
       this.sessionManager.getDb().updateModelOverride(thread.id, explicitModel);
     }
 
-    this.spawnWorker(thread.id, session.workDir, {
+    this.spawnWorker(thread.id, freshSession.workDir, {
       prompt: fullPrompt,
-      agentKey: session.agent,
+      agentKey: freshSession.agent,
       modelOverride,
       discordContext,
     });
@@ -512,7 +518,7 @@ export class DiscordBot {
       workDir: wtPath,
       isWorktree: false,
       createdAt: Date.now(),
-      modelOverride: explicitModel,
+      modelOverride: this.resolveWorkerModel(agentKey, channel.id, { explicitModel }),
     });
     this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
 
@@ -927,6 +933,7 @@ export class DiscordBot {
         workDir: wtPath,
         isWorktree: false,
         createdAt: Date.now(),
+        modelOverride: this.resolveWorkerModel(agentKey, channel.id),
       });
       this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
       this.spawnWorker(thread.id, wtPath, {
@@ -1104,19 +1111,19 @@ export class DiscordBot {
           userId: msg.author.id,
           messageId: msg.id,
         };
+        const freshSession = this.sessionManager.getDb().getThreadSession(session.threadId) ?? session;
         const invocations = parseAgentInvocations(msg.content);
         const explicitModel = invocations.length > 0 ? invocations[0]!.model : undefined;
-        const modelOverride = this.resolveWorkerModel(session.agent, session.channelId, {
-          threadModelOverride: session.modelOverride,
+        const modelOverride = this.resolveWorkerModel(freshSession.agent, freshSession.channelId, {
+          threadModelOverride: freshSession.modelOverride,
           explicitModel,
         });
-        if (explicitModel !== undefined && explicitModel !== session.modelOverride) {
-          session = { ...session, modelOverride: explicitModel };
-          this.sessionManager.getDb().updateModelOverride(session.threadId, explicitModel);
+        if (explicitModel !== undefined && explicitModel !== freshSession.modelOverride) {
+          this.sessionManager.getDb().updateModelOverride(freshSession.threadId, explicitModel);
         }
-        const proc = this.spawnWorker(session.threadId, session.workDir, {
+        const proc = this.spawnWorker(freshSession.threadId, freshSession.workDir, {
           prompt: fullPrompt,
-          agentKey: session.agent,
+          agentKey: freshSession.agent,
           modelOverride,
           discordContext,
         });
