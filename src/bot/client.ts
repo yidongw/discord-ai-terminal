@@ -34,6 +34,7 @@ import type { MCPPermissionServer } from "../mcp/server.js";
 import type { GitHubHandler } from "../github/handler.js";
 import type { ThreadSession } from "../db/database.js";
 import type { WorkerMessage } from "./worker-mode.js";
+import { resolveEffectiveModel } from "../utils/models.js";
 
 interface PendingInteraction extends QueuedMessage {}
 
@@ -78,6 +79,16 @@ export class DiscordBot {
   // True when this thread was created by the discord-ai-terminal channel routing.
   private isWorkerThread(session: ThreadSession): boolean {
     return !!this.discordAiTerminalChannelId && session.channelId === this.discordAiTerminalChannelId;
+  }
+
+  // Workers run with an isolated sessions.db, so channel /model settings must be
+  // resolved from the main bot DB and passed on every spawn.
+  private resolveWorkerModel(
+    agentKey: string,
+    channelId: string,
+    opts?: { threadModelOverride?: string; explicitModel?: string }
+  ): string {
+    return resolveEffectiveModel(this.sessionManager.getDb(), agentKey, channelId, opts);
   }
 
   // Create a git worktree for a new discord-ai-terminal bot instance. The
@@ -194,6 +205,7 @@ export class DiscordBot {
           this.spawnWorker(threadId, workDir, {
             prompt,
             agentKey,
+            modelOverride: this.resolveWorkerModel(agentKey, channelId),
             discordContext: { channelId, channelName: "", userId: "", messageId: "" },
           });
         }
@@ -428,12 +440,14 @@ export class DiscordBot {
       messageId: msg.id,
     };
 
-    // Propagate any per-message model override (@cx5.5, @cco4.8, etc.) to the
-    // worker. Fall back to whatever the thread already has stored. On change,
-    // update the main DB so future follow-ups inherit the right model.
+    // Resolve model from @mention suffix, thread override, or channel /model setting.
+    // Workers have an isolated DB, so the main bot must pass the effective model.
     const invocations = parseAgentInvocations(msg.content);
     const explicitModel = invocations.length > 0 ? invocations[0]!.model : undefined;
-    const modelOverride = explicitModel ?? session.modelOverride;
+    const modelOverride = this.resolveWorkerModel(session.agent, session.channelId, {
+      threadModelOverride: session.modelOverride,
+      explicitModel,
+    });
     if (explicitModel !== undefined && explicitModel !== session.modelOverride) {
       this.sessionManager.getDb().updateModelOverride(thread.id, explicitModel);
     }
@@ -470,7 +484,8 @@ export class DiscordBot {
 
     await msg.react("👀").catch(() => {});
 
-    const { agent: agentKey, prompt, model: modelOverride } = invocations[0]!;
+    const { agent: agentKey, prompt, model: explicitModel } = invocations[0]!;
+    const modelOverride = this.resolveWorkerModel(agentKey, channel.id, { explicitModel });
     const attachments = await this.downloadMsgAttachments(msg);
     const fullPrompt = buildPromptWithAttachments(prompt, attachments);
 
@@ -497,7 +512,7 @@ export class DiscordBot {
       workDir: wtPath,
       isWorktree: false,
       createdAt: Date.now(),
-      modelOverride,
+      modelOverride: explicitModel,
     });
     this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
 
@@ -914,7 +929,12 @@ export class DiscordBot {
         createdAt: Date.now(),
       });
       this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
-      this.spawnWorker(thread.id, wtPath, { prompt: fullPrompt, agentKey, discordContext });
+      this.spawnWorker(thread.id, wtPath, {
+        prompt: fullPrompt,
+        agentKey,
+        modelOverride: this.resolveWorkerModel(agentKey, channel.id),
+        discordContext,
+      });
       return;
     }
 
@@ -1086,7 +1106,10 @@ export class DiscordBot {
         };
         const invocations = parseAgentInvocations(msg.content);
         const explicitModel = invocations.length > 0 ? invocations[0]!.model : undefined;
-        const modelOverride = explicitModel ?? session.modelOverride;
+        const modelOverride = this.resolveWorkerModel(session.agent, session.channelId, {
+          threadModelOverride: session.modelOverride,
+          explicitModel,
+        });
         if (explicitModel !== undefined && explicitModel !== session.modelOverride) {
           session = { ...session, modelOverride: explicitModel };
           this.sessionManager.getDb().updateModelOverride(session.threadId, explicitModel);
