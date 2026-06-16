@@ -24,7 +24,7 @@ import {
   isImageType,
   stripLocalImageReferences,
 } from "../utils/attachments.js";
-import { getChannelModelForAgent } from "../utils/models.js";
+import { getChannelModelForAgent, resolveResumeSessionId } from "../utils/models.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -369,7 +369,7 @@ export class SessionManager {
 
     this.killProcess(threadId);
 
-    const existing = this.db.getThreadSession(threadId);
+    let existing = this.db.getThreadSession(threadId);
     const mode = this.db.getMode(channelId);
     const channelDefault = getChannelModelForAgent(this.db, agentKey, channelId);
     let model = this.db.getModel(channelId);
@@ -383,7 +383,11 @@ export class SessionManager {
       effectiveModelOverride = channelDefault;
       if (existing?.modelOverride === undefined) {
         this.db.updateModelOverride(threadId, channelDefault);
+        if (existing) existing = { ...existing, modelOverride: channelDefault, sessionId: undefined };
       }
+    } else if (existing && effectiveModelOverride !== existing.modelOverride) {
+      this.db.updateModelOverride(threadId, effectiveModelOverride);
+      existing = { ...existing, modelOverride: effectiveModelOverride, sessionId: undefined };
     }
     if (effectiveModelOverride) {
       if (agentKey === "cx") codexModel = effectiveModelOverride as typeof codexModel;
@@ -393,11 +397,9 @@ export class SessionManager {
     const requestedModel = agentKey === "cx" ? codexModel : agentKey === "cs" ? csModel : model;
     const toolOverrides = this.db.getToolOverrides(channelId);
 
-    // Only resume the existing session if the agent type matches — passing a
-    // Claude session ID to `codex exec resume` (or vice versa) causes an
-    // immediate silent failure with no "done" event, which suppresses the
-    // completion action and leaves no trace on the PR.
-    const resumeSessionId = existing?.agent === agentKey ? existing.sessionId : undefined;
+    // Resuming keeps the prior model — only resume when the agent type matches
+    // and the requested model is unchanged from the last run.
+    const resumeSessionId = resolveResumeSessionId(existing, agentKey, requestedModel);
     const command = agent.buildCommand(workDir, prompt, {
       sessionId: resumeSessionId,
       mode,
@@ -503,8 +505,6 @@ export class SessionManager {
         createdAt: existing?.createdAt ?? Date.now(),
         modelOverride: effectiveModelOverride,
       });
-    } else if (effectiveModelOverride !== existing.modelOverride) {
-      this.db.updateModelOverride(threadId, effectiveModelOverride ?? null);
     }
 
     // Capture the exit code so the tailer can surface an abnormal exit. (A
@@ -879,10 +879,11 @@ export class SessionManager {
     const { outbox, toolCalls, thread } = session;
 
     if (event.kind === "init") {
+      const actualModel = event.model ?? session.requestedModel;
       this.db.updateSessionId(threadId, event.sessionId);
-      const displayModel = session.requestedModel || event.model;
+      this.db.updateLastRunModel(threadId, actualModel);
       outbox.enqueue(() =>
-        thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${displayModel}`, 0x00ff00)] })
+        thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${actualModel}`, 0x00ff00)] })
       );
       return;
     }

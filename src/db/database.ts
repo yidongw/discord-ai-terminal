@@ -50,9 +50,11 @@ export interface ThreadSession {
   // Discord message ID of the last user message we handled. Used on restart to
   // fetch and replay any messages that arrived during downtime.
   lastSeenMessageId?: string;
-  // Model override set via @mention suffix (e.g. @cx5.5). Persisted so all
-  // follow-up messages in the thread use the same model, not the channel default.
+  // Model override set via /model in thread or @mention suffix (e.g. @cx5.5).
   modelOverride?: string;
+  // Model used by the current agent session. Compared on resume so a /model
+  // change starts a fresh session instead of keeping the old model.
+  lastRunModel?: string;
 }
 
 // A run whose agent process is detached and surviving across bot restarts. The
@@ -261,6 +263,9 @@ export class DatabaseManager {
     if (!cols.includes("model_override")) {
       this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN model_override TEXT`);
     }
+    if (!cols.includes("last_run_model")) {
+      this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN last_run_model TEXT`);
+    }
     // active_runs shipped before completion_json existed, so a DB created by that
     // build has the table but not the column. initializeTables() runs first, so
     // the table always exists here — just add the column when it's missing.
@@ -313,8 +318,18 @@ export class DatabaseManager {
 
   updateModelOverride(threadId: string, modelOverride: string | null): void {
     this.db
-      .prepare(`UPDATE thread_sessions SET model_override = ? WHERE thread_id = ?`)
+      .prepare(
+        `UPDATE thread_sessions
+         SET model_override = ?, session_id = NULL
+         WHERE thread_id = ?`
+      )
       .run(modelOverride, threadId);
+  }
+
+  updateLastRunModel(threadId: string, lastRunModel: string): void {
+    this.db
+      .prepare(`UPDATE thread_sessions SET last_run_model = ? WHERE thread_id = ?`)
+      .run(lastRunModel, threadId);
   }
 
   getThreadSession(threadId: string): ThreadSession | null {
@@ -337,6 +352,7 @@ export class DatabaseManager {
       createdAt: row.created_at,
       lastSeenMessageId: row.last_seen_message_id ?? undefined,
       modelOverride: row.model_override ?? undefined,
+      lastRunModel: row.last_run_model ?? undefined,
     };
   }
 
@@ -353,7 +369,7 @@ export class DatabaseManager {
       .run(messageId, threadId);
   }
 
-  updateSessionId(threadId: string, sessionId: string): void {
+  updateSessionId(threadId: string, sessionId: string | null): void {
     this.db
       .prepare(`UPDATE thread_sessions SET session_id = ? WHERE thread_id = ?`)
       .run(sessionId, threadId);

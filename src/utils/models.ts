@@ -128,6 +128,26 @@ export function getChannelModelForAgent(
   }
 }
 
+export interface ResumeSessionInfo {
+  agent?: string;
+  sessionId?: string;
+  lastRunModel?: string;
+}
+
+/**
+ * Agent CLIs keep the model from a resumed session and ignore --model when it
+ * changes. Only resume when the requested model matches the last run.
+ */
+export function resolveResumeSessionId(
+  existing: ResumeSessionInfo | null | undefined,
+  agentKey: string,
+  requestedModel: string
+): string | undefined {
+  if (!existing || existing.agent !== agentKey || !existing.sessionId) return undefined;
+  if (existing.lastRunModel && existing.lastRunModel !== requestedModel) return undefined;
+  return existing.sessionId;
+}
+
 /**
  * Resolve the model a worker run should use. Worker processes have an isolated
  * sessions.db, so channel-level /model settings from the main bot must be

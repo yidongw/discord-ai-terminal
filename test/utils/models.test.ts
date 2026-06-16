@@ -3,10 +3,12 @@ import {
   normalizeCcModel,
   normalizeCodexModel,
   resolveEffectiveModel,
+  resolveResumeSessionId,
   DEFAULT_CC_MODEL,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CS_MODEL,
 } from '../../src/utils/models.js';
+import { buildClaudeCommand } from '../../src/utils/shell.js';
 
 describe('normalizeCcModel', () => {
   it('returns the default for missing values', () => {
@@ -61,5 +63,51 @@ describe('resolveEffectiveModel', () => {
     expect(resolveEffectiveModel(db, 'cc', 'ch-1')).toBe(DEFAULT_CC_MODEL);
     expect(resolveEffectiveModel(db, 'cx', 'ch-1')).toBe(DEFAULT_CODEX_MODEL);
     expect(resolveEffectiveModel(db, 'cs', 'ch-1')).toBe(DEFAULT_CS_MODEL);
+  });
+});
+
+describe('resolveResumeSessionId', () => {
+  it('resumes when the agent and model are unchanged', () => {
+    expect(resolveResumeSessionId({
+      agent: 'cc',
+      sessionId: 'sess-1',
+      lastRunModel: 'claude-sonnet-4-6',
+    }, 'cc', 'claude-sonnet-4-6')).toBe('sess-1');
+  });
+
+  it('does not resume when the requested model changed', () => {
+    expect(resolveResumeSessionId({
+      agent: 'cc',
+      sessionId: 'sess-1',
+      lastRunModel: 'claude-sonnet-4-6',
+    }, 'cc', 'claude-opus-4-7')).toBeUndefined();
+  });
+
+  it('does not resume when the session was cleared after /model', () => {
+    expect(resolveResumeSessionId({
+      agent: 'cc',
+      sessionId: undefined,
+      lastRunModel: 'claude-sonnet-4-6',
+    }, 'cc', 'claude-opus-4-7')).toBeUndefined();
+  });
+
+  it('starts fresh when there is no prior session', () => {
+    expect(resolveResumeSessionId(null, 'cc', 'claude-opus-4-7')).toBeUndefined();
+  });
+});
+
+describe('model switch command', () => {
+  it('starts a fresh claude session when the model changes', () => {
+    const session = {
+      agent: 'cc',
+      sessionId: 'sess-1',
+      lastRunModel: 'claude-sonnet-4-6',
+    };
+    const requestedModel = 'claude-opus-4-7';
+    const resumeSessionId = resolveResumeSessionId(session, 'cc', requestedModel);
+    const command = buildClaudeCommand('/repo', 'hello', resumeSessionId, undefined, 'auto', requestedModel);
+    expect(resumeSessionId).toBeUndefined();
+    expect(command).toContain('--model claude-opus-4-7');
+    expect(command).not.toContain('--resume');
   });
 });
