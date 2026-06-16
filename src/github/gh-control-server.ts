@@ -3,11 +3,15 @@ import type { GitHubHandler } from "./handler.js";
 
 // Localhost-only control plane for gh commands issued by worker agents.
 //
-// Each worker has a gh wrapper on its PATH that calls this server before and
-// after every gh invocation. The server:
-//   - logs every gh command with its originating thread (visibility)
-//   - can block commands by returning {allow:false} on /preflight (policy)
-//   - links PRs to their maker thread when it sees a successful gh pr create
+// Each worker has a gh wrapper on its PATH that calls this server:
+//   /preflight – before every gh invocation, so the server can log the
+//                command and optionally block it (return {allow:false}).
+//   /link-pr   – after a successful `gh pr create`, with the parsed
+//                {threadId, repo, prNumber} so the server links the PR to
+//                its maker thread immediately, before any webhook fires.
+//
+// Both paths are reached from in-session gh calls AND from the Stop hook,
+// since the wrapper sits on the agent's inherited PATH.
 //
 // Auth is HMAC-SHA256(secret, threadId) so each thread can only act on its
 // own behalf and cannot spoof another thread's identity.
@@ -63,21 +67,17 @@ export class GhControlServer {
           });
         }
 
-        if (url.pathname === "/gh-result") {
-          const { cmd, subcmd, prUrl } = body as Record<string, unknown>;
-          if (cmd === "pr" && subcmd === "create" && typeof prUrl === "string") {
-            const match = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
-            if (match) {
-              const repo = match[1]!;
-              const prNumber = parseInt(match[2]!, 10);
-              console.log(
-                `[gh-control] thread=${threadId} created PR #${prNumber} in ${repo}`
-              );
-              handler.handlePrLinkedByThread(threadId, repo, prNumber).catch((err) => {
-                console.error("[gh-control] handlePrLinkedByThread error:", err);
-              });
-            }
+        if (url.pathname === "/link-pr") {
+          const { repo, prNumber } = body as Record<string, unknown>;
+          if (typeof repo !== "string" || typeof prNumber !== "number") {
+            return new Response("Missing or invalid fields", { status: 400 });
           }
+          console.log(
+            `[gh-control] thread=${threadId} created PR #${prNumber} in ${repo}`
+          );
+          handler.handlePrLinkedByThread(threadId, repo, prNumber).catch((err) => {
+            console.error("[gh-control] handlePrLinkedByThread error:", err);
+          });
           return new Response("OK");
         }
 

@@ -15,9 +15,13 @@ export function computeLinkerToken(secret: string, threadId: string): string {
 //   1. Pre-flight  – POSTs to /preflight so the control server can log and
 //      optionally block the command. Fails open if the server is unreachable.
 //   2. Execution   – runs the real gh with all original args.
-//   3. Post-flight – for `gh pr create`, POSTs the new PR URL to /gh-result
-//      so the control server can link the PR to this thread immediately,
-//      before any GitHub webhook fires.
+//   3. Post-flight – for `gh pr create`, extracts repo+prNumber from the PR
+//      URL and POSTs them to /link-pr so the server links the PR to this
+//      thread immediately, before any GitHub webhook fires.
+//
+// Covers both code paths that invoke gh: cc's in-session Bash tool calls AND
+// the Stop hook's `gh pr create`. Both inherit the agent's PATH, so both
+// resolve `gh` to this wrapper.
 //
 // Returns the bin directory path to be prepended to the agent's PATH.
 export function createGhWrapper(
@@ -63,10 +67,12 @@ export function createGhWrapper(
     '  if [ "$exit_code" -eq 0 ]; then',
     "    pr_url=\"$(grep -oE 'https://github\\.com/[^/]+/[^/]+/pull/[0-9]+' \"$tmpfile\" | head -1)\"",
     '    if [ -n "$pr_url" ]; then',
-    `      curl -sf --max-time 5 -X POST "http://127.0.0.1:${controlPort}/gh-result" \\`,
+    "      pr_number=\"$(echo \"$pr_url\" | grep -oE '[0-9]+$')\"",
+    "      repo=\"$(echo \"$pr_url\" | sed 's|https://github\\.com/||;s|/pull/.*||')\"",
+    `      curl -sf --max-time 5 -X POST "http://127.0.0.1:${controlPort}/link-pr" \\`,
     `        -H "Authorization: Bearer ${token}" \\`,
     '        -H "Content-Type: application/json" \\',
-    `        -d "{\\"threadId\\":\\"${threadId}\\",\\"cmd\\":\\"pr\\",\\"subcmd\\":\\"create\\",\\"prUrl\\":\\"$pr_url\\"}" \\`,
+    `        -d "{\\"threadId\\":\\"${threadId}\\",\\"repo\\":\\"$repo\\",\\"prNumber\\":$pr_number}" \\`,
     "        >/dev/null 2>&1 || true",
     "    fi",
     "  fi",
