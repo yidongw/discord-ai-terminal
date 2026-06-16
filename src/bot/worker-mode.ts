@@ -182,7 +182,7 @@ function linkOpenPrToMainDb(threadId: string, workDir: string, mainDbPath: strin
 export interface WorkerMessage {
   prompt: string;
   agentKey: string;
-  modelOverride?: string;
+  modelOverride: string;
   discordContext: DiscordContext;
 }
 
@@ -240,7 +240,7 @@ export async function runWorkerMode(): Promise<void> {
     process.cwd(),
     prompt,
     discordContext,
-    modelOverride !== undefined ? { modelOverride } : undefined
+    { modelOverride }
   );
 
   // Keep the event loop alive until the agent is done and all Discord sends land.
