@@ -81,6 +81,54 @@ export class DiscordBot {
     return !!this.discordAiTerminalChannelId && session.channelId === this.discordAiTerminalChannelId;
   }
 
+  // True when the worktree is a checkout of this bot repo (has src/bot/client.ts).
+  // All runs in such threads go through worker processes so the main bot never
+  // owns a long-lived SessionManager session (and typing indicator) for them.
+  private isBotRepoWorktree(workDir: string): boolean {
+    return fs.existsSync(path.join(workDir, "src", "bot", "client.ts"));
+  }
+
+  private ensureBotRepoThreadSession(
+    threadId: string,
+    channelId: string,
+    agentKey: string,
+    workDir: string,
+    opts?: { branch?: string; modelOverride?: string }
+  ): void {
+    const existing = this.sessionManager.getDb().getThreadSession(threadId);
+    const modelOverride =
+      opts?.modelOverride ??
+      this.resolveWorkerModel(agentKey, channelId, { threadModelOverride: existing?.modelOverride });
+    if (!existing) {
+      this.sessionManager.getDb().createThreadSession({
+        threadId,
+        channelId,
+        agent: agentKey,
+        workDir,
+        branch: opts?.branch,
+        isWorktree: true,
+        createdAt: Date.now(),
+        modelOverride,
+      });
+    } else if (opts?.modelOverride !== undefined && opts.modelOverride !== existing.modelOverride) {
+      this.sessionManager.getDb().updateModelOverride(threadId, opts.modelOverride);
+    }
+  }
+
+  private spawnBotRepoWorker(
+    threadId: string,
+    channelId: string,
+    workDir: string,
+    workerMsg: WorkerMessage,
+    sessionOpts?: { branch?: string }
+  ): ChildProcess {
+    this.ensureBotRepoThreadSession(threadId, channelId, workerMsg.agentKey, workDir, {
+      branch: sessionOpts?.branch,
+      modelOverride: workerMsg.modelOverride,
+    });
+    return this.spawnWorker(threadId, workDir, workerMsg);
+  }
+
   // Workers run with an isolated sessions.db, so channel /model settings must be
   // resolved from the main bot DB and passed on every spawn.
   private resolveWorkerModel(
@@ -139,6 +187,10 @@ export class DiscordBot {
     worktreePath: string,
     workerMsg: WorkerMessage
   ): ChildProcess {
+    // A worker taking over must not leave a stale main-bot session (and its
+    // typing indicator) from an earlier runAgent on the same thread.
+    this.sessionManager.abandonThread(threadId);
+
     const workerScript = path.join(worktreePath, "src/index.ts");
     const proc = spawn("bun", ["run", workerScript], {
       cwd: worktreePath,
@@ -162,6 +214,15 @@ export class DiscordBot {
     proc.on("exit", (code) => {
       console.log(`[worker] thread ${threadId} exited (code=${code})`);
       this.workerProcesses.delete(threadId);
+      if (code !== 0 && code !== null) {
+        void this.notifyWorkerFailure(threadId, code);
+      }
+    });
+
+    proc.on("error", (err) => {
+      console.error(`[worker] thread ${threadId} spawn error:`, err);
+      this.workerProcesses.delete(threadId);
+      void this.notifyWorkerFailure(threadId, null);
     });
 
     this.workerProcesses.set(threadId, proc);
@@ -535,6 +596,57 @@ export class DiscordBot {
     this.spawnWorker(thread.id, wtPath, { prompt: fullPrompt, agentKey, modelOverride, discordContext });
   }
 
+  private async dispatchAgentRun(
+    threadId: string,
+    channelId: string,
+    thread: ThreadChannel,
+    agentKey: string,
+    workDir: string,
+    prompt: string,
+    discordContext: { channelId: string; channelName: string; userId: string; messageId: string },
+    opts?: { branch?: string; isWorktree?: boolean; modelOverride?: string }
+  ): Promise<void> {
+    const modelOverride =
+      opts?.modelOverride ?? this.resolveWorkerModel(agentKey, channelId, {
+        threadModelOverride: this.sessionManager.getDb().getThreadSession(threadId)?.modelOverride,
+      });
+    if (this.isBotRepoWorktree(workDir)) {
+      if (this.workerProcesses.has(threadId)) {
+        await thread.send("⏳ Previous reply still running — please wait.");
+        return;
+      }
+      this.spawnBotRepoWorker(threadId, channelId, workDir, {
+        prompt,
+        agentKey,
+        modelOverride,
+        discordContext,
+      }, { branch: opts?.branch });
+      return;
+    }
+    await this.sessionManager.runAgent(
+      threadId,
+      channelId,
+      thread,
+      agentKey,
+      workDir,
+      prompt,
+      discordContext,
+      { branch: opts?.branch, isWorktree: opts?.isWorktree, modelOverride }
+    );
+  }
+
+  private notifyWorkerFailure(threadId: string, code: number | null): void {
+    const label = code === null ? "unknown" : String(code);
+    void this.client.channels
+      .fetch(threadId)
+      .then((ch) => {
+        if (ch?.isThread()) {
+          return ch.send(`❌ Worker failed (exit code ${label}). Check bot logs.`);
+        }
+      })
+      .catch(() => {});
+  }
+
   private async handleChannelMessage(msg: Message): Promise<void> {
     const channel = msg.channel as TextChannel;
     const channelName = channel.name;
@@ -609,17 +721,29 @@ export class DiscordBot {
         resolveThreadWorkDir(channelName, thread.id, titleLabel, this.baseFolder) ??
         { workDir: this.baseFolder, repo: channelName };
 
+      const effectiveModel = this.resolveWorkerModel(agent, channel.id, { explicitModel: modelOverride });
+
       try {
-        await this.sessionManager.runAgent(
-          thread.id,
-          channel.id,
-          thread,
-          agent,
-          resolved.workDir,
-          fullPrompt,
-          discordContext,
-          { branch: resolved.branch, isWorktree: !!resolved.worktree, modelOverride }
-        );
+        if (this.isBotRepoWorktree(resolved.workDir)) {
+          this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
+          this.spawnBotRepoWorker(thread.id, channel.id, resolved.workDir, {
+            prompt: fullPrompt,
+            agentKey: agent,
+            modelOverride: effectiveModel,
+            discordContext,
+          }, { branch: resolved.branch });
+        } else {
+          await this.sessionManager.runAgent(
+            thread.id,
+            channel.id,
+            thread,
+            agent,
+            resolved.workDir,
+            fullPrompt,
+            discordContext,
+            { branch: resolved.branch, isWorktree: !!resolved.worktree, modelOverride }
+          );
+        }
       } catch (err: any) {
         await thread.send(`❌ Failed to start **${agent}**: ${err.message}`);
       }
@@ -653,17 +777,9 @@ export class DiscordBot {
     // Record this message as seen so restart recovery picks up only newer ones.
     this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
 
-    // discord-ai-terminal worker thread: kill any running worker, pull latest
-    // code, and spawn a fresh worker for this message.
-    if (this.isWorkerThread(session)) {
-      await this.handleWorkerThreadMessage(msg, thread, session);
-      return;
-    }
-
     // Bot PR worktree thread: dispatch to a worker running from the worktree
-    // so code changes there take effect. Guarded by src/bot/client.ts existence
-    // so regular project worktrees (carbon, etc.) still go through runAgent.
-    if (session.isWorktree && fs.existsSync(path.join(session.workDir, "src", "bot", "client.ts"))) {
+    // so code changes there take effect.
+    if (this.isWorkerThread(session) || this.isBotRepoWorktree(session.workDir)) {
       await this.handleWorkerThreadMessage(msg, thread, session);
       return;
     }
@@ -801,7 +917,7 @@ export class DiscordBot {
     };
 
     try {
-      await this.sessionManager.runAgent(
+      await this.dispatchAgentRun(
         thread.id,
         session.channelId,
         thread,
@@ -871,7 +987,7 @@ export class DiscordBot {
         { workDir: this.baseFolder, repo: channelName };
 
       try {
-        await this.sessionManager.runAgent(
+        await this.dispatchAgentRun(
           childThread.id,
           parentChannel.id,
           childThread,
@@ -915,7 +1031,15 @@ export class DiscordBot {
     const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
     const discordContext = { channelId: thread.id, channelName: thread.name, userId: msg.author.id, messageId: msg.id };
     try {
-      await this.sessionManager.runAgent(thread.id, session.channelId, thread, session.agent, session.workDir, fullPrompt, discordContext);
+      await this.dispatchAgentRun(
+        thread.id,
+        session.channelId,
+        thread,
+        session.agent,
+        session.workDir,
+        fullPrompt,
+        discordContext
+      );
     } catch (err: any) {
       await msg.reply(`❌ Failed to resume **${session.agent}**: ${err.message}`);
     }
@@ -977,8 +1101,14 @@ export class DiscordBot {
       { workDir: this.baseFolder, repo: channelName };
 
     try {
-      await this.sessionManager.runAgent(
-        thread.id, channel.id, thread, agentKey, resolved.workDir, fullPrompt, discordContext,
+      await this.dispatchAgentRun(
+        thread.id,
+        channel.id,
+        thread,
+        agentKey,
+        resolved.workDir,
+        fullPrompt,
+        discordContext,
         { branch: (resolved as any).branch, isWorktree: !!(resolved as any).worktree }
       );
     } catch (err: any) {
@@ -1089,7 +1219,7 @@ export class DiscordBot {
     });
 
     try {
-      await this.sessionManager.runAgent(
+      await this.dispatchAgentRun(
         pending.thread.id,
         pending.channelId,
         pending.thread,
@@ -1161,8 +1291,8 @@ export class DiscordBot {
     const lastMsg = ordered[ordered.length - 1]!;
     this.sessionManager.getDb().updateLastSeenMessageId(session.threadId, lastMsg.id);
 
-    // Worker thread recovery: replay missed messages as sequential worker spawns.
-    if (this.isWorkerThread(session)) {
+    // Worker / bot-repo worktree recovery: replay missed messages as sequential worker spawns.
+    if (this.isWorkerThread(session) || this.isBotRepoWorktree(session.workDir)) {
       const count = ordered.length;
       const preview = ordered[0]!.content.length > 200
         ? ordered[0]!.content.slice(0, 200) + "…"
@@ -1245,7 +1375,7 @@ export class DiscordBot {
       );
 
       try {
-        await this.sessionManager.runAgent(
+        await this.dispatchAgentRun(
           session.threadId,
           session.channelId,
           thread,
