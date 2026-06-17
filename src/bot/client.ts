@@ -88,6 +88,24 @@ export class DiscordBot {
     return fs.existsSync(path.join(workDir, "src", "bot", "client.ts"));
   }
 
+  // Bot-repo worktrees created by path-resolver don't get bun install; workers
+  // need node_modules before src/index.ts can load the MCP server.
+  private ensureBotRepoDeps(workDir: string): boolean {
+    if (!this.isBotRepoWorktree(workDir)) return true;
+    if (fs.existsSync(path.join(workDir, "node_modules"))) return true;
+    if (!fs.existsSync(path.join(workDir, "package.json"))) return true;
+    console.log(`[worker] installing dependencies in ${workDir}`);
+    const install = spawnSync("bun", ["install", "--frozen-lockfile"], {
+      cwd: workDir,
+      encoding: "utf8",
+    });
+    if (install.status !== 0) {
+      console.error(`[worker] bun install failed in ${workDir}:`, install.stderr);
+      return false;
+    }
+    return true;
+  }
+
   private ensureBotRepoThreadSession(
     threadId: string,
     channelId: string,
@@ -121,7 +139,7 @@ export class DiscordBot {
     workDir: string,
     workerMsg: WorkerMessage,
     sessionOpts?: { branch?: string }
-  ): ChildProcess {
+  ): ChildProcess | null {
     this.ensureBotRepoThreadSession(threadId, channelId, workerMsg.agentKey, workDir, {
       branch: sessionOpts?.branch,
       modelOverride: workerMsg.modelOverride,
@@ -151,6 +169,7 @@ export class DiscordBot {
 
     if (fs.existsSync(wtPath)) {
       spawnSync("git", ["-C", wtPath, "reset", "--hard", "origin/main"], { encoding: "utf8" });
+      this.ensureBotRepoDeps(wtPath);
       return wtPath;
     }
 
@@ -166,14 +185,7 @@ export class DiscordBot {
       return null;
     }
 
-    // Install dependencies using Bun's global cache — fast even per-worktree.
-    const install = spawnSync("bun", ["install", "--frozen-lockfile"], {
-      cwd: wtPath,
-      encoding: "utf8",
-    });
-    if (install.status !== 0) {
-      console.error(`[worker] bun install failed in ${wtPath}:`, install.stderr);
-    }
+    this.ensureBotRepoDeps(wtPath);
 
     console.log(`[worker] created worktree for thread ${threadId} at ${wtPath}`);
     return wtPath;
@@ -186,7 +198,12 @@ export class DiscordBot {
     threadId: string,
     worktreePath: string,
     workerMsg: WorkerMessage
-  ): ChildProcess {
+  ): ChildProcess | null {
+    if (!this.ensureBotRepoDeps(worktreePath)) {
+      void this.notifyWorkerFailure(threadId, 1);
+      return null;
+    }
+
     // A worker taking over must not leave a stale main-bot session (and its
     // typing indicator) from an earlier runAgent on the same thread.
     this.sessionManager.abandonThread(threadId);
@@ -1325,6 +1342,7 @@ export class DiscordBot {
           modelOverride,
           discordContext,
         });
+        if (!proc) continue;
         // Wait for this worker to finish before processing the next message.
         await new Promise<void>((resolve) => proc.on("close", resolve));
       }
