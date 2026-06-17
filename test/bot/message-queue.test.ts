@@ -22,6 +22,7 @@ vi.mock("../../src/db/database.js", () => {
     deleteThreadSession = vi.fn();
     hasActiveRun = vi.fn(() => false);
     getScheduledTask = vi.fn(() => null);
+    updateScheduledTaskPrompt = vi.fn();
   }
 
   return {
@@ -138,5 +139,38 @@ describe("message queue helpers", () => {
     });
 
     expect(manager.isWaitingForUsageLimitReset("thread-a")).toBe(false);
+  });
+
+  it("replaces the session-limit wakeup prompt for use-on-resume", () => {
+    const future = Date.now() + 60_000;
+    const task: ScheduledTask = {
+      id: sessionLimitTaskId("thread-a"),
+      threadId: "thread-a",
+      channelId: "channel-1",
+      agent: "cc",
+      workDir: "/tmp/work",
+      userId: "user-1",
+      prompt: "continue where you left off",
+      label: "Session limit resume",
+      intervalSeconds: 60,
+      nextRunAt: future,
+      enabled: true,
+      runCount: 0,
+      maxRuns: 1,
+      createdAt: Date.now(),
+    };
+    vi.mocked(manager.getDb().getScheduledTask).mockReturnValue(task);
+
+    expect(manager.setUsageLimitResumePrompt("thread-a", "fix the login bug")).toBe(true);
+    expect(manager.getDb().updateScheduledTaskPrompt).toHaveBeenCalledWith(
+      sessionLimitTaskId("thread-a"),
+      "fix the login bug"
+    );
+  });
+
+  it("refuses use-on-resume when the usage-limit wakeup is no longer active", () => {
+    vi.mocked(manager.getDb().getScheduledTask).mockReturnValue(null);
+    expect(manager.setUsageLimitResumePrompt("thread-a", "too late")).toBe(false);
+    expect(manager.getDb().updateScheduledTaskPrompt).not.toHaveBeenCalled();
   });
 });
