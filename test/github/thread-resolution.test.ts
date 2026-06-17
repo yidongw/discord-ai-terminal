@@ -9,11 +9,13 @@ import type { DatabaseManager } from "../../src/db/database.js";
 function mockDb(overrides: Partial<{
   getThreadSession: DatabaseManager["getThreadSession"];
   findThreadByBranch: DatabaseManager["findThreadByBranch"];
+  findMakerThreadForRepo: DatabaseManager["findMakerThreadForRepo"];
   getPrThreads: DatabaseManager["getPrThreads"];
 }> = {}): DatabaseManager {
   return {
     getThreadSession: vi.fn(() => null),
     findThreadByBranch: vi.fn(() => null),
+    findMakerThreadForRepo: vi.fn(() => null),
     getPrThreads: vi.fn(() => null),
     ...overrides,
   } as unknown as DatabaseManager;
@@ -55,16 +57,30 @@ describe("thread-resolution", () => {
   });
 
   describe("resolveDefinitiveMakerThreadForLink", () => {
-    it("links only discord/* branches with a matching thread", () => {
+    it("prefers exact branch thread match for any prefix", () => {
       const db = mockDb({
         findThreadByBranch: vi.fn((branch) =>
-          branch === "discord/my-feature-123456" ? "thread-123456" : null
+          branch === "feat/my-feature" ? "thread-branch" : null
+        ),
+        findMakerThreadForRepo: vi.fn(() => "thread-repo-fallback"),
+      });
+
+      expect(resolveDefinitiveMakerThreadForLink(db, "feat/my-feature", "discord-ai-terminal")).toBe(
+        "thread-branch"
+      );
+    });
+
+    it("falls back to repo maker thread when branch has no direct match", () => {
+      const db = mockDb({
+        findThreadByBranch: vi.fn(() => null),
+        findMakerThreadForRepo: vi.fn((repoName) =>
+          repoName === "discord-ai-terminal" ? "thread-repo-fallback" : null
         ),
       });
-      expect(resolveDefinitiveMakerThreadForLink(db, "discord/my-feature-123456")).toBe(
-        "thread-123456"
+
+      expect(resolveDefinitiveMakerThreadForLink(db, "feature/external-pr", "discord-ai-terminal")).toBe(
+        "thread-repo-fallback"
       );
-      expect(resolveDefinitiveMakerThreadForLink(db, "feat/external-pr")).toBeNull();
     });
   });
 
