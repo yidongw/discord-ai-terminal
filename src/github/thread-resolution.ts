@@ -41,19 +41,18 @@ export function resolveDefinitiveMakerThread(
 }
 
 /**
- * Resolve maker thread for PR linking on open/sync:
- * 1) exact branch match when available
- * 2) fallback to repo's latest maker thread
- * This allows linking for all branch prefixes.
+ * Resolve maker thread for PR linking on open/sync from definitive evidence only:
+ * exact branch match when available. For branch-agnostic linking, the gh wrapper
+ * path provides knownMakerThreadId and bypasses this resolver.
  */
 export function resolveDefinitiveMakerThreadForLink(
   db: DatabaseManager,
   headRef: string,
-  repoName: string
+  _repoName: string
 ): string | null {
   if (headRef) {
     const byBranch = db.findThreadByBranch(headRef);
     if (byBranch) return byBranch;
   }
-  return db.findMakerThreadForRepo(repoName);
+  return null;
 }

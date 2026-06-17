@@ -70,7 +70,7 @@ describe("thread-resolution", () => {
       );
     });
 
-    it("falls back to repo maker thread when branch has no direct match", () => {
+    it("returns null when branch has no direct match", () => {
       const db = mockDb({
         findThreadByBranch: vi.fn(() => null),
         findMakerThreadForRepo: vi.fn((repoName) =>
@@ -78,9 +78,9 @@ describe("thread-resolution", () => {
         ),
       });
 
-      expect(resolveDefinitiveMakerThreadForLink(db, "feature/external-pr", "discord-ai-terminal")).toBe(
-        "thread-repo-fallback"
-      );
+      expect(
+        resolveDefinitiveMakerThreadForLink(db, "feature/external-pr", "discord-ai-terminal")
+      ).toBeNull();
     });
   });
 

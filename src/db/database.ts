@@ -777,19 +777,6 @@ export class DatabaseManager {
       .run(prNumber, repo);
   }
 
-  // Find the most recent CC session whose work_dir matches a repo name.
-  // Used to link a newly opened PR back to the Discord thread that created it.
-  findMakerThreadForRepo(repoName: string): string | null {
-    const row = this.db
-      .prepare(
-        `SELECT thread_id FROM thread_sessions
-         WHERE work_dir LIKE ? AND agent = 'cc'
-         ORDER BY created_at DESC LIMIT 1`
-      )
-      .get(`%/${repoName}%`) as any;
-    return row?.thread_id ?? null;
-  }
-
   findThreadByBranch(branch: string): string | null {
     const row = this.db
       .prepare(`SELECT thread_id FROM thread_sessions WHERE branch = ? LIMIT 1`)
