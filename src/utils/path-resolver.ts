@@ -32,6 +32,47 @@ function isGitRepo(repoPath: string): boolean {
   return result.status === 0 && result.stdout.trim() === "true";
 }
 
+// Isolated worktree checked out to an existing branch (e.g. a PR head branch for
+// CI auto-fix). Reuses the same path for a given thread id.
+export function resolveBranchWorkDir(
+  repoName: string,
+  baseFolder: string,
+  threadId: string,
+  branch: string
+): string | null {
+  const repoPath = repoPathFor(repoName, baseFolder);
+  if (!repoPath) return null;
+  if (!isGitRepo(repoPath)) return repoPath;
+
+  const shortId = threadId.slice(-6);
+  const wtPath = path.join(baseFolder, "worktrees", repoName, `ci-fix-${shortId}`);
+  if (fs.existsSync(wtPath)) return wtPath;
+
+  spawnSync("git", ["-C", repoPath, "fetch", "origin", branch], { encoding: "utf8" });
+
+  let result = spawnSync(
+    "git",
+    ["-C", repoPath, "worktree", "add", "--detach", wtPath, `origin/${branch}`],
+    { encoding: "utf8" }
+  );
+  if (result.status !== 0) {
+    result = spawnSync(
+      "git",
+      ["-C", repoPath, "worktree", "add", "--detach", wtPath, branch],
+      { encoding: "utf8" }
+    );
+  }
+  if (result.status !== 0) {
+    console.error(
+      `[path-resolver] CI fix worktree failed for ${branch} at ${wtPath}: ${result.stderr}`
+    );
+    return null;
+  }
+
+  console.log(`[path-resolver] CI fix thread ${threadId} → worktree ${wtPath} (branch ${branch})`);
+  return wtPath;
+}
+
 // The repo's default branch. Prefer origin/HEAD (e.g. "dev" for carbon), fall
 // back to the currently checked-out branch, then "main".
 export function defaultBranch(repoPath: string): string {
