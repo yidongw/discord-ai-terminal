@@ -6,6 +6,11 @@ const POLL_INTERVAL_MS = 250;
 // Cap per-read so a huge backlog (e.g. after a long detached run) is consumed in
 // bounded chunks rather than one giant allocation.
 const MAX_READ_BYTES = 1 << 20; // 1 MiB
+// If the agent process is still alive but its log file stops growing for this
+// long, treat the run as hung and finalize (stops the typing indicator). Long
+// enough for slow shell tools; short enough that a zombie cursor/claude process
+// does not leave "typing…" up indefinitely.
+export const LOG_STALL_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface RunTailerOptions {
   logPath: string;
@@ -13,6 +18,8 @@ export interface RunTailerOptions {
   // stdout_offset when re-attaching after a restart.
   startOffset: number;
   pollIntervalMs?: number;
+  // Log-byte inactivity threshold before finalizing a still-alive process.
+  stallTimeoutMs?: number;
   // Is the agent process still running? Fresh runs check the ChildProcess; a
   // re-attached run checks the bare PID. When this returns false AND the file is
   // fully consumed, the run is finalized.
@@ -45,10 +52,12 @@ export class RunTailer {
   private timer?: ReturnType<typeof setInterval>;
   private finalizing = false;
   private stopped = false;
+  private lastLogGrowthAt: number;
 
   constructor(private opts: RunTailerOptions) {
     this.readOffset = opts.startOffset;
     this.consumedOffset = opts.startOffset;
+    this.lastLogGrowthAt = Date.now();
   }
 
   start(): void {
@@ -106,6 +115,12 @@ export class RunTailer {
     // true, so a dead process whose log never appeared also finalizes here.
     if (!this.opts.isAlive() && this.atEof()) {
       void this.finalize();
+      return;
+    }
+    const stallMs = this.opts.stallTimeoutMs ?? LOG_STALL_TIMEOUT_MS;
+    if (this.opts.isAlive() && this.atEof() && Date.now() - this.lastLogGrowthAt >= stallMs) {
+      console.warn(`[tailer] log stall on ${this.opts.logPath} — finalizing hung run`);
+      void this.finalize();
     }
   }
 
@@ -127,6 +142,7 @@ export class RunTailer {
       const n = fs.readSync(this.fd, chunk, 0, want, this.readOffset);
       if (n <= 0) break;
       this.readOffset += n;
+      this.lastLogGrowthAt = Date.now();
       const slice = chunk.subarray(0, n);
       this.pending = this.pending.length ? Buffer.concat([this.pending, slice]) : Buffer.from(slice);
       this.processLines();

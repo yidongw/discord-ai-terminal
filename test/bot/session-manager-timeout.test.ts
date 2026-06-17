@@ -10,6 +10,7 @@ vi.mock("../../src/db/database.js", () => {
     getCodexModel = vi.fn(() => "gpt-5-codex");
     getCsModel = vi.fn(() => "cs-1");
     getToolOverrides = vi.fn(() => ({}));
+    updateModelOverride = vi.fn();
     deleteActiveRunsForThread = vi.fn();
     createActiveRun = vi.fn();
     createThreadSession = vi.fn();
@@ -38,6 +39,7 @@ vi.mock("child_process", () => ({
 vi.mock("../../src/bot/run-tailer.js", () => ({
   RunTailer: vi.fn().mockImplementation(() => ({
     start: vi.fn(),
+    stop: vi.fn(),
   })),
   isPidAlive: vi.fn(() => true),
 }));
@@ -51,7 +53,6 @@ describe("SessionManager run timeout", () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    vi.restoreAllMocks();
   });
 
   it("does not schedule a 30 minute timeout for cc runs", async () => {
@@ -75,5 +76,34 @@ describe("SessionManager run timeout", () => {
     );
 
     expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 30 * 60 * 1000)).toBe(false);
+  });
+
+  it("abandonThread stops typing and drops the in-memory session immediately", async () => {
+    const manager = new SessionManager();
+    const thread = {
+      name: "cs • debug",
+      setName: vi.fn().mockResolvedValue(undefined),
+      sendTyping: vi.fn().mockResolvedValue(undefined),
+      send: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await manager.runAgent(
+      "thread-1",
+      "channel-1",
+      thread,
+      "cs",
+      "/tmp/work",
+      "hello",
+      undefined
+    );
+
+    expect(manager.hasActiveProcess("thread-1")).toBe(true);
+    const typingCallsBefore = (thread.sendTyping as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    manager.abandonThread("thread-1");
+    expect(manager.hasActiveProcess("thread-1")).toBe(false);
+
+    vi.advanceTimersByTime(8000 * 3);
+    expect((thread.sendTyping as ReturnType<typeof vi.fn>).mock.calls.length).toBe(typingCallsBefore);
   });
 });

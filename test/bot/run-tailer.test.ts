@@ -199,6 +199,33 @@ describe("RunTailer", () => {
     await wait(20);
     expect(finalized).toBe(true);
   });
+
+  it("finalizes when the process stays alive but the log stops growing", async () => {
+    fs.writeFileSync(logPath, "stuck\n");
+
+    let finalized = false;
+    let alive = true;
+    const tailer = new RunTailer({
+      logPath,
+      startOffset: 0,
+      pollIntervalMs: 10,
+      stallTimeoutMs: 80,
+      isAlive: () => alive,
+      onLine: () => {},
+      onOffset: () => {},
+      onFinalize: () => { finalized = true; },
+    });
+    tailer.start();
+    await wait(40);
+    expect(finalized).toBe(false);
+
+    await wait(100);
+    expect(finalized).toBe(true);
+    expect(alive).toBe(true);
+
+    alive = false;
+    tailer.stop();
+  });
 });
 
 describe("isPidAlive", () => {
