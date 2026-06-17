@@ -376,3 +376,5 @@ Original repo: https://github.com/timoconnellaus/claude-code-discord-bot
 ## License
 
 This project is licensed under the MIT License.
+
+<!-- test marker: thread-link verification 2026-06-17T08:54:59Z -->
