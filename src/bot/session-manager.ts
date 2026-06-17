@@ -143,7 +143,11 @@ export class SessionManager {
   // Prompt queued to run once a thread's current run finishes (e.g. a CI fix
   // request that arrived while the agent was busy). At most one pending prompt
   // per thread — a newer failure overwrites the old one.
-  private pendingPostRunPrompts = new Map<string, string>();
+  private pendingPostRunPrompts = new Map<string, {
+    prompt: string;
+    freshSession?: boolean;
+    prNumber?: number;
+  }>();
   // User messages queued while an agent was running (FIFO). Multiple messages
   // may be queued; each is dispatched in order once the thread becomes idle.
   private messageQueues = new Map<string, QueuedMessage[]>();
@@ -176,8 +180,12 @@ export class SessionManager {
   // Queue a prompt to run in a thread once its current run finishes. If the
   // thread is already idle, the caller should invoke runAgent directly instead.
   // A newer call overwrites any previously queued prompt for the same thread.
-  setPendingPostRunPrompt(threadId: string, prompt: string): void {
-    this.pendingPostRunPrompts.set(threadId, prompt);
+  setPendingPostRunPrompt(
+    threadId: string,
+    prompt: string,
+    opts?: { freshSession?: boolean; prNumber?: number }
+  ): void {
+    this.pendingPostRunPrompts.set(threadId, { prompt, ...opts });
   }
 
   // Append a user-initiated message to the per-thread FIFO queue.
@@ -418,7 +426,7 @@ export class SessionManager {
     workDir: string,
     prompt: string,
     discordContext: DiscordContext | undefined,
-    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; completion?: CompletionAction; modelOverride?: string }
+    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; completion?: CompletionAction; modelOverride?: string; freshSession?: boolean }
   ): Promise<void> {
     const agent = getAgent(agentKey);
     if (!agent) throw new Error(`Unknown agent: ${agentKey}`);
@@ -453,7 +461,8 @@ export class SessionManager {
     // Claude session ID to `codex exec resume` (or vice versa) causes an
     // immediate silent failure with no "done" event, which suppresses the
     // completion action and leaves no trace on the PR.
-    const resumeSessionId = existing?.agent === agentKey ? existing.sessionId : undefined;
+    const resumeSessionId =
+      opts?.freshSession ? undefined : existing?.agent === agentKey ? existing.sessionId : undefined;
     const command = agent.buildCommand(workDir, prompt, {
       sessionId: resumeSessionId,
       mode,
@@ -725,8 +734,8 @@ export class SessionManager {
           }
         } else {
           // No user queue — fall back to any pending post-run prompt (e.g. CI fix).
-          const pendingPrompt = this.pendingPostRunPrompts.get(threadId);
-          if (pendingPrompt) {
+          const pending = this.pendingPostRunPrompts.get(threadId);
+          if (pending) {
             this.pendingPostRunPrompts.delete(threadId);
             try {
               await this.runAgent(
@@ -735,8 +744,12 @@ export class SessionManager {
                 session.thread,
                 session.agentKey,
                 session.workDir,
-                pendingPrompt,
-                session.discordContext
+                pending.prompt,
+                session.discordContext,
+                {
+                  freshSession: pending.freshSession,
+                  prNumber: pending.prNumber,
+                }
               );
             } catch (err) {
               console.error(`[pending-prompt] auto-run failed for ${threadId}:`, err);
