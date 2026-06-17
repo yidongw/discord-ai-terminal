@@ -536,6 +536,10 @@ export class DatabaseManager {
     this.db.prepare(`UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?`).run(nextRunAt, id);
   }
 
+  updateScheduledTaskPrompt(id: string, prompt: string): void {
+    this.db.prepare(`UPDATE scheduled_tasks SET prompt = ? WHERE id = ?`).run(prompt, id);
+  }
+
   setScheduledTaskEnabled(id: string, enabled: boolean): void {
     this.db.prepare(`UPDATE scheduled_tasks SET enabled = ? WHERE id = ?`).run(enabled ? 1 : 0, id);
   }

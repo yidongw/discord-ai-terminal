@@ -246,6 +246,16 @@ export class SessionManager {
     return this.getUsageLimitWait(threadId).waiting;
   }
 
+  // Replace the auto-resume continuation prompt with a user message (runs first on
+  // wakeup; any FIFO-queued messages run after that run finishes).
+  setUsageLimitResumePrompt(threadId: string, prompt: string): boolean {
+    const taskId = sessionLimitTaskId(threadId);
+    const task = this.db.getScheduledTask(taskId);
+    if (!task?.enabled || task.nextRunAt <= Date.now()) return false;
+    this.db.updateScheduledTaskPrompt(taskId, prompt);
+    return true;
+  }
+
   // Resolves once the thread's agent process has finished and its outbox is drained.
   async waitForIdle(threadId: string): Promise<void> {
     while (this.hasActiveProcess(threadId)) {
@@ -911,7 +921,7 @@ export class SessionManager {
           embed(
             "⏸️ Session limit reached",
             `Usage limit hit — will resume at **${label}** and continue where you left off.\n\n` +
-              `New messages can be **queued** or **cancelled** — use \`/queue\` to see what's waiting.`,
+              `New messages can be **queued**, set to **use on resume**, or **cancelled** — use \`/queue\` to see what's waiting.`,
             0xffd700
           ),
         ],

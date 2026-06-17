@@ -378,6 +378,9 @@ export class DiscordBot {
       if (interaction.customId.startsWith("msg_interrupt_")) {
         return this.handleMsgInterrupt(interaction as ButtonInteraction);
       }
+      if (interaction.customId.startsWith("msg_use_on_resume_")) {
+        return this.handleMsgUseOnResume(interaction as ButtonInteraction);
+      }
       if (interaction.customId.startsWith("msg_cancel_")) {
         return this.handleMsgCancel(interaction as ButtonInteraction);
       }
@@ -740,6 +743,13 @@ export class DiscordBot {
             .setLabel("Interrupt")
             .setStyle(ButtonStyle.Danger)
         );
+      } else if (usageLimitWait.waiting) {
+        buttons.push(
+          new ButtonBuilder()
+            .setCustomId(`msg_use_on_resume_${msg.id}`)
+            .setLabel("Use on resume")
+            .setStyle(ButtonStyle.Secondary)
+        );
       }
       buttons.push(
         new ButtonBuilder()
@@ -1005,6 +1015,48 @@ export class DiscordBot {
         new EmbedBuilder()
           .setTitle(`✅ Queued — position ${queueLen}`)
           .setDescription(preview)
+          .setColor(0x5865f2),
+      ],
+      components: [],
+    });
+  }
+
+  private async handleMsgUseOnResume(interaction: ButtonInteraction): Promise<void> {
+    const msgId = interaction.customId.replace("msg_use_on_resume_", "");
+    const pending = this.pendingInteractions.get(msgId);
+    if (!pending) {
+      await interaction.update({
+        embeds: [new EmbedBuilder().setDescription("⚠️ Message context expired.").setColor(0x99aab5)],
+        components: [],
+      });
+      return;
+    }
+
+    const ok = this.sessionManager.setUsageLimitResumePrompt(pending.thread.id, pending.prompt);
+    if (!ok) {
+      await interaction.update({
+        embeds: [new EmbedBuilder().setDescription("⚠️ Usage limit wait expired — send your message again.").setColor(0x99aab5)],
+        components: [],
+      });
+      this.pendingInteractions.delete(msgId);
+      return;
+    }
+
+    this.pendingInteractions.delete(msgId);
+    const preview = pending.originalText.length > 300
+      ? pending.originalText.slice(0, 300) + "…"
+      : pending.originalText;
+    const queueLen = this.sessionManager.getQueueLength(pending.thread.id);
+    const queueNote = queueLen > 0
+      ? `\n\n${queueLen} queued message${queueLen === 1 ? "" : "s"} will run after this.`
+      : "";
+    await interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("⏰ Use on resume")
+          .setDescription(
+            `This message will run when the usage limit resets (instead of auto-continue).${queueNote}\n\n>>> ${preview}`
+          )
           .setColor(0x5865f2),
       ],
       components: [],
