@@ -223,12 +223,14 @@ export async function runWorkerMode(): Promise<void> {
   const sessionManager = new SessionManager();
 
   // Wire up the gh wrapper so agents in this worker also link PRs to the thread.
-  // Port and secret are inherited from the main bot's environment.
-  const linkerPortStr = process.env.GITHUB_PR_LINKER_PORT;
+  // Port and secret are inherited from the main bot's environment. Port defaults
+  // to 3003 to match index.ts so the wrapper is enabled whenever the main bot
+  // started a control server, even if the env var wasn't explicitly forwarded.
+  const linkerPort = parseInt(process.env.GITHUB_PR_LINKER_PORT ?? "3003");
   const linkerSecret =
     process.env.GITHUB_PR_LINKER_SECRET ?? process.env.GITHUB_WEBHOOK_SECRET;
-  if (linkerPortStr && linkerSecret) {
-    sessionManager.setGhLinkerConfig(parseInt(linkerPortStr), linkerSecret);
+  if (linkerSecret) {
+    sessionManager.setGhLinkerConfig(linkerPort, linkerSecret);
   }
 
   // Mirror active_run mutations into the main bot's DB so the main bot can
