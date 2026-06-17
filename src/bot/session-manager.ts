@@ -319,6 +319,26 @@ export class SessionManager {
     this.db.deleteActiveRunsForThread(threadId);
   }
 
+  // Tear down the main bot's in-memory session for a thread immediately so a
+  // worker can take over streaming (and typing). Unlike killProcess, which waits
+  // for the tailer to finalize gracefully, this stops the typing indicator and
+  // drops local state without draining the outbox.
+  abandonThread(threadId: string): void {
+    const session = this.active.get(threadId);
+    if (session) {
+      if (session.killTimer) clearTimeout(session.killTimer);
+      session.finalized = true;
+      try { session.tailer?.stop(); } catch {}
+      this.signalGroup(session.pid, "SIGTERM");
+      this.db.deleteActiveRunsForThread(threadId);
+      this.releaseThread(threadId);
+      return;
+    }
+    this.killProcess(threadId);
+    this.typing.get(threadId)?.stop();
+    this.typing.delete(threadId);
+  }
+
   clearSession(threadId: string): void {
     this.killProcess(threadId);
     this.db.deleteThreadSession(threadId);
@@ -631,6 +651,12 @@ export class SessionManager {
     if (session.finalized) return;
     session.finalized = true;
     if (session.killTimer) clearTimeout(session.killTimer);
+
+    // Stall finalization can run while the process is still alive.
+    if (isPidAlive(session.pid) && !session.stopping) {
+      console.log(`[finalize] run ${session.runId} still alive at finalize — stopping pid ${session.pid}`);
+      this.stopProcess(session);
+    }
 
     // Only for fresh runs (exitCode known): surface a crash the agent didn't
     // report and we didn't intentionally stop. A SIGTERM/SIGKILL yields a null
