@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "child_process";
+import { spawn, spawnSync, type ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -158,6 +158,17 @@ export class SessionManager {
   // Dispatches a run's CompletionAction (registered by index.ts; only set when
   // the GitHub integration is enabled).
   private completionHandler?: CompletionHandler;
+
+  private resolveCurrentGitBranch(workDir: string): string | undefined {
+    const result = spawnSync("git", ["-C", workDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    if (result.status !== 0) return undefined;
+    const branch = result.stdout.trim();
+    if (!branch || branch === "HEAD") return undefined;
+    return branch;
+  }
   private sessionFinalizeHandler?: SessionFinalizeCallback;
   private ghLinkerPort?: number;
   private ghLinkerSecret?: string;
@@ -598,14 +609,24 @@ export class SessionManager {
     // so a (rate-limited) rename never delays the run itself.
     void setThreadStatus(thread, "working");
 
-    if (!existing || existing.agent !== agentKey) {
+    const resolvedBranch =
+      opts?.branch ?? this.resolveCurrentGitBranch(workDir) ?? existing?.branch;
+    const resolvedIsWorktree = opts?.isWorktree ?? existing?.isWorktree ?? false;
+
+    if (
+      !existing ||
+      existing.agent !== agentKey ||
+      existing.workDir !== workDir ||
+      existing.branch !== resolvedBranch ||
+      existing.isWorktree !== resolvedIsWorktree
+    ) {
       this.db.createThreadSession({
         threadId,
         channelId,
         agent: agentKey,
         workDir,
-        branch: opts?.branch ?? existing?.branch,
-        isWorktree: opts?.isWorktree ?? existing?.isWorktree ?? false,
+        branch: resolvedBranch,
+        isWorktree: resolvedIsWorktree,
         createdAt: existing?.createdAt ?? Date.now(),
         modelOverride: effectiveModelOverride,
       });
@@ -711,10 +732,10 @@ export class SessionManager {
     this.removeLog(session.logPath);
 
     // Catch PRs created during the session when the GitHub webhook was missed.
-    // Only for discord/ worktree branches; ensurePrLinkedToMakerThread is idempotent.
+    // Runs for any concrete branch; ensurePrLinkedToMakerThread is idempotent.
     if (this.sessionFinalizeHandler) {
       const sessionInfo = this.db.getThreadSession(threadId);
-      if (sessionInfo?.branch?.startsWith("discord/")) {
+      if (sessionInfo?.branch && sessionInfo.branch !== "HEAD") {
         try { await this.sessionFinalizeHandler(threadId, session.workDir, sessionInfo.branch); }
         catch (err) { console.error(`[finalize] pr-check failed for ${threadId}:`, err); }
       }

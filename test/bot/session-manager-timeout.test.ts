@@ -34,6 +34,10 @@ vi.mock("child_process", () => ({
     on: vi.fn(),
     unref: vi.fn(),
   })),
+  spawnSync: vi.fn(() => ({
+    status: 0,
+    stdout: "discord/test-branch-123456\n",
+  })),
 }));
 
 vi.mock("../../src/bot/run-tailer.js", () => ({
