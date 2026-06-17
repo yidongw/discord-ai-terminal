@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  isDiscordBranch,
   makerThreadMatchesBranch,
   resolveDefinitiveMakerThread,
   resolveDefinitiveMakerThreadForLink,
+  resolveKnownMakerThreadForLink,
 } from "../../src/github/thread-resolution.js";
 import type { DatabaseManager } from "../../src/db/database.js";
 
@@ -20,6 +22,14 @@ function mockDb(overrides: Partial<{
 }
 
 describe("thread-resolution", () => {
+  describe("isDiscordBranch", () => {
+    it("accepts only discord/* branches", () => {
+      expect(isDiscordBranch("discord/feature-123456")).toBe(true);
+      expect(isDiscordBranch("feat/feature-123456")).toBe(false);
+      expect(isDiscordBranch("")).toBe(false);
+    });
+  });
+
   describe("makerThreadMatchesBranch", () => {
     it("returns true when session branch matches head branch", () => {
       const db = mockDb({
@@ -65,6 +75,44 @@ describe("thread-resolution", () => {
         "thread-123456"
       );
       expect(resolveDefinitiveMakerThreadForLink(db, "feat/external-pr")).toBeNull();
+    });
+  });
+
+  describe("resolveKnownMakerThreadForLink", () => {
+    it("allows known thread links only for discord/* session branches", () => {
+      const db = mockDb({
+        getThreadSession: vi.fn((threadId) => {
+          if (threadId === "discord-thread") {
+            return {
+              threadId,
+              channelId: "c1",
+              agent: "cc",
+              sessionId: "s1",
+              workDir: "/carbon/wt",
+              branch: "discord/my-feature-123456",
+              isWorktree: true,
+              createdAt: 0,
+            };
+          }
+          if (threadId === "feature-thread") {
+            return {
+              threadId,
+              channelId: "c1",
+              agent: "cc",
+              sessionId: "s2",
+              workDir: "/carbon/wt",
+              branch: "feat/external-pr",
+              isWorktree: true,
+              createdAt: 0,
+            };
+          }
+          return null;
+        }),
+      });
+
+      expect(resolveKnownMakerThreadForLink(db, "discord-thread")).toBe("discord-thread");
+      expect(resolveKnownMakerThreadForLink(db, "feature-thread")).toBeNull();
+      expect(resolveKnownMakerThreadForLink(db, "missing-thread")).toBeNull();
     });
   });
 

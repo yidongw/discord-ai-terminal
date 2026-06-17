@@ -24,6 +24,7 @@ import {
   makerThreadMatchesBranch,
   resolveDefinitiveMakerThread,
   resolveDefinitiveMakerThreadForLink,
+  resolveKnownMakerThreadForLink,
 } from "./thread-resolution.js";
 
 // Called by DiscordBot when a GitHub event targets a worker thread so the
@@ -218,7 +219,9 @@ export class GitHubHandler {
       }
     }
 
-    const makerThreadId = knownMakerThreadId ?? resolveDefinitiveMakerThreadForLink(db, ref);
+    const makerThreadId = knownMakerThreadId
+      ? resolveKnownMakerThreadForLink(db, knownMakerThreadId)
+      : resolveDefinitiveMakerThreadForLink(db, ref);
 
     if (!makerThreadId) {
       console.log(

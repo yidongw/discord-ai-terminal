@@ -1,5 +1,9 @@
 import type { DatabaseManager } from "../db/database.js";
 
+export function isDiscordBranch(branch: string): boolean {
+  return branch.startsWith("discord/");
+}
+
 /** True when a thread session's branch matches the PR head branch. */
 export function makerThreadMatchesBranch(
   db: DatabaseManager,
@@ -48,6 +52,18 @@ export function resolveDefinitiveMakerThreadForLink(
   db: DatabaseManager,
   headRef: string
 ): string | null {
-  if (!headRef.startsWith("discord/")) return null;
+  if (!isDiscordBranch(headRef)) return null;
   return db.findThreadByBranch(headRef);
+}
+
+/**
+ * For gh-wrapper links where we only know the thread ID, allow linking only
+ * when that thread session is currently on a discord/* branch.
+ */
+export function resolveKnownMakerThreadForLink(
+  db: DatabaseManager,
+  threadId: string
+): string | null {
+  const branch = db.getThreadSession(threadId)?.branch ?? "";
+  return isDiscordBranch(branch) ? threadId : null;
 }
