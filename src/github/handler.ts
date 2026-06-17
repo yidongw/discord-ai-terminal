@@ -122,8 +122,16 @@ export class GitHubHandler {
       // PR may not have been linked yet (bot missed opened/synchronize events) — try now
       makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
     } else if (headRef && !makerThreadMatchesBranch(db, makerThreadId, headRef)) {
-      console.log(`[github] PR #${prNumber}: ignoring stale maker thread link for close notification`);
-      makerThreadId = null;
+      // Wrapper-linked entries are authoritative — the gh wrapper recorded which
+      // thread ran `gh pr create` regardless of branch name. Only treat a
+      // branch-mismatched link as stale if it was set by a non-wrapper path.
+      const wrapperLinked =
+        db.isPrLinkedViaWrapper(String(prNumber), repo) ||
+        db.isPrLinkedViaWrapper(String(prNumber), repoName);
+      if (!wrapperLinked) {
+        console.log(`[github] PR #${prNumber}: ignoring stale maker thread link for close notification`);
+        makerThreadId = null;
+      }
     }
 
     const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
@@ -208,6 +216,13 @@ export class GitHubHandler {
       db.getPrThreads(String(prNumber), repoName)?.makerThreadId;
     if (existing) {
       if (knownMakerThreadId && existing === knownMakerThreadId) return existing;
+      // Wrapper-linked entries are authoritative regardless of branch name —
+      // any agent can open a PR with any branch, and the gh wrapper recorded
+      // which thread did it. Skip the stale-link heuristic for those.
+      const wrapperLinked =
+        db.isPrLinkedViaWrapper(String(prNumber), repo) ||
+        db.isPrLinkedViaWrapper(String(prNumber), repoName);
+      if (wrapperLinked && !knownMakerThreadId) return existing;
       const definitive = resolveDefinitiveMakerThreadForLink(db, ref, repoName);
       if (!knownMakerThreadId) {
         if (definitive === existing) return existing;
@@ -218,10 +233,21 @@ export class GitHubHandler {
       }
     }
 
-    const makerThreadId =
+    let makerThreadId =
       knownMakerThreadId ?? resolveDefinitiveMakerThreadForLink(db, ref, repoName);
 
     if (!makerThreadId) {
+      // Webhook may have raced the wrapper's /link-pr POST. Wait briefly and
+      // re-check the DB before falling through to the repo channel — if the
+      // wrapper lands during the wait we route to the maker thread instead.
+      await new Promise((r) => setTimeout(r, 3000));
+      const recheck =
+        db.getPrThreads(String(prNumber), repo)?.makerThreadId ??
+        db.getPrThreads(String(prNumber), repoName)?.makerThreadId;
+      if (recheck) {
+        // Wrapper landed during the wait — link is already in DB; just return it.
+        return recheck;
+      }
       console.log(
         `[github] PR #${prNumber}: no definitive maker thread for ${repoName}` +
           (ref ? ` (branch ${ref})` : "") +
@@ -239,7 +265,7 @@ export class GitHubHandler {
       return null;
     }
 
-    db.setPrMakerThread(String(prNumber), repo, makerThreadId);
+    db.setPrMakerThread(String(prNumber), repo, makerThreadId, !!knownMakerThreadId);
     console.log(
       `[github] PR #${prNumber} linked to maker thread ${makerThreadId}` +
         (knownMakerThreadId ? " (via gh wrapper)" : "")

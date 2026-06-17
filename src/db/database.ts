@@ -289,6 +289,9 @@ export class DatabaseManager {
     if (!prCols.includes("ci_fix_thread_id")) {
       this.db.exec(`ALTER TABLE pr_threads ADD COLUMN ci_fix_thread_id TEXT`);
     }
+    if (!prCols.includes("linked_via_wrapper")) {
+      this.db.exec(`ALTER TABLE pr_threads ADD COLUMN linked_via_wrapper INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 
   // ── Thread sessions ──────────────────────────────────────────────────────
@@ -714,14 +717,28 @@ export class DatabaseManager {
     };
   }
 
-  setPrMakerThread(prNumber: string, repo: string, makerThreadId: string): void {
+  setPrMakerThread(prNumber: string, repo: string, makerThreadId: string, viaWrapper: boolean = false): void {
+    // linked_via_wrapper is a sticky flag: once a wrapper has claimed the link
+    // it is authoritative for the lifetime of the PR, so subsequent non-wrapper
+    // updates (webhook re-links, late branch-match) must not clear it. The
+    // column is OR'd with the incoming value via MAX().
+    const flag = viaWrapper ? 1 : 0;
     this.db
       .prepare(
-        `INSERT INTO pr_threads (pr_number, repo, maker_thread_id, created_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT (pr_number, repo) DO UPDATE SET maker_thread_id = excluded.maker_thread_id`
+        `INSERT INTO pr_threads (pr_number, repo, maker_thread_id, linked_via_wrapper, created_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (pr_number, repo) DO UPDATE SET
+           maker_thread_id    = excluded.maker_thread_id,
+           linked_via_wrapper = MAX(pr_threads.linked_via_wrapper, excluded.linked_via_wrapper)`
       )
-      .run(prNumber, repo, makerThreadId, Date.now());
+      .run(prNumber, repo, makerThreadId, flag, Date.now());
+  }
+
+  isPrLinkedViaWrapper(prNumber: string, repo: string): boolean {
+    const row = this.db
+      .prepare(`SELECT linked_via_wrapper FROM pr_threads WHERE pr_number = ? AND repo = ?`)
+      .get(prNumber, repo) as { linked_via_wrapper?: number } | undefined;
+    return !!row?.linked_via_wrapper;
   }
 
   setPrTestThread(prNumber: string, repo: string, testThreadId: string): void {
