@@ -208,7 +208,7 @@ export class GitHubHandler {
       db.getPrThreads(String(prNumber), repoName)?.makerThreadId;
     if (existing) {
       if (knownMakerThreadId && existing === knownMakerThreadId) return existing;
-      const definitive = resolveDefinitiveMakerThreadForLink(db, ref);
+      const definitive = resolveDefinitiveMakerThreadForLink(db, ref, repoName);
       if (!knownMakerThreadId) {
         if (definitive === existing) return existing;
         console.log(
@@ -218,7 +218,8 @@ export class GitHubHandler {
       }
     }
 
-    const makerThreadId = knownMakerThreadId ?? resolveDefinitiveMakerThreadForLink(db, ref);
+    const makerThreadId =
+      knownMakerThreadId ?? resolveDefinitiveMakerThreadForLink(db, ref, repoName);
 
     if (!makerThreadId) {
       console.log(

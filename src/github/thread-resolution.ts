@@ -41,13 +41,19 @@ export function resolveDefinitiveMakerThread(
 }
 
 /**
- * For PR linking on open: only discord/* branches created by the bot can be
- * linked to a maker thread. External branches get channel-only notifications.
+ * Resolve maker thread for PR linking on open/sync:
+ * 1) exact branch match when available
+ * 2) fallback to repo's latest maker thread
+ * This allows linking for all branch prefixes.
  */
 export function resolveDefinitiveMakerThreadForLink(
   db: DatabaseManager,
-  headRef: string
+  headRef: string,
+  repoName: string
 ): string | null {
-  if (!headRef.startsWith("discord/")) return null;
-  return db.findThreadByBranch(headRef);
+  if (headRef) {
+    const byBranch = db.findThreadByBranch(headRef);
+    if (byBranch) return byBranch;
+  }
+  return db.findMakerThreadForRepo(repoName);
 }
