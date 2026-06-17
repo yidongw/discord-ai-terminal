@@ -142,6 +142,10 @@ async function main() {
     if (linkerSecret) {
       const { GhControlServer } = await import("./github/gh-control-server.js");
       const linkerPort = parseInt(process.env.GITHUB_PR_LINKER_PORT ?? "3003");
+      // Export back to env so spawned worker processes see the same port even
+      // if the operator didn't set GITHUB_PR_LINKER_PORT explicitly.
+      process.env.GITHUB_PR_LINKER_PORT = String(linkerPort);
+      process.env.GITHUB_PR_LINKER_SECRET = linkerSecret;
       const controlServer = new GhControlServer(githubHandler, linkerSecret);
       controlServer.start(linkerPort);
       sessionManager.setGhLinkerConfig(linkerPort, linkerSecret);
