@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { createGhWrapper } from "../github/gh-wrapper.js";
 import { AttachmentBuilder, EmbedBuilder, type Client } from "discord.js";
 import { formatForDiscord } from "../utils/discord-format.js";
 import { getAgent, type AgentEvent, type AgentRunner } from "../agents/index.js";
@@ -158,6 +159,8 @@ export class SessionManager {
   // the GitHub integration is enabled).
   private completionHandler?: CompletionHandler;
   private sessionFinalizeHandler?: SessionFinalizeCallback;
+  private ghLinkerPort?: number;
+  private ghLinkerSecret?: string;
 
   constructor() {
     this.db = new DatabaseManager();
@@ -175,6 +178,11 @@ export class SessionManager {
 
   setSessionFinalizeHandler(cb: SessionFinalizeCallback): void {
     this.sessionFinalizeHandler = cb;
+  }
+
+  setGhLinkerConfig(port: number, secret: string): void {
+    this.ghLinkerPort = port;
+    this.ghLinkerSecret = secret;
   }
 
   // Queue a prompt to run in a thread once its current run finishes. If the
@@ -512,13 +520,26 @@ export class SessionManager {
     console.log(`[${agentKey}] model: ${requestedModel}`);
     console.log(`[${agentKey}] LOG: ${logPath}`);
 
+    // Prepend a per-thread gh wrapper to PATH so `gh pr create` calls notify
+    // the PR linker server with the exact thread ID that created the PR.
+    const ghWrapperBinDir =
+      this.ghLinkerPort && this.ghLinkerSecret
+        ? createGhWrapper(threadId, this.ghLinkerPort, this.ghLinkerSecret)
+        : null;
+
     // `detached: true` puts the run in its own process group/session so killing
     // the bot job (launchctl kickstart -k) doesn't take it down; unref() so it
     // doesn't keep the bot's event loop alive.
     const proc = spawn("/bin/bash", ["-c", fullCommand], {
       detached: true,
       stdio: ["ignore", "ignore", "ignore"],
-      env: { ...process.env, SHELL: "/bin/bash" },
+      env: {
+        ...process.env,
+        SHELL: "/bin/bash",
+        ...(ghWrapperBinDir
+          ? { PATH: `${ghWrapperBinDir}:${process.env.PATH ?? ""}` }
+          : {}),
+      },
     });
     proc.unref();
 

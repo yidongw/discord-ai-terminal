@@ -132,6 +132,20 @@ async function main() {
     const webhookPort = parseInt(process.env.GITHUB_WEBHOOK_PORT ?? "3002");
     webhookServer.start(webhookPort);
 
+    // PR linker: localhost-only server that gh wrapper scripts call after
+    // `gh pr create` to definitively link the new PR to the creating thread.
+    // Falls back to GITHUB_WEBHOOK_SECRET so no extra env var is needed when
+    // the webhook secret is already configured.
+    const linkerSecret =
+      process.env.GITHUB_PR_LINKER_SECRET ?? process.env.GITHUB_WEBHOOK_SECRET ?? "";
+    if (linkerSecret) {
+      const { PrLinkerServer } = await import("./github/pr-linker-server.js");
+      const linkerPort = parseInt(process.env.GITHUB_PR_LINKER_PORT ?? "3003");
+      const linkerServer = new PrLinkerServer(githubHandler, linkerSecret);
+      linkerServer.start(linkerPort);
+      sessionManager.setGhLinkerConfig(linkerPort, linkerSecret);
+    }
+
     const webhookUrl = process.env.GITHUB_WEBHOOK_URL;
     const repos = (process.env.GITHUB_WEBHOOK_REPOS ?? "")
       .split(",").map((s) => s.trim()).filter(Boolean);
