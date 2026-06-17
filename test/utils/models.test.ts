@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   normalizeCcModel,
   normalizeCodexModel,
+  resolveEffectiveModel,
   DEFAULT_CC_MODEL,
   DEFAULT_CODEX_MODEL,
+  DEFAULT_CS_MODEL,
 } from '../../src/utils/models.js';
 
 describe('normalizeCcModel', () => {
@@ -32,5 +34,32 @@ describe('normalizeCodexModel', () => {
   it('passes through known codex model IDs', () => {
     expect(normalizeCodexModel('gpt-5.5')).toBe('gpt-5.5');
     expect(normalizeCodexModel('gpt-5.4')).toBe('gpt-5.4');
+  });
+});
+
+describe('resolveEffectiveModel', () => {
+  const db = {
+    getModel: () => 'claude-sonnet-4-6' as const,
+    getCodexModel: () => 'gpt-5.4-mini' as const,
+    getCsModel: () => 'auto' as const,
+  };
+
+  it('prefers explicit @mention model over thread and channel defaults', () => {
+    expect(resolveEffectiveModel(db, 'cc', 'ch-1', {
+      explicitModel: 'claude-opus-4-8',
+      threadModelOverride: 'claude-haiku-4-5',
+    })).toBe('claude-opus-4-8');
+  });
+
+  it('uses thread model override when no explicit model is set', () => {
+    expect(resolveEffectiveModel(db, 'cx', 'ch-1', {
+      threadModelOverride: 'gpt-5.5',
+    })).toBe('gpt-5.5');
+  });
+
+  it('falls back to channel model when no overrides are set', () => {
+    expect(resolveEffectiveModel(db, 'cc', 'ch-1')).toBe(DEFAULT_CC_MODEL);
+    expect(resolveEffectiveModel(db, 'cx', 'ch-1')).toBe(DEFAULT_CODEX_MODEL);
+    expect(resolveEffectiveModel(db, 'cs', 'ch-1')).toBe(DEFAULT_CS_MODEL);
   });
 });

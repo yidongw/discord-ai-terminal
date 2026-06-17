@@ -17,8 +17,14 @@ import {
   extractLastFailedItems,
   buildPreviewUrl,
 } from "./pr-comment.js";
-import { repoPathFor } from "../utils/path-resolver.js";
+import { repoPathFor, resolveBranchWorkDir } from "../utils/path-resolver.js";
 import { setPrInThreadName } from "../utils/thread-status.js";
+import { CI_FIX_RESUME_SESSION } from "./ci-fix-config.js";
+import {
+  makerThreadMatchesBranch,
+  resolveDefinitiveMakerThread,
+  resolveDefinitiveMakerThreadForLink,
+} from "./thread-resolution.js";
 
 // Called by DiscordBot when a GitHub event targets a worker thread so the
 // handler can spawn a worker process instead of using sessionManager.runAgent.
@@ -66,7 +72,20 @@ export class GitHubHandler {
   // Ensures the PR is linked (idempotent) then notifies the maker thread.
   async handlePrSynchronized(repo: string, prNumber: number, headRef: string, headSha: string): Promise<void> {
     const makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
-    if (!makerThreadId) return;
+    const repoName = repo.split("/")[1] ?? repo;
+    const shortSha = headSha ? ` — \`${headSha.slice(0, 7)}\`` : "";
+    const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
+    const msg = `🔄 New commits pushed to PR #${prNumber}${shortSha}\n${prUrl}`;
+
+    if (!makerThreadId) {
+      const channel = await this.findRepoTextChannel(repoName);
+      if (channel) {
+        await channel.send(msg).catch((err) =>
+          console.error(`[github] PR #${prNumber}: failed to notify new commits in channel:`, err)
+        );
+      }
+      return;
+    }
 
     const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
     const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
@@ -78,10 +97,8 @@ export class GitHubHandler {
       });
     }
 
-    const shortSha = headSha ? ` — \`${headSha.slice(0, 7)}\`` : "";
-    const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
     await thread
-      .send(`🔄 New commits pushed to PR #${prNumber}${shortSha}\n${prUrl}`)
+      .send(msg)
       .catch((err) => console.error(`[github] PR #${prNumber}: failed to notify new commits:`, err));
   }
 
@@ -104,21 +121,9 @@ export class GitHubHandler {
     if (!makerThreadId) {
       // PR may not have been linked yet (bot missed opened/synchronize events) — try now
       makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
-    }
-
-    if (!makerThreadId) {
-      console.log(`[github] PR #${prNumber} closed/merged but no maker thread found`);
-      return;
-    }
-
-    const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
-    const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
-    if (!thread) return;
-
-    if (thread.archived) {
-      await thread.edit({ archived: false }).catch((err) => {
-        console.error(`[github] PR #${prNumber}: failed to unarchive thread for close:`, err);
-      });
+    } else if (headRef && !makerThreadMatchesBranch(db, makerThreadId, headRef)) {
+      console.log(`[github] PR #${prNumber}: ignoring stale maker thread link for close notification`);
+      makerThreadId = null;
     }
 
     const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
@@ -127,10 +132,41 @@ export class GitHubHandler {
       ? `✅ PR #${prNumber}${titleStr} was merged${mergedBy ? ` by @${mergedBy}` : ""}.\n${prUrl}`
       : `🚫 PR #${prNumber}${titleStr} was closed without merging.\n${prUrl}`;
 
-    db.setClosedNotified(String(prNumber), repo);
-    await thread
-      .send(msg)
-      .catch((err) => console.error(`[github] PR #${prNumber}: failed to post close/merge notification:`, err));
+    let target: ThreadChannel | TextChannel | null = null;
+    let targetLabel = "";
+
+    if (makerThreadId) {
+      const ch = await this.client.channels.fetch(makerThreadId).catch(() => null);
+      const thread = ch?.isThread() ? (ch as ThreadChannel) : null;
+      if (thread) {
+        if (thread.archived) {
+          await thread.edit({ archived: false }).catch((err) => {
+            console.error(`[github] PR #${prNumber}: failed to unarchive thread for close:`, err);
+          });
+        }
+        target = thread;
+        targetLabel = `thread ${makerThreadId}`;
+      }
+    }
+
+    if (!target) {
+      target = await this.findRepoTextChannel(repoName);
+      targetLabel = target ? `channel #${repoName}` : "";
+    }
+
+    if (!target) {
+      console.log(`[github] PR #${prNumber} closed/merged but no maker thread or repo channel found`);
+      return;
+    }
+
+    try {
+      await target.send(msg);
+      db.setClosedNotified(String(prNumber), repo);
+      db.setClosedNotified(String(prNumber), repoName);
+      console.log(`[github] PR #${prNumber}: posted close/merge notification to ${targetLabel}`);
+    } catch (err) {
+      console.error(`[github] PR #${prNumber}: failed to post close/merge notification:`, err);
+    }
   }
 
   // Called by the local PR linker server when an agent's gh wrapper reports a
@@ -159,12 +195,6 @@ export class GitHubHandler {
     knownMakerThreadId?: string
   ): Promise<string | null> {
     const db = this.sessionManager.getDb();
-    const existing = db.getPrThreads(String(prNumber), repo)?.makerThreadId;
-    // Already linked to the correct thread — nothing to do.
-    if (existing && existing === knownMakerThreadId) return existing;
-    // Without a definitive override don't relink if already linked (idempotent).
-    if (existing && !knownMakerThreadId) return existing;
-
     const repoName = repo.split("/")[1] ?? repo;
     let ref = headRef;
     // Only hit the GitHub API when we have neither a known thread nor a headRef.
@@ -173,17 +203,38 @@ export class GitHubHandler {
       ref = pr?.head?.ref ?? "";
     }
 
-    const makerThreadId =
-      knownMakerThreadId ??
-      (ref.startsWith("discord/")
-        ? (db.findThreadByBranch(ref) ?? db.findMakerThreadForRepo(repoName))
-        : db.findMakerThreadForRepo(repoName));
+    const existing =
+      db.getPrThreads(String(prNumber), repo)?.makerThreadId ??
+      db.getPrThreads(String(prNumber), repoName)?.makerThreadId;
+    if (existing) {
+      if (knownMakerThreadId && existing === knownMakerThreadId) return existing;
+      const definitive = resolveDefinitiveMakerThreadForLink(db, ref);
+      if (!knownMakerThreadId) {
+        if (definitive === existing) return existing;
+        console.log(
+          `[github] PR #${prNumber}: ignoring stale maker thread link ${existing}` +
+            (ref ? ` (branch ${ref})` : "")
+        );
+      }
+    }
+
+    const makerThreadId = knownMakerThreadId ?? resolveDefinitiveMakerThreadForLink(db, ref);
 
     if (!makerThreadId) {
       console.log(
-        `[github] PR #${prNumber}: no maker thread found for ${repoName}` +
-          (ref ? ` (branch ${ref})` : "")
+        `[github] PR #${prNumber}: no definitive maker thread for ${repoName}` +
+          (ref ? ` (branch ${ref})` : "") +
+          " — posting to repo channel"
       );
+      const channel = await this.findRepoTextChannel(repoName);
+      if (channel) {
+        const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
+        try {
+          await channel.send(`📎 PR #${prNumber} opened\n${prUrl}`);
+        } catch (err) {
+          console.error(`[github] PR #${prNumber}: failed to post to repo channel:`, err);
+        }
+      }
       return null;
     }
 
@@ -359,80 +410,104 @@ export class GitHubHandler {
     const db = this.sessionManager.getDb();
     const repoName = repo.split("/")[1] ?? repo;
 
-    let makerThreadId: string | null | undefined = null;
-
-    if (prNumber) {
-      makerThreadId =
-        db.getPrThreads(String(prNumber), repo)?.makerThreadId ??
-        db.getPrThreads(String(prNumber), repoName)?.makerThreadId;
-    }
-
-    if (!makerThreadId && headBranch) {
-      makerThreadId = db.findThreadByBranch(headBranch);
-    }
-
-    if (!makerThreadId) {
-      console.log(
-        `[github] CI failure on ${repo} (${workflowName}): no maker thread found` +
-          (prNumber ? ` for PR #${prNumber}` : "") +
-          (headBranch ? ` branch=${headBranch}` : "")
-      );
-      return;
-    }
+    const makerThreadId = resolveDefinitiveMakerThread(db, repo, repoName, prNumber, headBranch);
 
     const label = prNumber ? `PR #${prNumber}` : headBranch || repo;
     const workflowLink = runUrl ? `[${workflowName}](${runUrl})` : workflowName;
     const fixPrompt = buildCiFixPrompt(label, workflowName, runUrl);
+    const runOpts = {
+      prNumber: prNumber ?? undefined,
+      freshSession: !CI_FIX_RESUME_SESSION,
+    };
 
-    const chCi = await this.client.channels.fetch(makerThreadId).catch(() => null);
-    const thread = chCi?.isThread() ? (chCi as import("discord.js").ThreadChannel) : null;
+    let targetThread: ThreadChannel | null = null;
+    let workDir: string | null = null;
+    let channelId: string | null = null;
+    let agentKey = "cc";
 
-    if (!thread) {
-      console.error(`[github] CI failure: thread ${makerThreadId} not found or not a thread`);
-      return;
+    if (makerThreadId) {
+      const session = db.getThreadSession(makerThreadId);
+      if (!session) {
+        console.log(`[github] CI failure: no thread session for ${makerThreadId}, cannot auto-fix in maker thread`);
+      } else {
+        const chCi = await this.client.channels.fetch(makerThreadId).catch(() => null);
+        const thread = chCi?.isThread() ? (chCi as ThreadChannel) : null;
+        if (thread) {
+          targetThread = thread;
+          workDir = session.workDir;
+          channelId = session.channelId;
+          agentKey = session.agent;
+        }
+      }
     }
 
-    if (thread.archived) {
-      await thread.edit({ archived: false }).catch((err) => {
-        console.error(`[github] CI failure: failed to unarchive thread ${makerThreadId}:`, err);
+    if (!targetThread) {
+      const fixThread = await this.getOrCreateCiFixThread(repoName, prNumber, headBranch);
+      if (!fixThread) {
+        console.log(
+          `[github] CI failure on ${repo} (${workflowName}): no maker thread and could not create fix thread` +
+            (prNumber ? ` for PR #${prNumber}` : "") +
+            (headBranch ? ` branch=${headBranch}` : "")
+        );
+        return;
+      }
+      targetThread = fixThread;
+      channelId = fixThread.parentId ?? fixThread.id;
+      workDir =
+        (headBranch
+          ? resolveBranchWorkDir(repoName, this.baseFolder, fixThread.id, headBranch)
+          : null) ??
+        repoPathFor(repoName, this.baseFolder);
+      if (!workDir) {
+        console.error(`[github] CI failure: could not resolve work dir for ${repoName}`);
+        return;
+      }
+      console.log(`[github] CI failure: using dedicated fix thread ${fixThread.id}`);
+    }
+
+    if (targetThread.archived) {
+      await targetThread.edit({ archived: false }).catch((err) => {
+        console.error(`[github] CI failure: failed to unarchive thread ${targetThread!.id}:`, err);
       });
     }
 
-    const session = db.getThreadSession(makerThreadId);
-    if (!session) {
-      console.log(`[github] CI failure: no thread session for ${makerThreadId}, cannot auto-fix`);
-      return;
-    }
+    const threadId = targetThread.id;
 
     // Worker thread: dispatch via worker process instead of the main SessionManager.
-    if (this.isWorkerThread(makerThreadId)) {
-      await thread.send(`⚠️ GitHub Actions failed for ${label}: ${workflowLink}`);
-      this.workerDispatch!(makerThreadId, session.workDir, session.agent, fixPrompt, session.channelId);
-      console.log(`[github] CI failure: spawned worker fix run in ${makerThreadId}`);
+    if (this.isWorkerThread(threadId)) {
+      const session = db.getThreadSession(threadId);
+      if (!session) {
+        console.log(`[github] CI failure: no thread session for worker ${threadId}, cannot auto-fix`);
+        return;
+      }
+      await targetThread.send(`⚠️ GitHub Actions failed for ${label}: ${workflowLink}`);
+      this.workerDispatch!(threadId, workDir!, session.agent, fixPrompt, session.channelId);
+      console.log(`[github] CI failure: spawned worker fix run in ${threadId}`);
       return;
     }
 
-    const isBusy = this.sessionManager.hasActiveProcess(makerThreadId);
+    const isBusy = this.sessionManager.hasActiveProcess(threadId);
 
     if (isBusy) {
-      this.sessionManager.setPendingPostRunPrompt(makerThreadId, fixPrompt);
-      await thread.send(
+      this.sessionManager.setPendingPostRunPrompt(threadId, fixPrompt, runOpts);
+      await targetThread.send(
         `⚠️ GitHub Actions failed for ${label}: ${workflowLink}\n🔄 Agent is busy — will investigate once current task finishes.`
       );
-      console.log(`[github] CI failure queued for ${makerThreadId} (busy)`);
+      console.log(`[github] CI failure queued for ${threadId} (busy)`);
     } else {
-      await thread.send(`⚠️ GitHub Actions failed for ${label}: ${workflowLink}`);
+      await targetThread.send(`⚠️ GitHub Actions failed for ${label}: ${workflowLink}`);
       try {
         await this.sessionManager.runAgent(
-          makerThreadId,
-          session.channelId,
-          thread,
-          session.agent,
-          session.workDir,
+          threadId,
+          channelId!,
+          targetThread,
+          agentKey,
+          workDir!,
           fixPrompt,
-          undefined
+          undefined,
+          { ...runOpts, branch: headBranch || undefined }
         );
-        console.log(`[github] CI failure: started fix run in ${makerThreadId}`);
+        console.log(`[github] CI failure: started fix run in ${threadId}`);
       } catch (err) {
         console.error(`[github] CI failure: failed to start fix run:`, err);
       }
@@ -513,6 +588,7 @@ export class GitHubHandler {
     const prNumber = prs[0]!.number;
     console.log(`[github] thread ${threadId}: found PR #${prNumber} on ${branch} — linking (webhook fallback)`);
     await this.ensurePrLinkedToMakerThread(repo, prNumber, branch);
+    await this.checkLinkedPrClosed(threadId, repo);
   }
 
   // Called when checkAndLinkPrForBranch finds no open PR. Checks if there is a
@@ -547,20 +623,7 @@ export class GitHubHandler {
     );
   }
 
-  private async getOrCreateTestThread(
-    repoName: string,
-    prNumber: number
-  ): Promise<ThreadChannel | null> {
-    const db = this.sessionManager.getDb();
-    const existing = db.getPrThreads(String(prNumber), repoName);
-
-    if (existing?.testThreadId) {
-      const cached = await this.client.channels
-        .fetch(existing.testThreadId)
-        .catch(() => null);
-      if (cached?.isThread()) return cached as ThreadChannel;
-    }
-
+  private async findRepoTextChannel(repoName: string): Promise<TextChannel | null> {
     let guild = this.client.guilds.cache.first();
     if (!guild) {
       console.error("[github] No guild in cache — bot not ready?");
@@ -581,6 +644,61 @@ export class GitHubHandler {
       );
       return null;
     }
+
+    return channel;
+  }
+
+  private async getOrCreateCiFixThread(
+    repoName: string,
+    prNumber: number | null,
+    headBranch: string
+  ): Promise<ThreadChannel | null> {
+    const db = this.sessionManager.getDb();
+
+    if (prNumber) {
+      const existing =
+        db.getPrThreads(String(prNumber), repoName)?.ciFixThreadId;
+      if (existing) {
+        const cached = await this.client.channels.fetch(existing).catch(() => null);
+        if (cached?.isThread()) return cached as ThreadChannel;
+      }
+    }
+
+    const channel = await this.findRepoTextChannel(repoName);
+    if (!channel) return null;
+
+    const name = prNumber
+      ? `🔧 #${prNumber} • CI Fix`
+      : `🔧 ${headBranch.slice(0, 40) || repoName} • CI Fix`;
+    console.log(`[github] Creating CI fix thread "${name}" in #${repoName}`);
+    const thread = (await channel.threads.create({
+      name,
+      autoArchiveDuration: 1440,
+    })) as ThreadChannel;
+
+    if (prNumber) {
+      db.setPrCiFixThread(String(prNumber), repoName, thread.id);
+    }
+    console.log(`[github] CI fix thread created: ${thread.id}`);
+    return thread;
+  }
+
+  private async getOrCreateTestThread(
+    repoName: string,
+    prNumber: number
+  ): Promise<ThreadChannel | null> {
+    const db = this.sessionManager.getDb();
+    const existing = db.getPrThreads(String(prNumber), repoName);
+
+    if (existing?.testThreadId) {
+      const cached = await this.client.channels
+        .fetch(existing.testThreadId)
+        .catch(() => null);
+      if (cached?.isThread()) return cached as ThreadChannel;
+    }
+
+    const channel = await this.findRepoTextChannel(repoName);
+    if (!channel) return null;
 
     const name = `🔄 #${prNumber} • Test`;
     console.log(`[github] Creating test thread "${name}" in #${repoName}`);

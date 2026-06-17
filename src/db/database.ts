@@ -286,6 +286,9 @@ export class DatabaseManager {
     if (!prCols.includes("closed_notified")) {
       this.db.exec(`ALTER TABLE pr_threads ADD COLUMN closed_notified INTEGER NOT NULL DEFAULT 0`);
     }
+    if (!prCols.includes("ci_fix_thread_id")) {
+      this.db.exec(`ALTER TABLE pr_threads ADD COLUMN ci_fix_thread_id TEXT`);
+    }
   }
 
   // ── Thread sessions ──────────────────────────────────────────────────────
@@ -536,6 +539,10 @@ export class DatabaseManager {
     this.db.prepare(`UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?`).run(nextRunAt, id);
   }
 
+  updateScheduledTaskPrompt(id: string, prompt: string): void {
+    this.db.prepare(`UPDATE scheduled_tasks SET prompt = ? WHERE id = ?`).run(prompt, id);
+  }
+
   setScheduledTaskEnabled(id: string, enabled: boolean): void {
     this.db.prepare(`UPDATE scheduled_tasks SET enabled = ? WHERE id = ?`).run(enabled ? 1 : 0, id);
   }
@@ -689,7 +696,12 @@ export class DatabaseManager {
 
   // ── PR threads ───────────────────────────────────────────────────────────
 
-  getPrThreads(prNumber: string, repo: string): { makerThreadId?: string; testThreadId?: string; testsSkipped?: boolean } | null {
+  getPrThreads(prNumber: string, repo: string): {
+    makerThreadId?: string;
+    testThreadId?: string;
+    ciFixThreadId?: string;
+    testsSkipped?: boolean;
+  } | null {
     const row = this.db
       .prepare(`SELECT * FROM pr_threads WHERE pr_number = ? AND repo = ?`)
       .get(prNumber, repo) as any;
@@ -697,6 +709,7 @@ export class DatabaseManager {
     return {
       makerThreadId: row.maker_thread_id ?? undefined,
       testThreadId: row.test_thread_id ?? undefined,
+      ciFixThreadId: row.ci_fix_thread_id ?? undefined,
       testsSkipped: row.tests_skipped === 1,
     };
   }
@@ -719,6 +732,16 @@ export class DatabaseManager {
          ON CONFLICT (pr_number, repo) DO UPDATE SET test_thread_id = excluded.test_thread_id`
       )
       .run(prNumber, repo, testThreadId, Date.now());
+  }
+
+  setPrCiFixThread(prNumber: string, repo: string, ciFixThreadId: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO pr_threads (pr_number, repo, ci_fix_thread_id, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (pr_number, repo) DO UPDATE SET ci_fix_thread_id = excluded.ci_fix_thread_id`
+      )
+      .run(prNumber, repo, ciFixThreadId, Date.now());
   }
 
   setPrTestsSkipped(prNumber: string, repo: string, skipped: boolean): void {

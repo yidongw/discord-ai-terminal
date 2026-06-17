@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { createGhWrapper } from "../github/gh-wrapper.js";
 import { AttachmentBuilder, EmbedBuilder, type Client } from "discord.js";
@@ -14,14 +15,18 @@ import { parseSessionLimitReset } from "../utils/session-limit-reset.js";
 import {
   SESSION_LIMIT_CONTINUATION_PROMPT,
   registerSessionLimitWakeup,
+  sessionLimitTaskId,
 } from "./session-limit-wakeup.js";
 import {
   extractGeneratedImagePath,
   extractLocalImageReferences,
+  normalizeImagePathKey,
+  tryClaimImageSend,
   getToolInputPath,
   isImageType,
   stripLocalImageReferences,
 } from "../utils/attachments.js";
+import { getChannelModelForAgent } from "../utils/models.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -88,6 +93,8 @@ interface ActiveSession {
   generateImageToolIds: Set<string>;
   // Generated image call ids already uploaded from Codex image events.
   sentGeneratedImageCallIds: Set<string>;
+  // Normalized local image paths already sent (or queued) this run.
+  sentImagePaths: Set<string>;
   // Read tool-use ids where the target was an image file. Like generateImageToolIds,
   // we defer sending until the tool result so we can use the base64 data directly
   // rather than re-reading from disk (which fails when the filename has non-ASCII
@@ -137,7 +144,11 @@ export class SessionManager {
   // Prompt queued to run once a thread's current run finishes (e.g. a CI fix
   // request that arrived while the agent was busy). At most one pending prompt
   // per thread — a newer failure overwrites the old one.
-  private pendingPostRunPrompts = new Map<string, string>();
+  private pendingPostRunPrompts = new Map<string, {
+    prompt: string;
+    freshSession?: boolean;
+    prNumber?: number;
+  }>();
   // User messages queued while an agent was running (FIFO). Multiple messages
   // may be queued; each is dispatched in order once the thread becomes idle.
   private messageQueues = new Map<string, QueuedMessage[]>();
@@ -177,8 +188,12 @@ export class SessionManager {
   // Queue a prompt to run in a thread once its current run finishes. If the
   // thread is already idle, the caller should invoke runAgent directly instead.
   // A newer call overwrites any previously queued prompt for the same thread.
-  setPendingPostRunPrompt(threadId: string, prompt: string): void {
-    this.pendingPostRunPrompts.set(threadId, prompt);
+  setPendingPostRunPrompt(
+    threadId: string,
+    prompt: string,
+    opts?: { freshSession?: boolean; prNumber?: number }
+  ): void {
+    this.pendingPostRunPrompts.set(threadId, { prompt, ...opts });
   }
 
   // Append a user-initiated message to the per-thread FIFO queue.
@@ -200,6 +215,61 @@ export class SessionManager {
   // Number of user messages waiting in the queue for a thread.
   getQueueLength(threadId: string): number {
     return this.messageQueues.get(threadId)?.length ?? 0;
+  }
+
+  // Preview each queued message in a thread (position is 1-based FIFO order).
+  listQueuedMessages(threadId: string): { position: number; preview: string }[] {
+    const queue = this.messageQueues.get(threadId) ?? [];
+    return queue.map((msg, i) => ({
+      position: i + 1,
+      preview: previewQueuedText(msg.originalText),
+    }));
+  }
+
+  // All non-empty queues whose parent channel matches (for /queue in a text channel).
+  listQueuedMessagesForChannel(channelId: string): {
+    threadId: string;
+    threadName: string;
+    messages: { position: number; preview: string }[];
+  }[] {
+    const groups: {
+      threadId: string;
+      threadName: string;
+      messages: { position: number; preview: string }[];
+    }[] = [];
+    for (const [threadId, queue] of this.messageQueues) {
+      if (queue.length === 0 || queue[0]!.channelId !== channelId) continue;
+      groups.push({
+        threadId,
+        threadName: queue[0]!.thread?.name ?? threadId,
+        messages: queue.map((msg, i) => ({
+          position: i + 1,
+          preview: previewQueuedText(msg.originalText),
+        })),
+      });
+    }
+    return groups.sort((a, b) => a.threadName.localeCompare(b.threadName));
+  }
+
+  // True while a session-limit wakeup is scheduled and still in the future.
+  getUsageLimitWait(threadId: string): { waiting: boolean; resetLabel?: string } {
+    const task = this.db.getScheduledTask(sessionLimitTaskId(threadId));
+    if (!task?.enabled || task.nextRunAt <= Date.now()) return { waiting: false };
+    return { waiting: true, resetLabel: new Date(task.nextRunAt).toLocaleString() };
+  }
+
+  isWaitingForUsageLimitReset(threadId: string): boolean {
+    return this.getUsageLimitWait(threadId).waiting;
+  }
+
+  // Replace the auto-resume continuation prompt with a user message (runs first on
+  // wakeup; any FIFO-queued messages run after that run finishes).
+  setUsageLimitResumePrompt(threadId: string, prompt: string): boolean {
+    const taskId = sessionLimitTaskId(threadId);
+    const task = this.db.getScheduledTask(taskId);
+    if (!task?.enabled || task.nextRunAt <= Date.now()) return false;
+    this.db.updateScheduledTaskPrompt(taskId, prompt);
+    return true;
   }
 
   // Resolves once the thread's agent process has finished and its outbox is drained.
@@ -257,6 +327,26 @@ export class SessionManager {
     this.db.deleteActiveRunsForThread(threadId);
   }
 
+  // Tear down the main bot's in-memory session for a thread immediately so a
+  // worker can take over streaming (and typing). Unlike killProcess, which waits
+  // for the tailer to finalize gracefully, this stops the typing indicator and
+  // drops local state without draining the outbox.
+  abandonThread(threadId: string): void {
+    const session = this.active.get(threadId);
+    if (session) {
+      if (session.killTimer) clearTimeout(session.killTimer);
+      session.finalized = true;
+      try { session.tailer?.stop(); } catch {}
+      this.signalGroup(session.pid, "SIGTERM");
+      this.db.deleteActiveRunsForThread(threadId);
+      this.releaseThread(threadId);
+      return;
+    }
+    this.killProcess(threadId);
+    this.typing.get(threadId)?.stop();
+    this.typing.delete(threadId);
+  }
+
   clearSession(threadId: string): void {
     this.killProcess(threadId);
     this.db.deleteThreadSession(threadId);
@@ -311,11 +401,21 @@ export class SessionManager {
   // messages land after the leftovers instead of interleaving with them).
   private getOutbox(threadId: string, thread: any): Outbox {
     let outbox = this.outboxes.get(threadId);
+    const onLocalImageReference = (filePath: string) => {
+      const callId = generatedImageCallIdFromPath(filePath);
+      if (!callId) return;
+      this.active.get(threadId)?.sentGeneratedImageCallIds.add(callId);
+    };
+    const claimImagePath = (filePath: string) => {
+      const session = this.active.get(threadId);
+      if (!session) return true;
+      return tryClaimImageSend(session.sentImagePaths, filePath);
+    };
     if (!outbox) {
-      outbox = new Outbox(thread);
+      outbox = new Outbox(thread, onLocalImageReference, claimImagePath);
       this.outboxes.set(threadId, outbox);
     } else {
-      outbox.updateThread(thread);
+      outbox.updateThread(thread, onLocalImageReference, claimImagePath);
     }
     return outbox;
   }
@@ -354,7 +454,7 @@ export class SessionManager {
     workDir: string,
     prompt: string,
     discordContext: DiscordContext | undefined,
-    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; completion?: CompletionAction; modelOverride?: string }
+    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; completion?: CompletionAction; modelOverride?: string; freshSession?: boolean }
   ): Promise<void> {
     const agent = getAgent(agentKey);
     if (!agent) throw new Error(`Unknown agent: ${agentKey}`);
@@ -363,12 +463,20 @@ export class SessionManager {
 
     const existing = this.db.getThreadSession(threadId);
     const mode = this.db.getMode(channelId);
+    const channelDefault = getChannelModelForAgent(this.db, agentKey, channelId);
     let model = this.db.getModel(channelId);
     let codexModel = this.db.getCodexModel(channelId);
     let csModel = this.db.getCsModel(channelId);
-    // An explicit per-message override wins; otherwise fall back to the model
-    // stored on the thread so @mention-selected models persist across messages.
-    const effectiveModelOverride = opts?.modelOverride ?? existing?.modelOverride;
+    // @mention wins, then thread /model override, then channel default. Freeze the
+    // inherited default into the thread so a later channel /model doesn't switch
+    // threads that never set their own override.
+    let effectiveModelOverride = opts?.modelOverride ?? existing?.modelOverride;
+    if (effectiveModelOverride === undefined) {
+      effectiveModelOverride = channelDefault;
+      if (existing?.modelOverride === undefined) {
+        this.db.updateModelOverride(threadId, channelDefault);
+      }
+    }
     if (effectiveModelOverride) {
       if (agentKey === "cx") codexModel = effectiveModelOverride as typeof codexModel;
       else if (agentKey === "cs") csModel = effectiveModelOverride as typeof csModel;
@@ -381,7 +489,8 @@ export class SessionManager {
     // Claude session ID to `codex exec resume` (or vice versa) causes an
     // immediate silent failure with no "done" event, which suppresses the
     // completion action and leaves no trace on the PR.
-    const resumeSessionId = existing?.agent === agentKey ? existing.sessionId : undefined;
+    const resumeSessionId =
+      opts?.freshSession ? undefined : existing?.agent === agentKey ? existing.sessionId : undefined;
     const command = agent.buildCommand(workDir, prompt, {
       sessionId: resumeSessionId,
       mode,
@@ -461,7 +570,10 @@ export class SessionManager {
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
       generateImageToolIds: new Set(),
-      sentGeneratedImageCallIds: new Set(),
+      sentGeneratedImageCallIds: new Set(listCodexGeneratedImageIds(resumeSessionId)),
+      sentImagePaths: new Set(
+        listNewCodexGeneratedImages(resumeSessionId, new Set()).map((p) => normalizeImagePathKey(p))
+      ),
       pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir,
@@ -561,6 +673,12 @@ export class SessionManager {
     session.finalized = true;
     if (session.killTimer) clearTimeout(session.killTimer);
 
+    // Stall finalization can run while the process is still alive.
+    if (isPidAlive(session.pid) && !session.stopping) {
+      console.log(`[finalize] run ${session.runId} still alive at finalize — stopping pid ${session.pid}`);
+      this.stopProcess(session);
+    }
+
     // Only for fresh runs (exitCode known): surface a crash the agent didn't
     // report and we didn't intentionally stop. A SIGTERM/SIGKILL yields a null
     // code, so an intentional /stop or timeout won't trip this.
@@ -570,6 +688,8 @@ export class SessionManager {
         session.thread.send({ embeds: [embed("❌ Process Failed", `Exit code: ${code}`, 0xff0000)] })
       );
     }
+
+    this.enqueueDiscoveredCodexImages(threadId, session);
 
     // Deliver everything already queued before marking the thread idle.
     await session.outbox.drain();
@@ -661,8 +781,8 @@ export class SessionManager {
           }
         } else {
           // No user queue — fall back to any pending post-run prompt (e.g. CI fix).
-          const pendingPrompt = this.pendingPostRunPrompts.get(threadId);
-          if (pendingPrompt) {
+          const pending = this.pendingPostRunPrompts.get(threadId);
+          if (pending) {
             this.pendingPostRunPrompts.delete(threadId);
             try {
               await this.runAgent(
@@ -671,8 +791,12 @@ export class SessionManager {
                 session.thread,
                 session.agentKey,
                 session.workDir,
-                pendingPrompt,
-                session.discordContext
+                pending.prompt,
+                session.discordContext,
+                {
+                  freshSession: pending.freshSession,
+                  prNumber: pending.prNumber,
+                }
               );
             } catch (err) {
               console.error(`[pending-prompt] auto-run failed for ${threadId}:`, err);
@@ -759,6 +883,13 @@ export class SessionManager {
     }
 
     const alive = isPidAlive(run.pid);
+    const existingSession = this.db.getThreadSession(run.threadId);
+    const modelOverride = existingSession?.modelOverride;
+    const requestedModel = run.agent === "cx"
+      ? (modelOverride ?? this.db.getCodexModel(run.channelId))
+      : run.agent === "cs"
+        ? (modelOverride ?? this.db.getCsModel(run.channelId))
+        : (modelOverride ?? this.db.getModel(run.channelId));
     const session: ActiveSession = {
       runId: run.runId,
       pid: run.pid,
@@ -774,15 +905,16 @@ export class SessionManager {
       toolCalls: new Map(),
       hiddenToolIds: new Set(),
       generateImageToolIds: new Set(),
-      sentGeneratedImageCallIds: new Set(),
+      sentGeneratedImageCallIds: new Set(listCodexGeneratedImageIds(existingSession?.sessionId)),
+      sentImagePaths: new Set(
+        listNewCodexGeneratedImages(existingSession?.sessionId, new Set()).map((p) =>
+          normalizeImagePathKey(p)
+        )
+      ),
       pendingImageReadIds: new Map(),
       taskList: new Map(),
       workDir: run.workDir,
-      requestedModel: run.agent === "cx"
-        ? this.db.getCodexModel(run.channelId)
-        : run.agent === "cs"
-          ? this.db.getCsModel(run.channelId)
-          : this.db.getModel(run.channelId),
+      requestedModel,
       toolOverrides: this.db.getToolOverrides(run.channelId),
       outbox: this.getOutbox(run.threadId, thread),
       done: false,
@@ -848,7 +980,8 @@ export class SessionManager {
         embeds: [
           embed(
             "⏸️ Session limit reached",
-            `Usage limit hit — will resume at **${label}** and continue where you left off.`,
+            `Usage limit hit — will resume at **${label}** and continue where you left off.\n\n` +
+              `New messages can be **queued**, set to **use on resume**, or **cancelled** — use \`/queue\` to see what's waiting.`,
             0xffd700
           ),
         ],
@@ -878,8 +1011,8 @@ export class SessionManager {
     }
 
     if (event.kind === "image_file") {
+      if (!tryClaimImageSend(session.sentImagePaths, event.filePath)) return;
       const callId = generatedImageCallIdFromPath(event.filePath);
-      if (callId && session.sentGeneratedImageCallIds.has(callId)) return;
       if (callId) session.sentGeneratedImageCallIds.add(callId);
       outbox.enqueue(async () => sendImageAttachment(thread, event.filePath));
       return;
@@ -1096,7 +1229,9 @@ export class SessionManager {
         if (session.generateImageToolIds.has(result.tool_use_id)) {
           session.generateImageToolIds.delete(result.tool_use_id);
           const imagePath = extractGeneratedImagePath(result.content);
-          if (imagePath) {
+          if (imagePath && tryClaimImageSend(session.sentImagePaths, imagePath)) {
+            const callId = generatedImageCallIdFromPath(imagePath);
+            if (callId) session.sentGeneratedImageCallIds.add(callId);
             outbox.enqueue(async () => sendImageAttachment(thread, imagePath));
           }
           continue;
@@ -1107,7 +1242,7 @@ export class SessionManager {
           const b64 = extractBase64ImageFromResult(result.content);
           if (b64) {
             outbox.enqueue(async () => sendImageFromBase64(thread, b64.data, b64.mediaType));
-          } else {
+          } else if (tryClaimImageSend(session.sentImagePaths, fallbackPath)) {
             outbox.enqueue(async () => sendImageAttachment(thread, fallbackPath));
           }
           // Still drop the result from the visible tool-call feed.
@@ -1126,6 +1261,17 @@ export class SessionManager {
           });
         });
       }
+    }
+  }
+
+  private enqueueDiscoveredCodexImages(threadId: string, session: ActiveSession): void {
+    if (session.agentKey !== "cx") return;
+    const sessionId = this.db.getThreadSession(threadId)?.sessionId;
+    for (const filePath of listNewCodexGeneratedImages(sessionId, session.sentGeneratedImageCallIds)) {
+      if (!tryClaimImageSend(session.sentImagePaths, filePath)) continue;
+      const callId = path.basename(filePath, path.extname(filePath));
+      session.sentGeneratedImageCallIds.add(callId);
+      session.outbox.enqueue(async () => sendImageAttachment(session.thread, filePath));
     }
   }
 
@@ -1178,10 +1324,22 @@ export class Outbox {
   private hiddenMessage: any = null;
   private hiddenCounts: Map<string, number> | null = null;
 
-  constructor(private thread: any) {}
+  constructor(
+    private thread: any,
+    private onLocalImageReference?: (filePath: string) => void,
+    private claimImagePath?: (filePath: string) => boolean
+  ) {}
 
   // Point the outbox at the latest thread object when a new run reuses it.
-  updateThread(thread: any): void { this.thread = thread; }
+  updateThread(
+    thread: any,
+    onLocalImageReference?: (filePath: string) => void,
+    claimImagePath?: (filePath: string) => boolean
+  ): void {
+    this.thread = thread;
+    this.onLocalImageReference = onLocalImageReference;
+    this.claimImagePath = claimImagePath;
+  }
 
   private get busy(): boolean {
     return this.running || this.queue.length > 0;
@@ -1192,6 +1350,11 @@ export class Outbox {
   // as one message.
   pushText(content: string): void {
     if (!content) return;
+    if (this.onLocalImageReference) {
+      for (const ref of extractLocalImageReferences(content)) {
+        this.onLocalImageReference(ref.filePath);
+      }
+    }
     const last = this.queue[this.queue.length - 1];
     if (last && last.type === "text") last.content += content;
     else this.queue.push({ type: "text", content });
@@ -1235,7 +1398,7 @@ export class Outbox {
             // Any visible message ends the current hidden run: drop the summary
             // reference so the next hidden tool opens a new embed below this one.
             this.sealHidden();
-            if (item.type === "text") await sendChunked(this.thread, item.content);
+            if (item.type === "text") await sendChunked(this.thread, item.content, this.claimImagePath);
             else await item.run();
           }
         } catch (err) {
@@ -1311,7 +1474,11 @@ export class TypingIndicator {
   }
 }
 
-async function sendChunked(thread: any, content: string): Promise<void> {
+async function sendChunked(
+  thread: any,
+  content: string,
+  claimImagePath?: (filePath: string) => boolean
+): Promise<void> {
   const imageRefs = extractLocalImageReferences(content);
   if (imageRefs.length > 0) {
     const cleaned = stripLocalImageReferences(content).trim();
@@ -1319,6 +1486,7 @@ async function sendChunked(thread: any, content: string): Promise<void> {
       await sendChunkedText(thread, cleaned);
     }
     for (const ref of imageRefs) {
+      if (claimImagePath && !claimImagePath(ref.filePath)) continue;
       await sendImageAttachment(thread, ref.filePath);
     }
     return;
@@ -1340,6 +1508,12 @@ async function sendChunkedText(thread: any, content: string): Promise<void> {
       embeds: [new EmbedBuilder().setDescription(chunks[i] ?? "").setColor(0x7289da).setFooter(i > 0 ? { text: `(${i + 1}/${chunks.length})` } : null)],
     });
   }
+}
+
+function previewQueuedText(text: string, max = 200): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed || "(empty)";
+  return trimmed.slice(0, max) + "…";
 }
 
 function embed(title: string, description: string, color: number) {
@@ -1411,6 +1585,36 @@ async function sendImageFromBase64(thread: any, data: string, mediaType: string)
 function generatedImageCallIdFromPath(filePath: string): string | undefined {
   const name = path.basename(filePath, path.extname(filePath));
   return name.startsWith("ig_") ? name : undefined;
+}
+
+export function listNewCodexGeneratedImages(sessionId: string | undefined, sentIds: Set<string>): string[] {
+  if (!sessionId) return [];
+  const dir = codexGeneratedImageDir(sessionId);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+
+  return entries
+    .map((name) => path.join(dir, name))
+    .filter((filePath) => {
+      const id = path.basename(filePath, path.extname(filePath));
+      return isImageType(undefined, filePath) && !sentIds.has(id);
+    })
+    .sort();
+}
+
+function listCodexGeneratedImageIds(sessionId: string | undefined): string[] {
+  return listNewCodexGeneratedImages(sessionId, new Set()).map((filePath) =>
+    path.basename(filePath, path.extname(filePath))
+  );
+}
+
+function codexGeneratedImageDir(sessionId: string): string {
+  const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+  return path.join(codexHome, "generated_images", sessionId);
 }
 
 function extractBase64ImageFromResult(content: unknown): { data: string; mediaType: string } | null {

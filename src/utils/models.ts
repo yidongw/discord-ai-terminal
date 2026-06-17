@@ -109,3 +109,39 @@ export function normalizeCsModel(stored: string | undefined | null): CsModel {
   if (CS_MODEL_VALUES.has(stored)) return stored as CsModel;
   return DEFAULT_CS_MODEL;
 }
+
+export interface ModelResolver {
+  getModel(channelId: string): CcModel;
+  getCodexModel(channelId: string): CodexModel;
+  getCsModel(channelId: string): CsModel;
+}
+
+export function getChannelModelForAgent(
+  db: ModelResolver,
+  agentKey: string,
+  channelId: string
+): string {
+  switch (agentKey) {
+    case "cx": return db.getCodexModel(channelId);
+    case "cs": return db.getCsModel(channelId);
+    default: return db.getModel(channelId);
+  }
+}
+
+/**
+ * Resolve the model a worker run should use. Worker processes have an isolated
+ * sessions.db, so channel-level /model settings from the main bot must be
+ * passed explicitly rather than read from the worker's local DB.
+ *
+ * Priority: per-message @mention suffix → thread /model override → channel default.
+ */
+export function resolveEffectiveModel(
+  db: ModelResolver,
+  agentKey: string,
+  channelId: string,
+  opts?: { threadModelOverride?: string; explicitModel?: string }
+): string {
+  if (opts?.explicitModel !== undefined) return opts.explicitModel;
+  if (opts?.threadModelOverride !== undefined) return opts.threadModelOverride;
+  return getChannelModelForAgent(db, agentKey, channelId);
+}

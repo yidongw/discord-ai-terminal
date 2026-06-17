@@ -125,15 +125,15 @@ export class MCPPermissionServer {
         rows.push(currentRow);
       }
 
-      // Send the question
-      const message = await channel.send({ embeds: [embed], components: rows });
+      // Send the question — mention the user so Discord notifies them
+      const message = await channel.send({ content: `<@${discordContext.userId}>`, embeds: [embed], components: rows });
 
-      // Wait for button interaction (60 second timeout)
+      // Wait for button interaction (5 minute timeout)
       try {
         const interaction = await message.awaitMessageComponent({
           componentType: ComponentType.Button,
           filter: (i: any) => i.user.id === discordContext.userId,
-          time: 60000,
+          time: 300000,
         });
 
         if (interaction.customId === 'mcp_ask_other') {
@@ -143,7 +143,7 @@ export class MCPPermissionServer {
           const collected = await channel.awaitMessages({
             filter: (m: any) => m.author.id === discordContext.userId,
             max: 1,
-            time: 60000,
+            time: 300000,
           });
 
           const userResponse = collected.first()?.content || 'No response';

@@ -94,4 +94,46 @@ describe('codexAgent', () => {
       callId: 'ig_wrapped',
     });
   });
+
+  it('maps Codex event_msg final answers to text', () => {
+    const event = codexAgent.parseLine(
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'agent_message',
+          message: 'Here it is:\n\n![crab](/Users/me/.codex/generated_images/thread-123/ig_crab.png)',
+        },
+      }),
+      '/test/dir'
+    );
+
+    expect(event).toEqual({
+      kind: 'text',
+      content: 'Here it is:\n\n![crab](/Users/me/.codex/generated_images/thread-123/ig_crab.png)',
+    });
+  });
+
+  it('maps Codex response_item assistant messages to text', () => {
+    const event = codexAgent.parseLine(
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'output_text',
+              text: 'Here it is:\n\n![crab](/Users/me/.codex/generated_images/thread-123/ig_crab.png)',
+            },
+          ],
+        },
+      }),
+      '/test/dir'
+    );
+
+    expect(event).toEqual({
+      kind: 'text',
+      content: 'Here it is:\n\n![crab](/Users/me/.codex/generated_images/thread-123/ig_crab.png)',
+    });
+  });
 });

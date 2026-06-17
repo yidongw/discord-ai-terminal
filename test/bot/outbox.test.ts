@@ -13,7 +13,8 @@ vi.mock("bun:sqlite", () => ({
   })),
 }));
 
-import { Outbox } from "../../src/bot/session-manager.js";
+import { Outbox, listNewCodexGeneratedImages } from "../../src/bot/session-manager.js";
+import { tryClaimImageSend } from "../../src/utils/attachments.js";
 
 // A fake Discord thread whose send() resolves only when we tell it to, so we
 // can simulate a rate-limited backlog and assert ordering/batching/draining.
@@ -151,6 +152,65 @@ describe("Outbox", () => {
     expect(thread.sends[1].files[0].name).toBe("image.png");
 
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reports local markdown images as soon as text is queued", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "discord-ai-terminal-image-"));
+    const imagePath = path.join(dir, "ig_generated.png");
+    fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const thread = makeThread();
+    const reported: string[] = [];
+    const outbox = new Outbox(thread, (filePath: string) => reported.push(filePath));
+
+    thread.openGate();
+    outbox.pushText(`Here it is:\n\n![image](${imagePath})`);
+
+    expect(reported).toEqual([imagePath]);
+
+    thread.releaseGate();
+    await outbox.drain();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("uploads the same local markdown image only once per run", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "discord-ai-terminal-image-"));
+    const imagePath = path.join(dir, "jesus.png");
+    fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const thread = makeThread();
+    const sent = new Set<string>();
+    const outbox = new Outbox(thread, undefined, (p) => tryClaimImageSend(sent, p));
+
+    outbox.pushText(`![first](${imagePath})`);
+    outbox.pushText(`![second](${imagePath})`);
+    await outbox.drain();
+
+    const fileSends = thread.sends.filter((payload) => payload.files?.length);
+    expect(fileSends).toHaveLength(1);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("Codex generated image discovery", () => {
+  it("finds unsent generated images for a Codex session", () => {
+    const oldHome = process.env.CODEX_HOME;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-generated-images-"));
+    const sessionId = "thread-123";
+    const imageDir = path.join(home, "generated_images", sessionId);
+    fs.mkdirSync(imageDir, { recursive: true });
+    const imagePath = path.join(imageDir, "ig_new.png");
+    fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    fs.writeFileSync(path.join(imageDir, "notes.txt"), "ignore me");
+    process.env.CODEX_HOME = home;
+
+    try {
+      expect(listNewCodexGeneratedImages(sessionId, new Set(["ig_old"]))).toEqual([imagePath]);
+      expect(listNewCodexGeneratedImages(sessionId, new Set(["ig_new"]))).toEqual([]);
+    } finally {
+      if (oldHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldHome;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

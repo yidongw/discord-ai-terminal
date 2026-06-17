@@ -18,6 +18,7 @@ import {
   CC_MODEL_CHOICES, CODEX_MODEL_CHOICES, CS_MODEL_CHOICES,
   CC_MODEL_ALIASES, CODEX_MODEL_ALIASES, CS_MODEL_ALIASES,
   DEFAULT_CC_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_CS_MODEL,
+  getChannelModelForAgent,
 } from "../utils/models.js";
 import { getAgent, listAgentKeys } from "../agents/index.js";
 
@@ -73,11 +74,11 @@ export class CommandHandler {
 
       new SlashCommandBuilder()
         .setName("model")
-        .setDescription("Set the model for cc, codex, or cs in this channel")
+        .setDescription("Set model — in a channel updates the default; in a thread overrides only that thread")
         .addSubcommand((s) =>
           s
             .setName("cc")
-            .setDescription("Set the Claude Code model for this channel")
+            .setDescription("Set the Claude Code model")
             .addStringOption((o) =>
               o
                 .setName("model")
@@ -89,7 +90,7 @@ export class CommandHandler {
         .addSubcommand((s) =>
           s
             .setName("codex")
-            .setDescription("Set the Codex model for this channel")
+            .setDescription("Set the Codex model")
             .addStringOption((o) =>
               o
                 .setName("model")
@@ -101,7 +102,7 @@ export class CommandHandler {
         .addSubcommand((s) =>
           s
             .setName("cs")
-            .setDescription("Set the Cursor agent model for this channel")
+            .setDescription("Set the Cursor agent model")
             .addStringOption((o) =>
               o
                 .setName("model")
@@ -114,6 +115,10 @@ export class CommandHandler {
       new SlashCommandBuilder()
         .setName("agents")
         .setDescription("List available @agent mentions and their model aliases"),
+
+      new SlashCommandBuilder()
+        .setName("queue")
+        .setDescription("View messages queued to run after the current agent finishes"),
 
       new SlashCommandBuilder()
         .setName("update")
@@ -183,6 +188,7 @@ export class CommandHandler {
     if (commandName === "model") return this.handleModel(interaction);
     if (commandName === "agents") return this.handleAgents(interaction);
     if (commandName === "tools") return this.handleTools(interaction);
+    if (commandName === "queue") return this.handleQueue(interaction);
     if (commandName === "update") return this.handleUpdate(interaction);
   }
 
@@ -247,12 +253,21 @@ export class CommandHandler {
   private async handleStatus(i: ChatInputCommandInteraction): Promise<void> {
     const db = this.sessionManager.getDb();
     const channelId = this.channelKey(i);
+    const inThread = i.channel?.isThread() ?? false;
     const session = db.getThreadSession(i.channelId);
     if (!session) {
       await i.reply({ embeds: [embed("ℹ️ No Session", "No session found for this thread.", 0x888888)] });
       return;
     }
     const running = this.sessionManager.hasActiveProcess(i.channelId);
+    const channelModel = getChannelModelForAgent(db, session.agent, channelId);
+    const effectiveModel = session.modelOverride ?? channelModel;
+    const modelSource =
+      session.modelOverride === undefined
+        ? "channel default"
+        : session.modelOverride === channelModel
+          ? "channel default (frozen at thread start)"
+          : "thread override";
     await i.reply({
       embeds: [
         new EmbedBuilder()
@@ -260,9 +275,14 @@ export class CommandHandler {
           .addFields(
             { name: "Agent", value: session.agent, inline: true },
             { name: "Status", value: running ? "🟢 Running" : "⚫ Idle", inline: true },
-            { name: "CC Model", value: db.getModel(channelId), inline: true },
-            { name: "Codex Model", value: db.getCodexModel(channelId), inline: true },
-            { name: "CS Model", value: db.getCsModel(channelId), inline: true },
+            { name: "Active Model", value: `${effectiveModel} (${modelSource})`, inline: true },
+            ...(inThread
+              ? []
+              : [
+                  { name: "CC Model", value: db.getModel(channelId), inline: true },
+                  { name: "Codex Model", value: db.getCodexModel(channelId), inline: true },
+                  { name: "CS Model", value: db.getCsModel(channelId), inline: true },
+                ]),
             { name: "Session ID", value: session.sessionId ?? "none", inline: false },
             { name: "Working Dir", value: `\`${session.workDir}\``, inline: false }
           )
@@ -279,33 +299,93 @@ export class CommandHandler {
     });
   }
 
+  private modelSubcommandAgent(sub: string): string {
+    if (sub === "codex") return "cx";
+    if (sub === "cs") return "cs";
+    return "cc";
+  }
+
+  private modelSubcommandLabel(sub: string): string {
+    if (sub === "codex") return "codex";
+    if (sub === "cs") return "cs";
+    return "cc";
+  }
+
   private async handleModel(i: ChatInputCommandInteraction): Promise<void> {
     const db = this.sessionManager.getDb();
-    const channelId = this.channelKey(i);
     const sub = i.options.getSubcommand();
+    const expectedAgent = this.modelSubcommandAgent(sub);
+    const modelLabel = this.modelSubcommandLabel(sub);
 
-    if (sub === "cc") {
-      const model = i.options.getString("model", true) as CcModel;
-      db.setModel(channelId, model);
+    let model: CcModel | CodexModel | CsModel;
+    if (sub === "cc") model = i.options.getString("model", true) as CcModel;
+    else if (sub === "cs") model = i.options.getString("model", true) as CsModel;
+    else model = i.options.getString("model", true) as CodexModel;
+
+    // In a thread: override the model for this thread only.
+    if (i.channel?.isThread()) {
+      const session = db.getThreadSession(i.channelId);
+      if (!session) {
+        await i.reply({
+          embeds: [
+            embed(
+              "ℹ️ No Session",
+              "Start an agent in this thread first — `/model` here will then apply only to this thread.",
+              0x888888
+            ),
+          ],
+        });
+        return;
+      }
+      if (session.agent !== expectedAgent) {
+        const agentLabel = this.modelSubcommandLabel(
+          session.agent === "cx" ? "codex" : session.agent
+        );
+        await i.reply({
+          embeds: [
+            embed(
+              "⚠️ Command Does Not Apply",
+              `This is an **@${session.agent}** thread — \`/model ${modelLabel}\` has no effect here. Use \`/model ${agentLabel}\` instead.`,
+              0xffa500
+            ),
+          ],
+        });
+        return;
+      }
+      db.updateModelOverride(i.channelId, model);
       await i.reply({
-        embeds: [embed("✅ CC Model Set", `Claude Code model set to **${model}** for this channel.`, 0x00ff00)],
+        embeds: [
+          embed(
+            "✅ Thread Model Set",
+            `${modelLabel === "cc" ? "Claude Code" : modelLabel === "cs" ? "Cursor agent" : "Codex"} model set to **${model}** for this thread. All future runs here will use it.`,
+            0x00ff00
+          ),
+        ],
+      });
+      return;
+    }
+
+    // In a channel: default for new threads only (existing threads keep their frozen model).
+    const channelId = i.channelId;
+    if (sub === "cc") {
+      db.setModel(channelId, model as CcModel);
+      await i.reply({
+        embeds: [embed("✅ CC Model Set", `Claude Code model set to **${model}** for this channel. New threads will use it; existing threads are unchanged.`, 0x00ff00)],
       });
       return;
     }
 
     if (sub === "cs") {
-      const model = i.options.getString("model", true) as CsModel;
-      db.setCsModel(channelId, model);
+      db.setCsModel(channelId, model as CsModel);
       await i.reply({
-        embeds: [embed("✅ CS Model Set", `Cursor agent model set to **${model}** for this channel.`, 0x00ff00)],
+        embeds: [embed("✅ CS Model Set", `Cursor agent model set to **${model}** for this channel. New threads will use it; existing threads are unchanged.`, 0x00ff00)],
       });
       return;
     }
 
-    const model = i.options.getString("model", true) as CodexModel;
-    db.setCodexModel(channelId, model);
+    db.setCodexModel(channelId, model as CodexModel);
     await i.reply({
-      embeds: [embed("✅ Codex Model Set", `Codex model set to **${model}** for this channel.`, 0x00ff00)],
+      embeds: [embed("✅ Codex Model Set", `Codex model set to **${model}** for this channel. New threads will use it; existing threads are unchanged.`, 0x00ff00)],
     });
   }
 
@@ -366,6 +446,56 @@ export class CommandHandler {
           0x00ff00
         ),
       ],
+    });
+  }
+
+  private async handleQueue(i: ChatInputCommandInteraction): Promise<void> {
+    const ch = i.channel;
+
+    if (ch?.isThread()) {
+      const threadId = ch.id;
+      const queue = this.sessionManager.listQueuedMessages(threadId);
+      const usageWait = this.sessionManager.getUsageLimitWait(threadId);
+
+      if (queue.length === 0) {
+        const extra = usageWait.waiting
+          ? `\n\n⏸️ Waiting for usage limit reset at **${usageWait.resetLabel}**.`
+          : "";
+        await i.reply({
+          embeds: [embed("📋 Queue", `No messages queued in this thread.${extra}`, 0x888888)],
+        });
+        return;
+      }
+
+      const lines = queue.map((m) => `**${m.position}.** ${m.preview}`).join("\n\n");
+      const waitNote = usageWait.waiting
+        ? `\n\n⏸️ Usage limit resets at **${usageWait.resetLabel}** — queued messages run after auto-resume.`
+        : "";
+      await i.reply({
+        embeds: [embed(`📋 Queue (${queue.length})`, lines + waitNote, 0x5865f2)],
+      });
+      return;
+    }
+
+    const channelId = i.channelId;
+    const groups = this.sessionManager.listQueuedMessagesForChannel(channelId);
+    if (groups.length === 0) {
+      await i.reply({
+        embeds: [embed("📋 Channel Queue", "No messages queued in this channel.", 0x888888)],
+      });
+      return;
+    }
+
+    const total = groups.reduce((n, g) => n + g.messages.length, 0);
+    const sections = groups
+      .map((g) => {
+        const lines = g.messages.map((m) => `  **${m.position}.** ${m.preview}`).join("\n");
+        return `**${g.threadName}** (${g.messages.length})\n${lines}`;
+      })
+      .join("\n\n");
+
+    await i.reply({
+      embeds: [embed(`📋 Channel Queue (${total} in ${groups.length} thread${groups.length === 1 ? "" : "s"})`, sections, 0x5865f2)],
     });
   }
 

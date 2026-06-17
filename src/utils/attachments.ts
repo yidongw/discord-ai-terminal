@@ -132,6 +132,27 @@ export function getToolInputPath(input: unknown): string | undefined {
   return p != null ? String(p) : undefined;
 }
 
+/** Canonical key for deduplicating uploads of the same on-disk image. */
+export function normalizeImagePathKey(filePath: string): string {
+  let p = filePath.trim();
+  try {
+    p = decodeURI(p);
+  } catch {}
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/** Returns true the first time a path is claimed for upload in this run. */
+export function tryClaimImageSend(sentPaths: Set<string>, filePath: string): boolean {
+  const key = normalizeImagePathKey(filePath);
+  if (sentPaths.has(key)) return false;
+  sentPaths.add(key);
+  return true;
+}
+
 /** Parse the absolute path from a GenerateImage tool result. */
 export function extractGeneratedImagePath(content: unknown): string | undefined {
   const text = toolResultText(content);
