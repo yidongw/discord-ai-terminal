@@ -1,6 +1,13 @@
 import { listAgentKeys } from "../agents/index.js";
 import { resolveModelAlias } from "../utils/models.js";
 
+/** True when the message contains any @ token (Discord ping or text @foo). */
+export function hasAnyMention(content: string): boolean {
+  if (/<@[!&]?\d+>/.test(content)) return true;
+  if (/<#\d+>/.test(content)) return true;
+  return /@\S/.test(content);
+}
+
 export interface ParsedInvocation {
   agent: string;
   prompt: string;
