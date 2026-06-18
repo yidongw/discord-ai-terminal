@@ -16,7 +16,7 @@ import {
 } from "discord.js";
 import { SessionManager, type QueuedMessage } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
-import { parseAgentInvocations, starterMessageText, threadName, firstLine } from "./parser.js";
+import { parseAgentInvocations, hasAnyMention, starterMessageText, threadName, firstLine } from "./parser.js";
 import { listAgentKeys, getAgent } from "../agents/index.js";
 import { resolveThreadWorkDir, mainRepoOf } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
@@ -551,6 +551,7 @@ export class DiscordBot {
     const invocations = parseAgentInvocations(msg.content);
 
     if (invocations.length === 0) {
+      if (hasAnyMention(msg.content)) return;
       // Show agent-select buttons, same as the normal flow.
       const agentButtons = listAgentKeys().map((key) => {
         const agent = getAgent(key)!;
@@ -676,6 +677,7 @@ export class DiscordBot {
 
     const invocations = parseAgentInvocations(msg.content);
     if (invocations.length === 0) {
+      if (hasAnyMention(msg.content)) return;
       const agentButtons = listAgentKeys().map((key) => {
         const agent = getAgent(key)!;
         return new ButtonBuilder()
@@ -786,10 +788,7 @@ export class DiscordBot {
 
     const session = this.sessionManager.getDb().getThreadSession(thread.id);
 
-    if (!session) {
-      await msg.reply("No session found for this thread.");
-      return;
-    }
+    if (!session) return;
 
     // Record this message as seen so restart recovery picks up only newer ones.
     this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
