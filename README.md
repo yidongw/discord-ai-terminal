@@ -172,6 +172,10 @@ Type any message in a channel that corresponds to a repository folder. The bot w
   - `gpt-5.5` - Most capable
   - `gpt-5.4-mini` - Fast and affordable (default)
   - `gpt-5.4` - Capable
+- **/goal**: Set or manage a goal for the current thread (cc only)
+  - `/goal set <text>` - Set a goal that will be prepended to all messages
+  - `/goal clear` - Remove the goal
+  - `/goal show` - Display the current goal
 - **/status**: Show current mode, models, and session info
 
 #### Project Commands
