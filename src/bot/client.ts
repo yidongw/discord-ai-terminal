@@ -1009,33 +1009,38 @@ export class DiscordBot {
       const limitNote = usageLimitWait.waiting
         ? `\nUsage limit resets at **${usageLimitWait.resetLabel}**.`
         : "";
-      const buttons = [
-        new ButtonBuilder()
-          .setCustomId(`msg_queue_${msg.id}`)
-          .setLabel("Queue")
-          .setStyle(ButtonStyle.Primary),
-      ];
+      const buttons = [];
       if (isBusy) {
         buttons.push(
           new ButtonBuilder()
+            .setCustomId(`msg_queue_${msg.id}`)
+            .setLabel("queue")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
             .setCustomId(`msg_interrupt_${msg.id}`)
-            .setLabel("Interrupt")
-            .setStyle(ButtonStyle.Danger)
+            .setLabel("interrupt")
+            .setStyle(ButtonStyle.Danger),
+          new ButtonBuilder()
+            .setCustomId(`msg_cancel_${msg.id}`)
+            .setLabel("cancel")
+            .setStyle(ButtonStyle.Secondary)
         );
       } else if (usageLimitWait.waiting) {
         buttons.push(
           new ButtonBuilder()
+            .setCustomId(`msg_queue_${msg.id}`)
+            .setLabel("queue for later")
+            .setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder()
             .setCustomId(`msg_use_on_resume_${msg.id}`)
-            .setLabel("Use on resume")
+            .setLabel("replace auto-resume")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId(`msg_cancel_${msg.id}`)
+            .setLabel("cancel")
             .setStyle(ButtonStyle.Secondary)
         );
       }
-      buttons.push(
-        new ButtonBuilder()
-          .setCustomId(`msg_cancel_${msg.id}`)
-          .setLabel("Cancel")
-          .setStyle(ButtonStyle.Secondary)
-      );
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons);
       const title = usageLimitWait.waiting && !isBusy
         ? "⏸️ Session limit — waiting to resume"
@@ -1299,9 +1304,9 @@ export class DiscordBot {
     await interaction.update({
       embeds: [
         new EmbedBuilder()
-          .setTitle("⏰ Use on resume")
+          .setTitle("⏰ Will run on resume")
           .setDescription(
-            `This message will run when the usage limit resets (instead of auto-continue).${queueNote}\n\n>>> ${preview}`
+            `This message will run when the usage limit resets (replacing the automatic continuation).${queueNote}\n\n>>> ${preview}`
           )
           .setColor(0x5865f2),
       ],
