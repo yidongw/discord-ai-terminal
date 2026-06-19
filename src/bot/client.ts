@@ -16,7 +16,15 @@ import {
 } from "discord.js";
 import { SessionManager, type QueuedMessage } from "./session-manager.js";
 import { CommandHandler } from "./commands.js";
-import { parseAgentInvocations, hasAnyMention, starterMessageText, threadName, firstLine } from "./parser.js";
+import {
+  parseAgentInvocations,
+  hasAnyMention,
+  parseAgentFromThreadName,
+  titleFromThreadName,
+  starterMessageText,
+  threadName,
+  firstLine,
+} from "./parser.js";
 import { listAgentKeys, getAgent } from "../agents/index.js";
 import { resolveThreadWorkDir, mainRepoOf } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
@@ -106,12 +114,12 @@ export class DiscordBot {
     return true;
   }
 
-  private ensureBotRepoThreadSession(
+  private ensureThreadSessionRecord(
     threadId: string,
     channelId: string,
     agentKey: string,
     workDir: string,
-    opts?: { branch?: string; modelOverride?: string }
+    opts?: { branch?: string; isWorktree?: boolean; modelOverride?: string }
   ): void {
     const existing = this.sessionManager.getDb().getThreadSession(threadId);
     const modelOverride =
@@ -124,13 +132,26 @@ export class DiscordBot {
         agent: agentKey,
         workDir,
         branch: opts?.branch,
-        isWorktree: true,
+        isWorktree: opts?.isWorktree ?? false,
         createdAt: Date.now(),
         modelOverride,
       });
     } else if (opts?.modelOverride !== undefined && opts.modelOverride !== existing.modelOverride) {
       this.sessionManager.getDb().updateModelOverride(threadId, opts.modelOverride);
     }
+  }
+
+  private ensureBotRepoThreadSession(
+    threadId: string,
+    channelId: string,
+    agentKey: string,
+    workDir: string,
+    opts?: { branch?: string; modelOverride?: string }
+  ): void {
+    this.ensureThreadSessionRecord(threadId, channelId, agentKey, workDir, {
+      ...opts,
+      isWorktree: true,
+    });
   }
 
   private spawnBotRepoWorker(
@@ -585,23 +606,18 @@ export class DiscordBot {
       autoArchiveDuration: 1440,
     })) as ThreadChannel;
 
+    const wtPath = path.join(this.baseFolder, "bot-worktrees", thread.id.slice(-8));
+    this.ensureThreadSessionRecord(thread.id, channel.id, agentKey, wtPath, {
+      modelOverride: this.resolveWorkerModel(agentKey, channel.id, { explicitModel }),
+    });
+
     // Create the bot worktree (git worktree of this bot repo at origin/main).
-    const wtPath = this.createBotWorktree(thread.id);
-    if (!wtPath) {
+    const actualWtPath = this.createBotWorktree(thread.id);
+    if (!actualWtPath) {
       await thread.send("❌ Failed to create bot worktree. Check logs.");
       return;
     }
 
-    // Persist the thread so missed-message recovery and cleanup can find it.
-    this.sessionManager.getDb().createThreadSession({
-      threadId: thread.id,
-      channelId: channel.id,
-      agent: agentKey,
-      workDir: wtPath,
-      isWorktree: false,
-      createdAt: Date.now(),
-      modelOverride: this.resolveWorkerModel(agentKey, channel.id, { explicitModel }),
-    });
     this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
 
     const discordContext = {
@@ -611,7 +627,7 @@ export class DiscordBot {
       messageId: msg.id,
     };
 
-    this.spawnWorker(thread.id, wtPath, { prompt: fullPrompt, agentKey, modelOverride, discordContext });
+    this.spawnWorker(thread.id, actualWtPath, { prompt: fullPrompt, agentKey, modelOverride, discordContext });
   }
 
   private async dispatchAgentRun(
@@ -742,6 +758,12 @@ export class DiscordBot {
 
       const effectiveModel = this.resolveWorkerModel(agent, channel.id, { explicitModel: modelOverride });
 
+      this.ensureThreadSessionRecord(thread.id, channel.id, agent, resolved.workDir, {
+        branch: resolved.branch,
+        isWorktree: !!resolved.worktree,
+        modelOverride: effectiveModel,
+      });
+
       try {
         if (this.isBotRepoWorktree(resolved.workDir)) {
           this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
@@ -769,6 +791,81 @@ export class DiscordBot {
     }
   }
 
+  private async tryBootstrapOrphanedThread(msg: Message, thread: ThreadChannel): Promise<boolean> {
+    const agentKey = parseAgentFromThreadName(thread.name);
+    if (!agentKey) return false;
+
+    const parent = thread.parent as TextChannel | null;
+    if (!parent) return false;
+
+    console.log(`[bootstrap] recovering orphaned thread ${thread.id} (agent=${agentKey})`);
+
+    await msg.react("👀").catch(() => {});
+
+    const attachments = await this.downloadMsgAttachments(msg);
+    const replyContext = await this.fetchReplyContext(msg);
+    const fullPrompt = buildPromptWithAttachments(
+      replyContext.text + msg.content,
+      [...replyContext.attachments, ...attachments]
+    );
+    const discordContext = {
+      channelId: parent.id,
+      channelName: parent.name,
+      userId: msg.author.id,
+      messageId: msg.id,
+    };
+
+    this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
+
+    if (this.discordAiTerminalChannelId && parent.id === this.discordAiTerminalChannelId) {
+      const wtPath = path.join(this.baseFolder, "bot-worktrees", thread.id.slice(-8));
+      this.ensureThreadSessionRecord(thread.id, parent.id, agentKey, wtPath, {
+        modelOverride: this.resolveWorkerModel(agentKey, parent.id),
+      });
+      const actualWtPath = this.createBotWorktree(thread.id);
+      if (!actualWtPath) {
+        await msg.reply("❌ Failed to create bot worktree. Check logs.");
+        return true;
+      }
+      const modelOverride = this.resolveWorkerModel(agentKey, parent.id);
+      this.spawnWorker(thread.id, actualWtPath, {
+        prompt: fullPrompt,
+        agentKey,
+        modelOverride,
+        discordContext,
+      });
+      return true;
+    }
+
+    const titleLabel = titleFromThreadName(thread.name) ?? firstLine(msg.content);
+    const resolved =
+      resolveThreadWorkDir(parent.name, thread.id, titleLabel, this.baseFolder) ??
+      { workDir: this.baseFolder, repo: parent.name };
+
+    const modelOverride = this.resolveWorkerModel(agentKey, parent.id);
+    this.ensureThreadSessionRecord(thread.id, parent.id, agentKey, resolved.workDir, {
+      branch: resolved.branch,
+      isWorktree: !!resolved.worktree,
+      modelOverride,
+    });
+
+    try {
+      await this.dispatchAgentRun(
+        thread.id,
+        parent.id,
+        thread,
+        agentKey,
+        resolved.workDir,
+        fullPrompt,
+        discordContext,
+        { branch: resolved.branch, isWorktree: !!resolved.worktree, modelOverride }
+      );
+    } catch (err: any) {
+      await msg.reply(`❌ Failed to start **${agentKey}**: ${err.message}`);
+    }
+    return true;
+  }
+
   private async handleThreadMessage(msg: Message): Promise<void> {
     const thread = msg.channel as ThreadChannel;
 
@@ -786,9 +883,13 @@ export class DiscordBot {
       }
     }
 
-    const session = this.sessionManager.getDb().getThreadSession(thread.id);
+    let session = this.sessionManager.getDb().getThreadSession(thread.id);
 
-    if (!session) return;
+    if (!session) {
+      const bootstrapped = await this.tryBootstrapOrphanedThread(msg, thread);
+      if (!bootstrapped) return;
+      session = this.sessionManager.getDb().getThreadSession(thread.id)!;
+    }
 
     // Record this message as seen so restart recovery picks up only newer ones.
     this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
@@ -1002,6 +1103,12 @@ export class DiscordBot {
         resolveThreadWorkDir(channelName, childThread.id, titleLabel, this.baseFolder, parentSession.branch) ??
         { workDir: this.baseFolder, repo: channelName };
 
+      this.ensureThreadSessionRecord(childThread.id, parentChannel.id, agent, resolved.workDir, {
+        branch: (resolved as any).branch,
+        isWorktree: !!(resolved as any).worktree,
+        modelOverride,
+      });
+
       try {
         await this.dispatchAgentRun(
           childThread.id,
@@ -1087,22 +1194,17 @@ export class DiscordBot {
 
     // discord-ai-terminal channel: spawn a bot-instance worker thread.
     if (this.discordAiTerminalChannelId && channel.id === this.discordAiTerminalChannelId) {
-      const wtPath = this.createBotWorktree(thread.id);
-      if (!wtPath) {
+      const wtPath = path.join(this.baseFolder, "bot-worktrees", thread.id.slice(-8));
+      this.ensureThreadSessionRecord(thread.id, channel.id, agentKey, wtPath, {
+        modelOverride: this.resolveWorkerModel(agentKey, channel.id),
+      });
+      const actualWtPath = this.createBotWorktree(thread.id);
+      if (!actualWtPath) {
         await thread.send("❌ Failed to create bot worktree. Check logs.");
         return;
       }
-      this.sessionManager.getDb().createThreadSession({
-        threadId: thread.id,
-        channelId: channel.id,
-        agent: agentKey,
-        workDir: wtPath,
-        isWorktree: false,
-        createdAt: Date.now(),
-        modelOverride: this.resolveWorkerModel(agentKey, channel.id),
-      });
       this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
-      this.spawnWorker(thread.id, wtPath, {
+      this.spawnWorker(thread.id, actualWtPath, {
         prompt: fullPrompt,
         agentKey,
         modelOverride: this.resolveWorkerModel(agentKey, channel.id),
@@ -1115,6 +1217,11 @@ export class DiscordBot {
     const resolved =
       resolveThreadWorkDir(channelName, thread.id, titleLabel, this.baseFolder) ??
       { workDir: this.baseFolder, repo: channelName };
+
+    this.ensureThreadSessionRecord(thread.id, channel.id, agentKey, resolved.workDir, {
+      branch: (resolved as any).branch,
+      isWorktree: !!(resolved as any).worktree,
+    });
 
     try {
       await this.dispatchAgentRun(

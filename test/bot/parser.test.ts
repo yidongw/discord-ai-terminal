@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { hasAnyMention } from "../../src/bot/parser.js";
+import {
+  hasAnyMention,
+  parseAgentFromThreadName,
+  titleFromThreadName,
+} from "../../src/bot/parser.js";
 
 describe("hasAnyMention", () => {
   it("returns false for plain text", () => {
@@ -16,5 +20,31 @@ describe("hasAnyMention", () => {
 
   it("returns false when @ is not followed by a token", () => {
     expect(hasAnyMention("email me @ example.com")).toBe(false);
+  });
+});
+
+describe("parseAgentFromThreadName", () => {
+  it("parses agent prefix from a plain thread name", () => {
+    expect(parseAgentFromThreadName("cs • Fix login bug")).toBe("cs");
+    expect(parseAgentFromThreadName("cc • Add webhook")).toBe("cc");
+  });
+
+  it("parses agent prefix when a status emoji is present", () => {
+    expect(parseAgentFromThreadName("🔄 cs • Fix login bug")).toBe("cs");
+  });
+
+  it("returns null for PR-renamed threads without an agent prefix", () => {
+    expect(parseAgentFromThreadName("#20 • Fix login bug")).toBeNull();
+  });
+
+  it("returns null for unrelated thread names", () => {
+    expect(parseAgentFromThreadName("general discussion")).toBeNull();
+  });
+});
+
+describe("titleFromThreadName", () => {
+  it("extracts the title portion after the agent prefix", () => {
+    expect(titleFromThreadName("cs • Fix login bug")).toBe("Fix login bug");
+    expect(titleFromThreadName("🔄 cc • Add tests")).toBe("Add tests");
   });
 });
