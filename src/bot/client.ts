@@ -568,6 +568,143 @@ export class DiscordBot {
     });
   }
 
+  private async fetchThreadUserMessages(thread: ThreadChannel): Promise<Message[]> {
+    const fetched = await thread.messages.fetch({ limit: 100 });
+    return [...fetched.values()]
+      .filter((m) => !m.author.bot && this.allowedUserIds.includes(m.author.id))
+      .sort((a, b) => (a.id < b.id ? -1 : 1));
+  }
+
+  /** Combine all user messages in a thread into one agent prompt (with attachments). */
+  private async buildThreadPromptFromMessages(messages: Message[]): Promise<string> {
+    let combinedText = "";
+    const allAttachments: DownloadedAttachment[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i]!;
+      const replyContext = await this.fetchReplyContext(m);
+      const attachments = await this.downloadMsgAttachments(m);
+      allAttachments.push(...replyContext.attachments, ...attachments);
+      if (i > 0) combinedText += "\n\n---\n\n";
+      combinedText += replyContext.text + m.content;
+    }
+    return buildPromptWithAttachments(combinedText, allAttachments);
+  }
+
+  /**
+   * Resolve worktree/workdir and invoke the agent for a thread. Creates a session
+   * only as part of the invoke (runAgent, spawnBotRepoWorker, or worker spawn).
+   * Used for new threads and for recovering orphaned ones.
+   */
+  private async startThreadAgentRun(opts: {
+    thread: ThreadChannel;
+    channel: TextChannel;
+    agentKey: string;
+    titleLabel: string;
+    prompt: string;
+    triggerMsg: Message;
+    explicitModel?: string;
+    parentBranch?: string;
+    discordContext?: { channelId: string; channelName: string; userId: string; messageId: string };
+  }): Promise<void> {
+    const { thread, channel, agentKey, titleLabel, prompt, triggerMsg, explicitModel, parentBranch } = opts;
+    const modelOverride = this.resolveWorkerModel(agentKey, channel.id, { explicitModel });
+    const discordContext = opts.discordContext ?? {
+      channelId: thread.id,
+      channelName: thread.name,
+      userId: triggerMsg.author.id,
+      messageId: triggerMsg.id,
+    };
+
+    if (this.discordAiTerminalChannelId && channel.id === this.discordAiTerminalChannelId) {
+      const wtPath = this.createBotWorktree(thread.id);
+      if (!wtPath) {
+        await thread.send("❌ Failed to create bot worktree. Check logs.");
+        return;
+      }
+      this.sessionManager.getDb().createThreadSession({
+        threadId: thread.id,
+        channelId: channel.id,
+        agent: agentKey,
+        workDir: wtPath,
+        isWorktree: false,
+        createdAt: Date.now(),
+        modelOverride,
+      });
+      this.sessionManager.getDb().updateLastSeenMessageId(thread.id, triggerMsg.id);
+      this.spawnWorker(thread.id, wtPath, { prompt, agentKey, modelOverride, discordContext });
+      return;
+    }
+
+    const resolved =
+      resolveThreadWorkDir(channel.name, thread.id, titleLabel, this.baseFolder, parentBranch) ??
+      { workDir: this.baseFolder, repo: channel.name };
+
+    try {
+      if (this.isBotRepoWorktree(resolved.workDir)) {
+        this.sessionManager.getDb().updateLastSeenMessageId(thread.id, triggerMsg.id);
+        this.spawnBotRepoWorker(
+          thread.id,
+          channel.id,
+          resolved.workDir,
+          { prompt, agentKey, modelOverride, discordContext },
+          { branch: resolved.branch }
+        );
+      } else {
+        await this.dispatchAgentRun(
+          thread.id,
+          channel.id,
+          thread,
+          agentKey,
+          resolved.workDir,
+          prompt,
+          discordContext,
+          { branch: resolved.branch, isWorktree: !!resolved.worktree, modelOverride: explicitModel }
+        );
+        this.sessionManager.getDb().updateLastSeenMessageId(thread.id, triggerMsg.id);
+      }
+    } catch (err: any) {
+      await thread.send(`❌ Failed to start **${agentKey}**: ${err.message}`);
+    }
+  }
+
+  private async tryBootstrapOrphanedThread(msg: Message, thread: ThreadChannel): Promise<boolean> {
+    const agentKey = parseAgentFromThreadName(thread.name);
+    if (!agentKey) return false;
+
+    const parent = thread.parent as TextChannel | null;
+    if (!parent) return false;
+
+    console.log(`[bootstrap] recovering orphaned thread ${thread.id} (agent=${agentKey})`);
+
+    await msg.react("👀").catch(() => {});
+
+    const messages = await this.fetchThreadUserMessages(thread);
+    if (messages.length === 0) return false;
+
+    const fullPrompt = await this.buildThreadPromptFromMessages(messages);
+    const triggerMsg = messages[messages.length - 1]!;
+    const titleLabel = titleFromThreadName(thread.name) ?? firstLine(messages[0]!.content);
+    const invocations = parseAgentInvocations(triggerMsg.content);
+    const explicitModel = invocations.length > 0 ? invocations[0]!.model : undefined;
+
+    await this.startThreadAgentRun({
+      thread,
+      channel: parent,
+      agentKey,
+      titleLabel,
+      prompt: fullPrompt,
+      triggerMsg,
+      explicitModel,
+      discordContext: {
+        channelId: parent.id,
+        channelName: parent.name,
+        userId: triggerMsg.author.id,
+        messageId: triggerMsg.id,
+      },
+    });
+    return true;
+  }
+
   private async handleBotInstanceChannelMessage(msg: Message, channel: TextChannel): Promise<void> {
     const invocations = parseAgentInvocations(msg.content);
 
@@ -594,7 +731,6 @@ export class DiscordBot {
     await msg.react("👀").catch(() => {});
 
     const { agent: agentKey, prompt, model: explicitModel } = invocations[0]!;
-    const modelOverride = this.resolveWorkerModel(agentKey, channel.id, { explicitModel });
     const attachments = await this.downloadMsgAttachments(msg);
     const fullPrompt = buildPromptWithAttachments(prompt, attachments);
 
@@ -606,33 +742,21 @@ export class DiscordBot {
       autoArchiveDuration: 1440,
     })) as ThreadChannel;
 
-    // Create the bot worktree (git worktree of this bot repo at origin/main).
-    const wtPath = this.createBotWorktree(thread.id);
-    if (!wtPath) {
-      await thread.send("❌ Failed to create bot worktree. Check logs.");
-      return;
-    }
-
-    // Persist the thread so missed-message recovery and cleanup can find it.
-    this.sessionManager.getDb().createThreadSession({
-      threadId: thread.id,
-      channelId: channel.id,
-      agent: agentKey,
-      workDir: wtPath,
-      isWorktree: false,
-      createdAt: Date.now(),
-      modelOverride: this.resolveWorkerModel(agentKey, channel.id, { explicitModel }),
+    await this.startThreadAgentRun({
+      thread,
+      channel,
+      agentKey,
+      titleLabel,
+      prompt: fullPrompt,
+      triggerMsg: msg,
+      explicitModel,
+      discordContext: {
+        channelId: channel.id,
+        channelName: channel.name,
+        userId: msg.author.id,
+        messageId: msg.id,
+      },
     });
-    this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
-
-    const discordContext = {
-      channelId: channel.id,
-      channelName: channel.name,
-      userId: msg.author.id,
-      messageId: msg.id,
-    };
-
-    this.spawnWorker(thread.id, wtPath, { prompt: fullPrompt, agentKey, modelOverride, discordContext });
   }
 
   private async dispatchAgentRun(
@@ -688,7 +812,6 @@ export class DiscordBot {
 
   private async handleChannelMessage(msg: Message): Promise<void> {
     const channel = msg.channel as TextChannel;
-    const channelName = channel.name;
 
     // discord-ai-terminal channel: each message spawns a new bot-instance thread.
     if (this.discordAiTerminalChannelId && channel.id === this.discordAiTerminalChannelId) {
@@ -753,116 +876,17 @@ export class DiscordBot {
         messageId: msg.id,
       };
 
-      // Each thread runs in its own worktree on its own branch (off the repo's
-      // default branch), so concurrent threads in this channel never conflict.
-      // The branch/dir slug comes from the AI-generated title (no agent prefix),
-      // keeping names like `discord/fix-login-password-reset-456789`.
-      const resolved =
-        resolveThreadWorkDir(channelName, thread.id, titleLabel, this.baseFolder) ??
-        { workDir: this.baseFolder, repo: channelName };
-
-      const effectiveModel = this.resolveWorkerModel(agent, channel.id, { explicitModel: modelOverride });
-
-      try {
-        if (this.isBotRepoWorktree(resolved.workDir)) {
-          this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
-          this.spawnBotRepoWorker(thread.id, channel.id, resolved.workDir, {
-            prompt: fullPrompt,
-            agentKey: agent,
-            modelOverride: effectiveModel,
-            discordContext,
-          }, { branch: resolved.branch });
-        } else {
-          await this.sessionManager.runAgent(
-            thread.id,
-            channel.id,
-            thread,
-            agent,
-            resolved.workDir,
-            fullPrompt,
-            discordContext,
-            { branch: resolved.branch, isWorktree: !!resolved.worktree, modelOverride }
-          );
-        }
-      } catch (err: any) {
-        await thread.send(`❌ Failed to start **${agent}**: ${err.message}`);
-      }
-    }
-  }
-
-  private async tryBootstrapOrphanedThread(msg: Message, thread: ThreadChannel): Promise<boolean> {
-    const agentKey = parseAgentFromThreadName(thread.name);
-    if (!agentKey) return false;
-
-    const parent = thread.parent as TextChannel | null;
-    if (!parent) return false;
-
-    console.log(`[bootstrap] recovering orphaned thread ${thread.id} (agent=${agentKey})`);
-
-    await msg.react("👀").catch(() => {});
-
-    const attachments = await this.downloadMsgAttachments(msg);
-    const replyContext = await this.fetchReplyContext(msg);
-    const fullPrompt = buildPromptWithAttachments(
-      replyContext.text + msg.content,
-      [...replyContext.attachments, ...attachments]
-    );
-    const discordContext = {
-      channelId: parent.id,
-      channelName: parent.name,
-      userId: msg.author.id,
-      messageId: msg.id,
-    };
-
-    this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
-
-    if (this.discordAiTerminalChannelId && parent.id === this.discordAiTerminalChannelId) {
-      const wtPath = this.createBotWorktree(thread.id);
-      if (!wtPath) {
-        await msg.reply("❌ Failed to create bot worktree. Check logs.");
-        return true;
-      }
-      const modelOverride = this.resolveWorkerModel(agentKey, parent.id);
-      this.sessionManager.getDb().createThreadSession({
-        threadId: thread.id,
-        channelId: parent.id,
-        agent: agentKey,
-        workDir: wtPath,
-        isWorktree: false,
-        createdAt: Date.now(),
-        modelOverride,
-      });
-      this.spawnWorker(thread.id, wtPath, {
-        prompt: fullPrompt,
-        agentKey,
-        modelOverride,
-        discordContext,
-      });
-      return true;
-    }
-
-    const titleLabel = titleFromThreadName(thread.name) ?? firstLine(msg.content);
-    const resolved =
-      resolveThreadWorkDir(parent.name, thread.id, titleLabel, this.baseFolder) ??
-      { workDir: this.baseFolder, repo: parent.name };
-
-    const modelOverride = this.resolveWorkerModel(agentKey, parent.id);
-
-    try {
-      await this.dispatchAgentRun(
-        thread.id,
-        parent.id,
+      await this.startThreadAgentRun({
         thread,
-        agentKey,
-        resolved.workDir,
-        fullPrompt,
+        channel,
+        agentKey: agent,
+        titleLabel,
+        prompt: fullPrompt,
+        triggerMsg: msg,
+        explicitModel: modelOverride,
         discordContext,
-        { branch: resolved.branch, isWorktree: !!resolved.worktree, modelOverride }
-      );
-    } catch (err: any) {
-      await msg.reply(`❌ Failed to start **${agentKey}**: ${err.message}`);
+      });
     }
-    return true;
   }
 
   private async handleThreadMessage(msg: Message): Promise<void> {
@@ -882,12 +906,11 @@ export class DiscordBot {
       }
     }
 
-    let session = this.sessionManager.getDb().getThreadSession(thread.id);
+    const session = this.sessionManager.getDb().getThreadSession(thread.id);
 
     if (!session) {
-      const bootstrapped = await this.tryBootstrapOrphanedThread(msg, thread);
-      if (!bootstrapped) return;
-      session = this.sessionManager.getDb().getThreadSession(thread.id)!;
+      if (await this.tryBootstrapOrphanedThread(msg, thread)) return;
+      return;
     }
 
     // Record this message as seen so restart recovery picks up only newer ones.
@@ -1095,27 +1118,17 @@ export class DiscordBot {
         messageId: msg.id,
       };
 
-      const channelName = parentChannel.name;
-      // Branch the new worktree off the parent thread's branch so it starts
-      // from the same state instead of the repo's default branch.
-      const resolved =
-        resolveThreadWorkDir(channelName, childThread.id, titleLabel, this.baseFolder, parentSession.branch) ??
-        { workDir: this.baseFolder, repo: channelName };
-
-      try {
-        await this.dispatchAgentRun(
-          childThread.id,
-          parentChannel.id,
-          childThread,
-          agent,
-          resolved.workDir,
-          fullPrompt,
-          discordContext,
-          { branch: (resolved as any).branch, isWorktree: !!(resolved as any).worktree, modelOverride }
-        );
-      } catch (err: any) {
-        await childThread.send(`❌ Failed to start **${agent}**: ${err.message}`);
-      }
+      await this.startThreadAgentRun({
+        thread: childThread,
+        channel: parentChannel,
+        agentKey: agent,
+        titleLabel,
+        prompt: fullPrompt,
+        triggerMsg: msg,
+        explicitModel: modelOverride,
+        parentBranch: parentSession.branch,
+        discordContext,
+      });
     }
   }
 
@@ -1183,53 +1196,16 @@ export class DiscordBot {
     const titleLabel = await generateThreadTitle(agentKey, fullPrompt).catch(() => firstLine(fullPrompt));
     const tName = threadName(agentKey, titleLabel);
     const thread = (await msg.startThread({ name: tName, autoArchiveDuration: 1440 })) as ThreadChannel;
-    const discordContext = { channelId: thread.id, channelName: tName, userId: msg.author.id, messageId: msg.id };
 
-    // discord-ai-terminal channel: spawn a bot-instance worker thread.
-    if (this.discordAiTerminalChannelId && channel.id === this.discordAiTerminalChannelId) {
-      const wtPath = this.createBotWorktree(thread.id);
-      if (!wtPath) {
-        await thread.send("❌ Failed to create bot worktree. Check logs.");
-        return;
-      }
-      this.sessionManager.getDb().createThreadSession({
-        threadId: thread.id,
-        channelId: channel.id,
-        agent: agentKey,
-        workDir: wtPath,
-        isWorktree: false,
-        createdAt: Date.now(),
-        modelOverride: this.resolveWorkerModel(agentKey, channel.id),
-      });
-      this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
-      this.spawnWorker(thread.id, wtPath, {
-        prompt: fullPrompt,
-        agentKey,
-        modelOverride: this.resolveWorkerModel(agentKey, channel.id),
-        discordContext,
-      });
-      return;
-    }
-
-    const channelName = channel.name;
-    const resolved =
-      resolveThreadWorkDir(channelName, thread.id, titleLabel, this.baseFolder) ??
-      { workDir: this.baseFolder, repo: channelName };
-
-    try {
-      await this.dispatchAgentRun(
-        thread.id,
-        channel.id,
-        thread,
-        agentKey,
-        resolved.workDir,
-        fullPrompt,
-        discordContext,
-        { branch: (resolved as any).branch, isWorktree: !!(resolved as any).worktree }
-      );
-    } catch (err: any) {
-      await thread.send(`❌ Failed to start **${agentKey}**: ${err.message}`);
-    }
+    await this.startThreadAgentRun({
+      thread,
+      channel,
+      agentKey,
+      titleLabel,
+      prompt: fullPrompt,
+      triggerMsg: msg,
+      discordContext: { channelId: thread.id, channelName: tName, userId: msg.author.id, messageId: msg.id },
+    });
   }
 
   private async handleAgentCancel(interaction: ButtonInteraction): Promise<void> {
