@@ -354,10 +354,9 @@ export class SessionManager {
   }
 
   // Remove a thread's isolated worktree + branch and forget the session.
-  // Refuses (keeping everything) when the worktree has uncommitted or unmerged
-  // work, unless `force` is set. Returns null when the thread had no worktree.
-  // Pass keepSession=true to preserve the DB session (e.g. auto-archive) so the
-  // thread can be resumed later; false (default) deletes it permanently.
+  // Callers must run policy guards before invoking this. Returns null when the
+  // thread had no worktree. Pass keepSession=true to preserve the DB session
+  // (e.g. auto-archive) so the thread can be resumed later.
   cleanupThreadWorktree(threadId: string, force = false, keepSession = false): RemoveResult | null {
     const session = this.db.getThreadSession(threadId);
     if (!session || !session.isWorktree) return null;

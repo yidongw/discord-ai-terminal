@@ -14,8 +14,6 @@ export interface ResolvedPath {
 export interface WorktreeStatus {
   // Uncommitted changes in the working tree (tracked or untracked).
   dirty: boolean;
-  // Commits on this branch that aren't in the repo's default branch.
-  unmerged: boolean;
 }
 
 // Resolve the source repo directory for a channel. Returns null if the folder
@@ -198,18 +196,21 @@ export function mainRepoOf(wtPath: string): string | null {
   return gitDir ? path.dirname(gitDir) : null;
 }
 
-// Inspect a worktree for unsaved work that cleanup must not discard.
+// Inspect a worktree for uncommitted changes that cleanup must not discard.
 export function worktreeStatus(repoPath: string, wtPath: string): WorktreeStatus {
   const status = spawnSync("git", ["-C", wtPath, "status", "--porcelain"], { encoding: "utf8" });
   const dirty = status.status === 0 ? status.stdout.trim().length > 0 : true;
+  return { dirty };
+}
 
-  const base = defaultBranch(repoPath);
-  const log = spawnSync("git", ["-C", wtPath, "log", "--oneline", `${base}..HEAD`], {
-    encoding: "utf8",
-  });
-  const unmerged = log.status === 0 ? log.stdout.trim().length > 0 : true;
+/** True when the worktree has no uncommitted changes. */
+export function worktreePassesCloseCheck(repoPath: string, wtPath: string): boolean {
+  return !worktreeStatus(repoPath, wtPath).dirty;
+}
 
-  return { dirty, unmerged };
+export function worktreeCloseBlockReason(repoPath: string, wtPath: string): string | null {
+  if (worktreePassesCloseCheck(repoPath, wtPath)) return null;
+  return "uncommitted changes";
 }
 
 export interface RemoveResult {
@@ -217,8 +218,8 @@ export interface RemoveResult {
   reason?: string;
 }
 
-// Remove a thread's worktree and delete its branch. Refuses when the worktree
-// has uncommitted changes or unmerged commits unless `force` is set.
+// Remove a thread's worktree and delete its branch. Policy checks belong to the
+// caller — this only runs git removal.
 export function removeWorktree(
   repoPath: string,
   wtPath: string,
@@ -227,16 +228,6 @@ export function removeWorktree(
 ): RemoveResult {
   if (!fs.existsSync(wtPath)) {
     return { removed: true, reason: "already gone" };
-  }
-
-  if (!force) {
-    const { dirty, unmerged } = worktreeStatus(repoPath, wtPath);
-    if (dirty || unmerged) {
-      const blockers = [dirty && "uncommitted changes", unmerged && "unmerged commits"]
-        .filter(Boolean)
-        .join(" and ");
-      return { removed: false, reason: blockers };
-    }
   }
 
   const removeArgs = ["-C", repoPath, "worktree", "remove", wtPath];
