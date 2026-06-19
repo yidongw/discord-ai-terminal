@@ -1014,7 +1014,7 @@ export class DiscordBot {
         : "";
       const buttons = [];
 
-      // Session limit case: offer send now, queue, replace auto-continue, cancel
+      // Session limit case: offer send now, queue, use on resume, cancel
       if (usageLimitWait.waiting && !isBusy) {
         buttons.push(
           new ButtonBuilder()
@@ -1027,7 +1027,7 @@ export class DiscordBot {
             .setStyle(ButtonStyle.Secondary),
           new ButtonBuilder()
             .setCustomId(`msg_use_on_resume_${msg.id}`)
-            .setLabel("Replace auto-continue")
+            .setLabel("Use on resume")
             .setStyle(ButtonStyle.Secondary),
           new ButtonBuilder()
             .setCustomId(`msg_cancel_${msg.id}`)
