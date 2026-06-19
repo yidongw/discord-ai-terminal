@@ -43,6 +43,7 @@ import type { GitHubHandler } from "../github/handler.js";
 import type { ThreadSession } from "../db/database.js";
 import type { WorkerMessage } from "./worker-mode.js";
 import { resolveEffectiveModel } from "../utils/models.js";
+import { evaluateThreadWorktreeClose } from "../utils/merged-worktree-close.js";
 
 interface PendingInteraction extends QueuedMessage {}
 
@@ -346,7 +347,7 @@ export class DiscordBot {
     });
 
     // A deleted thread is gone for good — clean up its worktree (refusing if it
-    // still holds uncommitted/unmerged work, which we then leave on disk).
+    // still holds uncommitted work, which we then leave on disk).
     this.client.on("threadDelete", (thread) => {
       this.cleanupThread(thread.id, null, "deleted");
     });
@@ -401,9 +402,9 @@ export class DiscordBot {
     });
   }
 
-  // Auto-cleanup a thread's worktree when it closes or is deleted. Never forces:
-  // a worktree with unsaved/unmerged work is kept (and noted, if the thread is
-  // still reachable) so nothing is silently lost — clear it later with /cleanup.
+  // Auto-cleanup a thread's worktree when it closes or is deleted.
+  // evaluateThreadWorktreeClose runs all three policy checks; removeWorktree only
+  // performs git removal after the guard passes (or after Force Close).
   // On "closed" (auto-archive) we keep the session so the thread can be resumed
   // by sending a new message; on "deleted" we clean up fully.
   //
@@ -422,12 +423,54 @@ export class DiscordBot {
     }
 
     const keepSession = reason === "closed";
+
+    if (session?.isWorktree) {
+      const decision = evaluateThreadWorktreeClose(session.workDir, session.branch);
+      if (decision.action === "block") {
+        console.log(`[cleanup] thread ${threadId} ${reason}: kept (${decision.reason})`);
+        if (thread) {
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`worktree_force_close_${thread.id}`)
+              .setLabel("Force Close")
+              .setStyle(ButtonStyle.Danger),
+            new ButtonBuilder()
+              .setCustomId(`worktree_cancel_${thread.id}`)
+              .setLabel("Cancel")
+              .setStyle(ButtonStyle.Secondary)
+          );
+          thread
+            .send({
+              content:
+                `🌲 Worktree kept — ${decision.reason}. Use **Force Close** to remove anyway.`,
+              components: [row],
+            })
+            .catch(() => {});
+        }
+        return;
+      }
+
+      console.log(
+        `[cleanup] thread ${threadId} ${reason}: branch ${session.branch} merged on origin — force closing`
+      );
+      const result = this.sessionManager.cleanupThreadWorktree(threadId, true, keepSession);
+      this.finishThreadCleanup(threadId, thread, reason, result);
+      return;
+    }
+
     const result = this.sessionManager.cleanupThreadWorktree(threadId, false, keepSession);
-    // A deleted thread is gone — no rename is possible regardless of outcome.
+    this.finishThreadCleanup(threadId, thread, reason, result);
+  }
+
+  private finishThreadCleanup(
+    threadId: string,
+    thread: ThreadChannel | null,
+    reason: string,
+    result: ReturnType<SessionManager["cleanupThreadWorktree"]>
+  ): void {
     const archived = reason === "closed";
 
     if (!result) {
-      // Nothing to clean (no managed worktree), but the thread still closed.
       if (archived && thread) void setThreadStatus(thread, "closed", { archived: true });
       return;
     }
@@ -435,27 +478,8 @@ export class DiscordBot {
       console.log(`[cleanup] thread ${threadId} ${reason}: worktree removed`);
       if (archived && thread) void setThreadStatus(thread, "closed", { archived: true });
     } else {
-      console.log(`[cleanup] thread ${threadId} ${reason}: kept (${result.reason})`);
-      if (thread) {
-        // Worktree kept — present buttons so the user can force-close or cancel.
-        // Don't change the thread status yet; that happens when a button is clicked.
-        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`worktree_force_close_${thread.id}`)
-            .setLabel("Force Close")
-            .setStyle(ButtonStyle.Danger),
-          new ButtonBuilder()
-            .setCustomId(`worktree_cancel_${thread.id}`)
-            .setLabel("Cancel")
-            .setStyle(ButtonStyle.Secondary)
-        );
-        thread
-          .send({
-            content: `🌲 Worktree kept — it still has ${result.reason}, so it was not removed.`,
-            components: [row],
-          })
-          .catch(() => {});
-      }
+      console.error(`[cleanup] thread ${threadId} ${reason}: could not remove (${result.reason})`);
+      if (archived && thread) void setThreadStatus(thread, "closed", { archived: true });
     }
   }
 

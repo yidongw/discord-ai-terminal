@@ -21,6 +21,7 @@ import {
   getChannelModelForAgent,
 } from "../utils/models.js";
 import { getAgent, listAgentKeys } from "../agents/index.js";
+import { mainRepoOf, worktreeCloseBlockReason } from "../utils/path-resolver.js";
 
 export class CommandHandler {
   constructor(
@@ -49,7 +50,7 @@ export class CommandHandler {
         .addBooleanOption((o) =>
           o
             .setName("force")
-            .setDescription("Discard even if there are uncommitted or unmerged changes")
+            .setDescription("Discard even if there are uncommitted changes")
             .setRequired(false)
         ),
 
@@ -221,6 +222,30 @@ export class CommandHandler {
 
   private async handleCleanup(i: ChatInputCommandInteraction): Promise<void> {
     const force = i.options.getBoolean("force") ?? false;
+
+    if (!force) {
+      const session = this.sessionManager.getDb().getThreadSession(i.channelId);
+      if (session?.isWorktree) {
+        const repoPath = mainRepoOf(session.workDir);
+        if (repoPath) {
+          const reason = worktreeCloseBlockReason(repoPath, session.workDir);
+          if (reason) {
+            void setThreadStatus(i.channel, "locked");
+            await i.reply({
+              embeds: [
+                embed(
+                  "🛑 Kept",
+                  `Not removed — ${reason}. Re-run with \`force: true\` to discard it anyway.`,
+                  0xffa500
+                ),
+              ],
+            });
+            return;
+          }
+        }
+      }
+    }
+
     const result = this.sessionManager.cleanupThreadWorktree(i.channelId, force);
 
     if (!result) {
@@ -236,7 +261,7 @@ export class CommandHandler {
         embeds: [embed("🧹 Cleaned up", "Worktree and branch removed.", 0x00ff00)],
       });
     } else {
-      // Kept deliberately (uncommitted/unmerged work) — that's the "locked" state.
+      // Kept deliberately (uncommitted work) — that's the "locked" state.
       void setThreadStatus(i.channel, "locked");
       await i.reply({
         embeds: [
