@@ -1012,7 +1012,7 @@ export class DiscordBot {
       const buttons = [
         new ButtonBuilder()
           .setCustomId(`msg_queue_${msg.id}`)
-          .setLabel("Queue")
+          .setLabel(usageLimitWait.waiting && !isBusy ? "Send when ready" : "Queue")
           .setStyle(ButtonStyle.Primary),
       ];
       if (isBusy) {
@@ -1026,7 +1026,7 @@ export class DiscordBot {
         buttons.push(
           new ButtonBuilder()
             .setCustomId(`msg_use_on_resume_${msg.id}`)
-            .setLabel("Use on resume")
+            .setLabel("Replace auto-continue")
             .setStyle(ButtonStyle.Secondary)
         );
       }
@@ -1044,7 +1044,7 @@ export class DiscordBot {
         embeds: [
           new EmbedBuilder()
             .setTitle(title)
-            .setDescription(`What would you like to do with your message?${limitNote}${queueNote}`)
+            .setDescription(`What should I do with your message?${limitNote}${queueNote}`)
             .setColor(0xffa500),
         ],
         components: [row],
