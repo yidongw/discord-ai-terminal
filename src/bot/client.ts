@@ -1009,14 +1009,13 @@ export class DiscordBot {
       const limitNote = usageLimitWait.waiting
         ? `\nUsage limit resets at **${usageLimitWait.resetLabel}**.`
         : "";
-      const buttons = [
-        new ButtonBuilder()
-          .setCustomId(`msg_queue_${msg.id}`)
-          .setLabel("Queue")
-          .setStyle(ButtonStyle.Primary),
-      ];
+      const buttons = [];
       if (isBusy) {
         buttons.push(
+          new ButtonBuilder()
+            .setCustomId(`msg_queue_${msg.id}`)
+            .setLabel("Queue")
+            .setStyle(ButtonStyle.Primary),
           new ButtonBuilder()
             .setCustomId(`msg_interrupt_${msg.id}`)
             .setLabel("Interrupt")
@@ -1025,9 +1024,20 @@ export class DiscordBot {
       } else if (usageLimitWait.waiting) {
         buttons.push(
           new ButtonBuilder()
+            .setCustomId(`msg_queue_${msg.id}`)
+            .setLabel("Send now")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
             .setCustomId(`msg_use_on_resume_${msg.id}`)
-            .setLabel("Use on resume")
+            .setLabel("Wait for reset")
             .setStyle(ButtonStyle.Secondary)
+        );
+      } else {
+        buttons.push(
+          new ButtonBuilder()
+            .setCustomId(`msg_queue_${msg.id}`)
+            .setLabel("Queue")
+            .setStyle(ButtonStyle.Primary)
         );
       }
       buttons.push(
@@ -1038,13 +1048,16 @@ export class DiscordBot {
       );
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons);
       const title = usageLimitWait.waiting && !isBusy
-        ? "⏸️ Session limit — waiting to resume"
+        ? "⏸️ Session limit reached"
         : "⏸️ Agent is still running";
+      const description = usageLimitWait.waiting && !isBusy
+        ? `${limitNote}\n\nSend now or wait until the limit resets?`
+        : `What would you like to do with your message?${limitNote}${queueNote}`;
       await msg.reply({
         embeds: [
           new EmbedBuilder()
             .setTitle(title)
-            .setDescription(`What would you like to do with your message?${limitNote}${queueNote}`)
+            .setDescription(description)
             .setColor(0xffa500),
         ],
         components: [row],
