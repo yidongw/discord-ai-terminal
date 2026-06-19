@@ -12,7 +12,7 @@ export const ccAgent: AgentRunner = {
     if (!opts.discordContext) {
       return buildClaudeCommandForGitHub(workDir, prompt, { prNumber: opts.prNumber, model: opts.model });
     }
-    return buildClaudeCommand(workDir, prompt, opts.sessionId, opts.discordContext, opts.mode ?? "auto", opts.model ?? DEFAULT_CC_MODEL);
+    return buildClaudeCommand(workDir, prompt, opts.sessionId, opts.discordContext, opts.mode ?? "auto", opts.model ?? DEFAULT_CC_MODEL, opts.goal);
   },
 
   parseLine(line, workDir, ctx) { return parseSdkLine(line, workDir, ctx); },
