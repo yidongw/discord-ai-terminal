@@ -1012,7 +1012,7 @@ export class DiscordBot {
       const buttons = [
         new ButtonBuilder()
           .setCustomId(`msg_queue_${msg.id}`)
-          .setLabel(usageLimitWait.waiting && !isBusy ? "Send when ready" : "Queue")
+          .setLabel(usageLimitWait.waiting && !isBusy ? "Send now" : "Queue")
           .setStyle(ButtonStyle.Primary),
       ];
       if (isBusy) {
