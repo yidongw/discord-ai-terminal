@@ -1,5 +1,6 @@
 import { listAgentKeys } from "../agents/index.js";
 import { resolveModelAlias } from "../utils/models.js";
+import { stripStatusEmoji } from "../utils/thread-status.js";
 
 /** True when the message contains any @ token (Discord ping or text @foo). */
 export function hasAnyMention(content: string): boolean {
@@ -69,6 +70,22 @@ export function parseAgentInvocations(content: string): ParsedInvocation[] {
     .trim();
 
   return invocations.map(({ agent, model }) => ({ agent, prompt: cleanPrompt, model }));
+}
+
+/** Agent key from a bot-created thread name, e.g. "🔄 cs • Fix login" → "cs". */
+export function parseAgentFromThreadName(name: string): string | null {
+  const stripped = stripStatusEmoji(name);
+  const match = /^([a-z]+)\s*•/.exec(stripped);
+  if (!match) return null;
+  const key = match[1]!.toLowerCase();
+  return listAgentKeys().includes(key) ? key : null;
+}
+
+/** Title slug from a bot-created thread name, e.g. "cs • Fix login" → "Fix login". */
+export function titleFromThreadName(name: string): string | null {
+  const stripped = stripStatusEmoji(name);
+  const match = /^[a-z]+\s*•\s*(.+)$/i.exec(stripped);
+  return match ? match[1]!.trim() : null;
 }
 
 /** The first line of a message (text before the first newline), trimmed. */
