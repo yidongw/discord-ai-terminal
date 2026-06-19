@@ -44,6 +44,23 @@ const DISCORD_SYSTEM_PROMPT =
   "with a Markdown link or a raw filesystem path. Read the file so the bot can " +
   "upload it as a Discord attachment, and keep any accompanying text brief.";
 
+// Cursor has no --append-system-prompt flag, so these instructions are prepended
+// to each Discord prompt. Frequent short updates keep the run log growing during
+// long work and reduce false "log stall" kills.
+export const CURSOR_DISCORD_SYSTEM_PROMPT =
+  "You are running inside a Discord bot via cursor agent --print. " +
+  "The user only sees text streamed from your output — there is no live IDE. " +
+  "Before starting any work that may take more than ~30 seconds, post a brief " +
+  "status line saying what you are about to do. While work continues, post a " +
+  "short progress update at least once per minute — even if nothing new happened " +
+  "(e.g. \"Still running tests…\"). Before launching a long shell command, say " +
+  "what you are running and why; prefer shorter commands over one silent " +
+  "multi-minute run when practical. Keep each update to one or two sentences.";
+
+export function wrapCursorDiscordPrompt(userPrompt: string): string {
+  return `${CURSOR_DISCORD_SYSTEM_PROMPT}\n\n---\n\n${userPrompt}`;
+}
+
 export function buildClaudeCommand(
   workingDir: string,
   prompt: string,

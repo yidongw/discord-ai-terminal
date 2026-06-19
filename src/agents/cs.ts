@@ -1,5 +1,5 @@
 import type { AgentRunner, AgentRunOptions, AgentEvent } from "./index.js";
-import { escapeShellString } from "../utils/shell.js";
+import { escapeShellString, wrapCursorDiscordPrompt } from "../utils/shell.js";
 import { parseCsLine } from "./cs-parser.js";
 
 export const cursorAgent: AgentRunner = {
@@ -8,7 +8,10 @@ export const cursorAgent: AgentRunner = {
   color: 0x00b4d8,
 
   buildCommand(workDir, prompt, opts) {
-    const escaped = escapeShellString(prompt);
+    const effectivePrompt = opts.discordContext
+      ? wrapCursorDiscordPrompt(prompt)
+      : prompt;
+    const escaped = escapeShellString(effectivePrompt);
     const model = opts.csModel ?? "auto";
     const parts = [
       `cd ${workDir}`,
