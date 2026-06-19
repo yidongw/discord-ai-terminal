@@ -495,6 +495,9 @@ export class DiscordBot {
       if (interaction.customId.startsWith("agent_cancel_")) {
         return this.handleAgentCancel(interaction as ButtonInteraction);
       }
+      if (interaction.customId.startsWith("msg_send_now_")) {
+        return this.handleMsgSendNow(interaction as ButtonInteraction);
+      }
       if (interaction.customId.startsWith("msg_queue_")) {
         return this.handleMsgQueue(interaction as ButtonInteraction);
       }
@@ -1009,33 +1012,51 @@ export class DiscordBot {
       const limitNote = usageLimitWait.waiting
         ? `\nUsage limit resets at **${usageLimitWait.resetLabel}**.`
         : "";
-      const buttons = [
-        new ButtonBuilder()
-          .setCustomId(`msg_queue_${msg.id}`)
-          .setLabel(usageLimitWait.waiting && !isBusy ? "Send now" : "Queue")
-          .setStyle(ButtonStyle.Primary),
-      ];
-      if (isBusy) {
+      const buttons = [];
+
+      // Session limit case: offer send now, queue, replace auto-continue, cancel
+      if (usageLimitWait.waiting && !isBusy) {
         buttons.push(
           new ButtonBuilder()
-            .setCustomId(`msg_interrupt_${msg.id}`)
-            .setLabel("Interrupt")
-            .setStyle(ButtonStyle.Danger)
-        );
-      } else if (usageLimitWait.waiting) {
-        buttons.push(
+            .setCustomId(`msg_send_now_${msg.id}`)
+            .setLabel("Send now")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId(`msg_queue_${msg.id}`)
+            .setLabel("Queue")
+            .setStyle(ButtonStyle.Secondary),
           new ButtonBuilder()
             .setCustomId(`msg_use_on_resume_${msg.id}`)
             .setLabel("Replace auto-continue")
+            .setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder()
+            .setCustomId(`msg_cancel_${msg.id}`)
+            .setLabel("Cancel")
+            .setStyle(ButtonStyle.Secondary)
+        );
+      } else {
+        // Agent busy case: offer queue, interrupt, cancel
+        buttons.push(
+          new ButtonBuilder()
+            .setCustomId(`msg_queue_${msg.id}`)
+            .setLabel("Queue")
+            .setStyle(ButtonStyle.Primary)
+        );
+        if (isBusy) {
+          buttons.push(
+            new ButtonBuilder()
+              .setCustomId(`msg_interrupt_${msg.id}`)
+              .setLabel("Interrupt")
+              .setStyle(ButtonStyle.Danger)
+          );
+        }
+        buttons.push(
+          new ButtonBuilder()
+            .setCustomId(`msg_cancel_${msg.id}`)
+            .setLabel("Cancel")
             .setStyle(ButtonStyle.Secondary)
         );
       }
-      buttons.push(
-        new ButtonBuilder()
-          .setCustomId(`msg_cancel_${msg.id}`)
-          .setLabel("Cancel")
-          .setStyle(ButtonStyle.Secondary)
-      );
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons);
       const title = usageLimitWait.waiting && !isBusy
         ? "⏸️ Session limit — waiting to resume"
@@ -1236,6 +1257,46 @@ export class DiscordBot {
     const msgId = interaction.customId.replace("agent_cancel_", "");
     this.pendingAgentSelectInteractions.delete(msgId);
     await interaction.update({ content: "❌ Cancelled.", components: [] });
+  }
+
+  private async handleMsgSendNow(interaction: ButtonInteraction): Promise<void> {
+    const msgId = interaction.customId.replace("msg_send_now_", "");
+    const pending = this.pendingInteractions.get(msgId);
+    if (!pending) {
+      await interaction.update({
+        embeds: [new EmbedBuilder().setDescription("⚠️ Message context expired.").setColor(0x99aab5)],
+        components: [],
+      });
+      return;
+    }
+
+    this.pendingInteractions.delete(msgId);
+    const preview = pending.originalText.length > 300
+      ? pending.originalText.slice(0, 300) + "…"
+      : pending.originalText;
+    await interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("🚀 Sending now")
+          .setDescription(preview)
+          .setColor(0x57f287),
+      ],
+      components: [],
+    });
+
+    try {
+      await this.dispatchAgentRun(
+        pending.thread.id,
+        pending.channelId,
+        pending.thread,
+        pending.agentKey,
+        pending.workDir,
+        pending.prompt,
+        pending.discordContext
+      );
+    } catch (err: any) {
+      await pending.thread.send(`❌ Failed to run **${pending.agentKey}**: ${err.message}`);
+    }
   }
 
   private async handleMsgQueue(interaction: ButtonInteraction): Promise<void> {
