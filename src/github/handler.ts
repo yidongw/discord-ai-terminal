@@ -21,6 +21,12 @@ import { repoPathFor, resolveBranchWorkDir } from "../utils/path-resolver.js";
 import { setPrInThreadName } from "../utils/thread-status.js";
 import { CI_FIX_RESUME_SESSION } from "./ci-fix-config.js";
 import {
+  formatPrClosedMessage,
+  formatPrMergedMessage,
+  formatPrNewCommitsMessage,
+  formatPrOpenedMessage,
+} from "./pr-notifications.js";
+import {
   makerThreadMatchesBranch,
   resolveDefinitiveMakerThread,
   resolveDefinitiveMakerThreadForLink,
@@ -75,7 +81,7 @@ export class GitHubHandler {
     const repoName = repo.split("/")[1] ?? repo;
     const shortSha = headSha ? ` — \`${headSha.slice(0, 7)}\`` : "";
     const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
-    const msg = `🔄 New commits pushed to PR #${prNumber}${shortSha}\n${prUrl}`;
+    const msg = formatPrNewCommitsMessage(prNumber, shortSha, prUrl);
 
     if (!makerThreadId) {
       const channel = await this.findRepoTextChannel(repoName);
@@ -135,10 +141,9 @@ export class GitHubHandler {
     }
 
     const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
-    const titleStr = prTitle ? ` — ${prTitle}` : "";
     const msg = merged
-      ? `✅ PR #${prNumber}${titleStr} was merged${mergedBy ? ` by @${mergedBy}` : ""}.\n${prUrl}`
-      : `🚫 PR #${prNumber}${titleStr} was closed without merging.\n${prUrl}`;
+      ? formatPrMergedMessage(prNumber, prTitle, mergedBy, prUrl)
+      : formatPrClosedMessage(prNumber, prTitle, prUrl);
 
     let target: ThreadChannel | TextChannel | null = null;
     let targetLabel = "";
@@ -257,7 +262,7 @@ export class GitHubHandler {
       if (channel) {
         const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
         try {
-          await channel.send(`📎 PR #${prNumber} opened\n${prUrl}`);
+          await channel.send(formatPrOpenedMessage(prNumber, prUrl));
         } catch (err) {
           console.error(`[github] PR #${prNumber}: failed to post to repo channel:`, err);
         }
