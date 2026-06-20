@@ -9,10 +9,15 @@ export const ccAgent: AgentRunner = {
   color: 0x7289DA,
 
   buildCommand(workDir, prompt, opts) {
+    // Prepend /goal command if set
+    const effectivePrompt = opts.goal
+      ? `/goal ${opts.goal}\n${prompt}`
+      : prompt;
+
     if (!opts.discordContext) {
-      return buildClaudeCommandForGitHub(workDir, prompt, { prNumber: opts.prNumber, model: opts.model });
+      return buildClaudeCommandForGitHub(workDir, effectivePrompt, { prNumber: opts.prNumber, model: opts.model });
     }
-    return buildClaudeCommand(workDir, prompt, opts.sessionId, opts.discordContext, opts.mode ?? "auto", opts.model ?? DEFAULT_CC_MODEL, opts.goal);
+    return buildClaudeCommand(workDir, effectivePrompt, opts.sessionId, opts.discordContext, opts.mode ?? "auto", opts.model ?? DEFAULT_CC_MODEL);
   },
 
   parseLine(line, workDir, ctx) { return parseSdkLine(line, workDir, ctx); },

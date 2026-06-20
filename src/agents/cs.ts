@@ -8,9 +8,9 @@ export const cursorAgent: AgentRunner = {
   color: 0x00b4d8,
 
   buildCommand(workDir, prompt, opts) {
-    // Prepend goal if set
+    // Prepend /goal command if set (Cursor native support)
     let effectivePrompt = opts.goal
-      ? `Your goal for this session is: ${opts.goal}\n\n${prompt}`
+      ? `/goal ${opts.goal}\n${prompt}`
       : prompt;
     // Wrap with Discord context if needed
     effectivePrompt = opts.discordContext

@@ -10,9 +10,9 @@ export const codexAgent: AgentRunner = {
   color: 0x4B88FF,
 
   buildCommand(workDir, prompt, opts) {
-    // Prepend goal to prompt if set
+    // Prepend /goal command if set (Codex native support)
     const effectivePrompt = opts.goal
-      ? `Your goal for this session is: ${opts.goal}\n\n${prompt}`
+      ? `/goal ${opts.goal}\n${prompt}`
       : prompt;
     return buildCodexCommand(workDir, effectivePrompt, opts.sessionId, false, opts.codexModel ?? DEFAULT_CODEX_MODEL);
   },

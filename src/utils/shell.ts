@@ -67,18 +67,11 @@ export function buildClaudeCommand(
   sessionId?: string,
   discordContext?: DiscordContext,
   mode: PermissionMode = "auto",
-  model: string = DEFAULT_CC_MODEL,
-  goal?: string
+  model: string = DEFAULT_CC_MODEL
 ): string {
   const escapedPrompt = escapeShellString(prompt);
   const sessionMcpConfigPath = createSessionMcpConfig(discordContext);
-
-  // Prepend goal to system prompt if set
-  let systemPrompt = DISCORD_SYSTEM_PROMPT;
-  if (goal) {
-    systemPrompt = `Your goal for this session is: ${goal}\n\n${DISCORD_SYSTEM_PROMPT}`;
-  }
-  const escapedSystemPrompt = escapeShellString(systemPrompt);
+  const escapedSystemPrompt = escapeShellString(DISCORD_SYSTEM_PROMPT);
 
   const commandParts = [
     `cd ${workingDir}`,
