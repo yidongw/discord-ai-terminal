@@ -109,6 +109,17 @@ describe("worktreePassesCloseCheck", () => {
     });
     expect(worktreePassesCloseCheck("/repo", "/wt")).toBe(true);
   });
+
+  it("returns true when only untracked files are present", () => {
+    spawnSync.mockImplementation((_cmd, args: string[]) => {
+      if (args.includes("status")) {
+        if (args.includes("--untracked-files=no")) return gitResult("");
+        return gitResult("?? .env.development");
+      }
+      return gitResult("");
+    });
+    expect(worktreePassesCloseCheck("/repo", "/wt")).toBe(true);
+  });
 });
 
 describe("evaluateThreadWorktreeClose", () => {
