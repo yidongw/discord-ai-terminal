@@ -119,7 +119,7 @@ export class CommandHandler {
 
       new SlashCommandBuilder()
         .setName("goal")
-        .setDescription("Set or clear a goal for this thread (cc only)")
+        .setDescription("Set or clear a goal for this thread")
         .addSubcommand((s) =>
           s
             .setName("set")
@@ -364,21 +364,6 @@ export class CommandHandler {
     if (!session) {
       await i.reply({
         embeds: [embed("ℹ️ No Session", "No session found for this thread. Start a conversation first.", 0x888888)],
-        ephemeral: true,
-      });
-      return;
-    }
-
-    // Goal only works with cc agent
-    if (session.agent !== "cc") {
-      await i.reply({
-        embeds: [
-          embed(
-            "ℹ️ Claude Code Only",
-            `The \`/goal\` command only works with Claude Code (@cc). This is an **@${session.agent}** thread.`,
-            0x888888
-          ),
-        ],
         ephemeral: true,
       });
       return;

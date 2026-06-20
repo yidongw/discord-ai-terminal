@@ -10,7 +10,11 @@ export const codexAgent: AgentRunner = {
   color: 0x4B88FF,
 
   buildCommand(workDir, prompt, opts) {
-    return buildCodexCommand(workDir, prompt, opts.sessionId, false, opts.codexModel ?? DEFAULT_CODEX_MODEL);
+    // Prepend goal to prompt if set
+    const effectivePrompt = opts.goal
+      ? `Your goal for this session is: ${opts.goal}\n\n${prompt}`
+      : prompt;
+    return buildCodexCommand(workDir, effectivePrompt, opts.sessionId, false, opts.codexModel ?? DEFAULT_CODEX_MODEL);
   },
 
   parseLine(line, workDir, ctx?: AgentParseContext): AgentEvent | null {
