@@ -24,11 +24,17 @@ import { getAgent, listAgentKeys } from "../agents/index.js";
 import { mainRepoOf, worktreeCloseBlockReason } from "../utils/path-resolver.js";
 
 export class CommandHandler {
+  private botInstance?: any; // DiscordBot instance for triggering agent runs
+
   constructor(
     private sessionManager: SessionManager,
     private allowedUserIds: string[],
     private baseFolder: string
   ) {}
+
+  setBotInstance(bot: any): void {
+    this.botInstance = bot;
+  }
 
   getCommands() {
     return [
@@ -382,9 +388,11 @@ export class CommandHandler {
         ],
       });
 
-      // Send /goal message to start the agent working immediately
+      // Trigger the agent to start working on the goal immediately
       const thread = i.channel as ThreadChannel;
-      await thread.send(`/goal ${goalText}`);
+      if (this.botInstance?.triggerGoalStart) {
+        await this.botInstance.triggerGoalStart(thread, session, goalText);
+      }
     } else if (sub === "clear") {
       if (!session.goal) {
         await i.reply({

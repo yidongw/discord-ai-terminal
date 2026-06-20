@@ -80,6 +80,7 @@ export class DiscordBot {
       ],
     });
     this.commands = new CommandHandler(sessionManager, allowedUserIds, baseFolder);
+    this.commands.setBotInstance(this);
     this.setupEvents();
   }
 
@@ -314,6 +315,28 @@ export class DiscordBot {
         }
       );
     }
+  }
+
+  async triggerGoalStart(thread: any, session: any, goalText: string): Promise<void> {
+    // Trigger the agent to start working on the goal immediately
+    // Use a minimal prompt that just sets the goal
+    const prompt = `/goal ${goalText}\nStart working on this goal`;
+    const discordContext = {
+      channelId: thread.parentId ?? thread.id,
+      channelName: thread.name ?? "unknown",
+      userId: "system", // system-triggered
+      messageId: undefined,
+    };
+
+    await this.sessionManager.runAgent(
+      thread.id,
+      session.channelId,
+      thread,
+      session.agent,
+      session.workDir,
+      prompt,
+      discordContext
+    );
   }
 
   async login(token: string): Promise<void> {
