@@ -381,10 +381,25 @@ export class CommandHandler {
         ],
       });
     } else if (sub === "clear") {
-      db.updateGoal(threadId, null);
+      if (!session.goal) {
+        await i.reply({
+          embeds: [embed("ℹ️ No Goal", "No goal is currently set for this thread.", 0x888888)],
+          ephemeral: true,
+        });
+        return;
+      }
+
+      // Send /goal clear to the agent to properly stop the goal loop
       await i.reply({
-        embeds: [embed("🗑️ Goal Cleared", "Goal removed from this thread.", 0x00ff00)],
+        embeds: [embed("🔄 Clearing Goal", "Sending `/goal clear` to agent...", 0xffa500)],
       });
+
+      // Clear from database immediately - the agent will confirm
+      db.updateGoal(threadId, null);
+
+      // Send /goal clear message to the agent
+      const thread = i.channel as ThreadChannel;
+      const agentMessage = await thread.send("/goal clear");
     } else if (sub === "show") {
       const goal = session.goal;
       if (!goal) {
