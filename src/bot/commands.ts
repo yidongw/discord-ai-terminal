@@ -118,6 +118,27 @@ export class CommandHandler {
         .setDescription("List available @agent mentions and their model aliases"),
 
       new SlashCommandBuilder()
+        .setName("goal")
+        .setDescription("Set or clear a goal for this thread")
+        .addSubcommand((s) =>
+          s
+            .setName("set")
+            .setDescription("Set a goal for this thread")
+            .addStringOption((o) =>
+              o
+                .setName("text")
+                .setDescription("The goal description")
+                .setRequired(true)
+            )
+        )
+        .addSubcommand((s) =>
+          s.setName("clear").setDescription("Clear the goal for this thread")
+        )
+        .addSubcommand((s) =>
+          s.setName("show").setDescription("Show the current goal for this thread")
+        ),
+
+      new SlashCommandBuilder()
         .setName("queue")
         .setDescription("View messages queued to run after the current agent finishes"),
 
@@ -187,6 +208,7 @@ export class CommandHandler {
     if (commandName === "status") return this.handleStatus(interaction);
     if (commandName === "mode") return this.handleMode(interaction);
     if (commandName === "model") return this.handleModel(interaction);
+    if (commandName === "goal") return this.handleGoal(interaction);
     if (commandName === "agents") return this.handleAgents(interaction);
     if (commandName === "tools") return this.handleTools(interaction);
     if (commandName === "queue") return this.handleQueue(interaction);
@@ -322,6 +344,81 @@ export class CommandHandler {
     await i.reply({
       embeds: [embed("✅ Mode Set", `Permission mode set to **${mode}** for this channel.`, 0x00ff00)],
     });
+  }
+
+  private async handleGoal(i: ChatInputCommandInteraction): Promise<void> {
+    const db = this.sessionManager.getDb();
+    const sub = i.options.getSubcommand();
+    const threadId = i.channelId;
+
+    // Goal only works in threads
+    if (!i.channel?.isThread()) {
+      await i.reply({
+        embeds: [embed("ℹ️ Use in Thread", "The `/goal` command only works in threads, not channels.", 0x888888)],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const session = db.getThreadSession(threadId);
+    if (!session) {
+      await i.reply({
+        embeds: [embed("ℹ️ No Session", "No session found for this thread. Start a conversation first.", 0x888888)],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (sub === "set") {
+      const goalText = i.options.getString("text", true);
+      db.updateGoal(threadId, goalText);
+      await i.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("🎯 Goal Set")
+            .setDescription(`Goal for this thread:\n\n> ${goalText}`)
+            .setColor(0x00ff00),
+        ],
+      });
+    } else if (sub === "clear") {
+      if (!session.goal) {
+        await i.reply({
+          embeds: [embed("ℹ️ No Goal", "No goal is currently set for this thread.", 0x888888)],
+          ephemeral: true,
+        });
+        return;
+      }
+
+      // Send /goal clear to the agent to properly stop the goal loop
+      await i.reply({
+        embeds: [embed("🔄 Clearing Goal", "Sending `/goal clear` to agent...", 0xffa500)],
+      });
+
+      // Clear from database immediately - the agent will confirm
+      db.updateGoal(threadId, null);
+
+      // Send /goal clear message to the agent
+      const thread = i.channel as ThreadChannel;
+      const agentMessage = await thread.send("/goal clear");
+    } else if (sub === "show") {
+      const goal = session.goal;
+      if (!goal) {
+        await i.reply({
+          embeds: [embed("ℹ️ No Goal", "No goal set for this thread.", 0x888888)],
+          ephemeral: true,
+        });
+      } else {
+        await i.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("🎯 Current Goal")
+              .setDescription(`> ${goal}`)
+              .setColor(0x5865f2),
+          ],
+          ephemeral: true,
+        });
+      }
+    }
   }
 
   private modelSubcommandAgent(sub: string): string {

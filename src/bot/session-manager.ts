@@ -498,6 +498,7 @@ export class SessionManager {
       csModel,
       discordContext,
       prNumber: opts?.prNumber,
+      goal: existing?.goal,
     });
 
     // Per-run append-only log. The agent writes here (not to a pipe we own), so

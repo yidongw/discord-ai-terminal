@@ -10,6 +10,8 @@ export interface AgentRunOptions {
   discordContext?: DiscordContext;
   // Set for GitHub fix runs — CC uses --from-pr instead of --resume
   prNumber?: number;
+  // Goal for this session (cc only)
+  goal?: string;
 }
 
 // Normalized events that session-manager handles regardless of agent

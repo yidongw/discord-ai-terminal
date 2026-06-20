@@ -8,9 +8,14 @@ export const cursorAgent: AgentRunner = {
   color: 0x00b4d8,
 
   buildCommand(workDir, prompt, opts) {
-    const effectivePrompt = opts.discordContext
-      ? wrapCursorDiscordPrompt(prompt)
+    // Prepend /goal command if set (Cursor native support)
+    let effectivePrompt = opts.goal
+      ? `/goal ${opts.goal}\n${prompt}`
       : prompt;
+    // Wrap with Discord context if needed
+    effectivePrompt = opts.discordContext
+      ? wrapCursorDiscordPrompt(effectivePrompt)
+      : effectivePrompt;
     const escaped = escapeShellString(effectivePrompt);
     const model = opts.csModel ?? "auto";
     const parts = [
