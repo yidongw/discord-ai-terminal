@@ -372,6 +372,7 @@ export class CommandHandler {
     if (sub === "set") {
       const goalText = i.options.getString("text", true);
       db.updateGoal(threadId, goalText);
+
       await i.reply({
         embeds: [
           new EmbedBuilder()
@@ -380,6 +381,10 @@ export class CommandHandler {
             .setColor(0x00ff00),
         ],
       });
+
+      // Send /goal message to start the agent working immediately
+      const thread = i.channel as ThreadChannel;
+      await thread.send(`/goal ${goalText}`);
     } else if (sub === "clear") {
       if (!session.goal) {
         await i.reply({
