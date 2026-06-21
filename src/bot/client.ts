@@ -630,6 +630,9 @@ export class DiscordBot {
   }): Promise<void> {
     const { thread, parentChannel, agentKey, prompt, triggerMsg, modelOverride } = opts;
 
+    // Create session from thread name
+    createOrphanedThreadSession(thread, this.sessionManager.getDb(), this.baseFolder);
+
     // Generate thread title
     const titleLabel = await generateThreadTitle(agentKey, prompt).catch(
       () => firstLine(prompt)
@@ -650,7 +653,7 @@ export class DiscordBot {
       messageId: triggerMsg.id,
     };
 
-    // Start agent run (creates session)
+    // Start agent run
     await this.startThreadAgentRun({
       thread,
       channel: parentChannel,
