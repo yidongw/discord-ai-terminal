@@ -27,6 +27,7 @@ import {
   stripLocalImageReferences,
 } from "../utils/attachments.js";
 import { getChannelModelForAgent } from "../utils/models.js";
+import { handoffDoneDescription, shouldSendHandoffDone, summarizeForHandoff } from "./handoff.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -256,6 +257,20 @@ export class SessionManager {
     const task = this.db.getScheduledTask(sessionLimitTaskId(threadId));
     if (!task?.enabled || task.nextRunAt <= Date.now()) return { waiting: false };
     return { waiting: true, resetLabel: new Date(task.nextRunAt).toLocaleString() };
+  }
+
+  /** Handoff @-mention belongs in Done only when the thread is going fully idle. */
+  shouldIncludeHandoffInDone(threadId: string, session: ActiveSession): boolean {
+    const threadSession = this.db.getThreadSession(threadId);
+    return shouldSendHandoffDone({
+      handoffBot: threadSession?.handoffBot,
+      queueLength: this.getQueueLength(threadId),
+      hasPendingPostRunPrompt: this.pendingPostRunPrompts.has(threadId),
+      usageLimitWaiting: this.getUsageLimitWait(threadId).waiting,
+      pendingUsageLimitResume: !!session.pendingUsageLimitResume,
+      pendingTurnLimitResume: !!session.pendingTurnLimitResume,
+      hasEnabledScheduledTasks: this.db.listScheduledTasks(threadId).some((t) => t.enabled),
+    });
   }
 
   isWaitingForUsageLimitReset(threadId: string): boolean {
@@ -1086,9 +1101,20 @@ export class SessionManager {
       if (event.turns !== null) parts.push(`${event.turns} turns`);
       if (event.cost !== null) parts.push(event.cost < 0.01 ? `${(event.cost * 100).toFixed(2)}¢` : `$${event.cost.toFixed(2)}`);
       if (event.tokens) parts.push(event.tokens);
-      outbox.enqueue(() =>
-        thread.send({ embeds: [embed("✅ Done", parts.length ? `*${parts.join(" · ")}*` : "Complete.", 0x00ff00)] })
-      );
+      const statsLine = parts.length ? `*${parts.join(" · ")}*` : "Complete.";
+      const threadSession = this.db.getThreadSession(threadId);
+      const handoffBot = threadSession?.handoffBot;
+      const includeHandoff =
+        handoffBot && this.shouldIncludeHandoffInDone(threadId, session);
+      outbox.enqueue(() => {
+        if (includeHandoff) {
+          const { text } = this.extractRunResult(session);
+          const summary = summarizeForHandoff(text);
+          const desc = handoffDoneDescription(statsLine, summary, handoffBot!, session.agentKey);
+          return thread.send({ embeds: [embed("✅ Done", desc, 0x00ff00)] });
+        }
+        return thread.send({ embeds: [embed("✅ Done", statsLine, 0x00ff00)] });
+      });
       // The completion action (if any) runs at finalize, from the full log text.
       this.stopProcess(session);
       return;

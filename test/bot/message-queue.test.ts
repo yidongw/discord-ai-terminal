@@ -23,6 +23,7 @@ vi.mock("../../src/db/database.js", () => {
     hasActiveRun = vi.fn(() => false);
     getScheduledTask = vi.fn(() => null);
     updateScheduledTaskPrompt = vi.fn();
+    listScheduledTasks = vi.fn(() => []);
   }
 
   return {
@@ -60,7 +61,12 @@ describe("message queue helpers", () => {
 
   beforeEach(() => {
     manager = new SessionManager();
+    vi.clearAllMocks();
   });
+
+  function mockScheduledTask(task: ScheduledTask | null) {
+    (manager.getDb().getScheduledTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+  }
 
   it("lists queued messages for a thread in FIFO order", () => {
     manager.enqueueMessage("thread-a", queuedMsg("thread-a", "channel-1", "first task", "fix login"));
@@ -114,7 +120,7 @@ describe("message queue helpers", () => {
       maxRuns: 1,
       createdAt: Date.now(),
     };
-    vi.mocked(manager.getDb().getScheduledTask).mockReturnValue(task);
+    mockScheduledTask(task);
 
     expect(manager.isWaitingForUsageLimitReset("thread-a")).toBe(true);
     expect(manager.getUsageLimitWait("thread-a").waiting).toBe(true);
@@ -123,7 +129,7 @@ describe("message queue helpers", () => {
 
   it("returns false when the usage-limit wakeup is disabled or past due", () => {
     const past = Date.now() - 1_000;
-    vi.mocked(manager.getDb().getScheduledTask).mockReturnValue({
+    mockScheduledTask({
       id: sessionLimitTaskId("thread-a"),
       threadId: "thread-a",
       channelId: "channel-1",
@@ -159,7 +165,7 @@ describe("message queue helpers", () => {
       maxRuns: 1,
       createdAt: Date.now(),
     };
-    vi.mocked(manager.getDb().getScheduledTask).mockReturnValue(task);
+    mockScheduledTask(task);
 
     expect(manager.setUsageLimitResumePrompt("thread-a", "fix the login bug")).toBe(true);
     expect(manager.getDb().updateScheduledTaskPrompt).toHaveBeenCalledWith(
@@ -169,7 +175,7 @@ describe("message queue helpers", () => {
   });
 
   it("refuses use-on-resume when the usage-limit wakeup is no longer active", () => {
-    vi.mocked(manager.getDb().getScheduledTask).mockReturnValue(null);
+    mockScheduledTask(null);
     expect(manager.setUsageLimitResumePrompt("thread-a", "too late")).toBe(false);
     expect(manager.getDb().updateScheduledTaskPrompt).not.toHaveBeenCalled();
   });

@@ -44,6 +44,8 @@ import type { ThreadSession } from "../db/database.js";
 import type { WorkerMessage } from "./worker-mode.js";
 import { resolveEffectiveModel } from "../utils/models.js";
 import { evaluateThreadWorktreeClose } from "../utils/merged-worktree-close.js";
+import { handoffBotNameFromAuthor } from "./handoff.js";
+import type { ParsedInvocation } from "./parser.js";
 
 interface PendingInteraction extends QueuedMessage {}
 
@@ -332,12 +334,16 @@ export class DiscordBot {
     this.client.on("interactionCreate", (i) => this.handleInteraction(i));
 
     this.client.on("messageCreate", async (msg) => {
-      if (msg.author.bot) return;
-      if (!this.allowedUserIds.includes(msg.author.id)) return;
-
       const isThread =
         msg.channel.type === ChannelType.PublicThread ||
         msg.channel.type === ChannelType.PrivateThread;
+
+      if (msg.author.bot) {
+        if (isThread) await this.handleThreadMessage(msg, { fromBot: true });
+        return;
+      }
+
+      if (!this.allowedUserIds.includes(msg.author.id)) return;
 
       if (isThread) {
         await this.handleThreadMessage(msg);
@@ -916,11 +922,67 @@ export class DiscordBot {
     }
   }
 
-  private async handleThreadMessage(msg: Message): Promise<void> {
+  /**
+   * First @agent message from a handoff bot in a sessionless thread: full setup
+   * (worktree, thread rename, agent run) and auto-configure handoff to the sender.
+   */
+  private async startThreadFromBotMention(
+    msg: Message,
+    thread: ThreadChannel,
+    invocation: ParsedInvocation
+  ): Promise<void> {
+    const parent = thread.parent as TextChannel | null;
+    if (!parent) return;
+
+    await msg.react("👀").catch(() => {});
+
+    const attachments = await this.downloadMsgAttachments(msg);
+    const replyContext = await this.fetchReplyContext(msg);
+    const messageText = invocation.prompt || msg.content;
+    const fullPrompt = buildPromptWithAttachments(
+      replyContext.text + messageText,
+      [...replyContext.attachments, ...attachments]
+    );
+
+    const titleLabel = await generateThreadTitle(invocation.agent, messageText).catch(
+      () => firstLine(messageText)
+    );
+    const tName = threadName(invocation.agent, titleLabel);
+    await thread.setName(tName).catch(() => {});
+    void setThreadStatus(thread, "working");
+
+    await this.startThreadAgentRun({
+      thread,
+      channel: parent,
+      agentKey: invocation.agent,
+      titleLabel,
+      prompt: fullPrompt,
+      triggerMsg: msg,
+      explicitModel: invocation.model,
+      discordContext: {
+        channelId: thread.id,
+        channelName: tName,
+        userId: msg.author.id,
+        messageId: msg.id,
+      },
+    });
+
+    this.sessionManager
+      .getDb()
+      .updateHandoffBot(thread.id, handoffBotNameFromAuthor(msg.author));
+  }
+
+  private async handleThreadMessage(
+    msg: Message,
+    opts?: { fromBot?: boolean }
+  ): Promise<void> {
     const thread = msg.channel as ThreadChannel;
+    const fromBot = opts?.fromBot ?? false;
+
+    if (fromBot && msg.author.id === this.client.user?.id) return;
 
     // /test command: run manual test flow for the PR linked to this maker thread
-    if (msg.content.trim() === "/test" && this.githubHandler) {
+    if (!fromBot && msg.content.trim() === "/test" && this.githubHandler) {
       const prLink = this.sessionManager.getDb().findPrForMakerThread(thread.id);
       if (prLink) {
         await msg.react("🧪").catch(() => {});
@@ -933,10 +995,18 @@ export class DiscordBot {
       }
     }
 
-    const session = this.sessionManager.getDb().getThreadSession(thread.id);
+    const invocations = parseAgentInvocations(msg.content);
+    if (fromBot && invocations.length === 0) return;
+
+    let session = this.sessionManager.getDb().getThreadSession(thread.id);
 
     if (!session) {
-      if (await this.tryBootstrapOrphanedThread(msg, thread)) return;
+      if (fromBot) {
+        await this.startThreadFromBotMention(msg, thread, invocations[0]!);
+        return;
+      } else if (await this.tryBootstrapOrphanedThread(msg, thread)) {
+        return;
+      }
       return;
     }
 
@@ -950,34 +1020,46 @@ export class DiscordBot {
       return;
     }
 
-    // If the message mentions an agent, ask whether to branch into a new sibling
-    // thread or just send the message to the current thread's agent.
-    const invocations = parseAgentInvocations(msg.content);
+    let messageText = msg.content;
+    let modelOverride: string | undefined;
+
+    // Bot @agent mentions skip branch dialog and only run when the mention matches
+    // this thread's agent. User @agent mentions open the branch-or-continue prompt.
     if (invocations.length > 0) {
-      this.pendingBranchInteractions.set(msg.id, { msg, thread, session });
-      const agentList = invocations.map((i) => `**${i.agent}**`).join(", ");
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`branch_confirm_${msg.id}`)
-          .setLabel("Branch off → new thread")
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId(`branch_here_${msg.id}`)
-          .setLabel("Send to this thread")
-          .setStyle(ButtonStyle.Secondary)
-      );
-      await msg.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("🌿 Branch or continue here?")
-            .setDescription(
-              `You mentioned ${agentList}. Do you want to spin up a new thread branched off this one, or just send this message to the current agent?`
-            )
-            .setColor(0x5865f2),
-        ],
-        components: [row],
-      });
-      return;
+      if (fromBot) {
+        const invocation = invocations.find((i) => i.agent === session!.agent);
+        if (!invocation) return;
+        messageText = invocation.prompt || msg.content;
+        if (invocation.model) {
+          this.sessionManager.getDb().updateModelOverride(thread.id, invocation.model);
+          modelOverride = invocation.model;
+        }
+      } else {
+        this.pendingBranchInteractions.set(msg.id, { msg, thread, session });
+        const agentList = invocations.map((i) => `**${i.agent}**`).join(", ");
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`branch_confirm_${msg.id}`)
+            .setLabel("Branch off → new thread")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId(`branch_here_${msg.id}`)
+            .setLabel("Send to this thread")
+            .setStyle(ButtonStyle.Secondary)
+        );
+        await msg.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("🌿 Branch or continue here?")
+              .setDescription(
+                `You mentioned ${agentList}. Do you want to spin up a new thread branched off this one, or just send this message to the current agent?`
+              )
+              .setColor(0x5865f2),
+          ],
+          components: [row],
+        });
+        return;
+      }
     }
 
     const isBusy = this.sessionManager.hasActiveProcess(thread.id);
@@ -987,7 +1069,10 @@ export class DiscordBot {
       // Download attachments now so we have the full prompt ready for queue/interrupt.
       const attachments = await this.downloadMsgAttachments(msg);
       const replyContext = await this.fetchReplyContext(msg);
-      const fullPrompt = buildPromptWithAttachments(replyContext.text + msg.content, [...replyContext.attachments, ...attachments]);
+      const fullPrompt = buildPromptWithAttachments(
+        replyContext.text + messageText,
+        [...replyContext.attachments, ...attachments]
+      );
       const discordContext = {
         channelId: thread.id,
         channelName: thread.name,
@@ -995,15 +1080,22 @@ export class DiscordBot {
         messageId: msg.id,
       };
 
-      this.pendingInteractions.set(msg.id, {
+      const pending: PendingInteraction = {
         prompt: fullPrompt,
-        originalText: msg.content,
+        originalText: messageText,
         discordContext,
         agentKey: session.agent,
         workDir: session.workDir,
         channelId: session.channelId,
         thread,
-      });
+      };
+
+      if (fromBot) {
+        this.sessionManager.enqueueMessage(thread.id, pending);
+        return;
+      }
+
+      this.pendingInteractions.set(msg.id, pending);
 
       const queueLen = this.sessionManager.getQueueLength(thread.id);
       const queueNote = queueLen > 0
@@ -1091,7 +1183,10 @@ export class DiscordBot {
 
     const attachments = await this.downloadMsgAttachments(msg);
     const replyContext = await this.fetchReplyContext(msg);
-    const fullPrompt = buildPromptWithAttachments(replyContext.text + msg.content, [...replyContext.attachments, ...attachments]);
+    const fullPrompt = buildPromptWithAttachments(
+      replyContext.text + messageText,
+      [...replyContext.attachments, ...attachments]
+    );
 
     const discordContext = {
       channelId: thread.id,
@@ -1108,7 +1203,8 @@ export class DiscordBot {
         session.agent,
         session.workDir,
         fullPrompt,
-        discordContext
+        discordContext,
+        modelOverride ? { modelOverride } : undefined
       );
     } catch (err: any) {
       await msg.reply(`❌ Failed to resume **${session.agent}**: ${err.message}`);
