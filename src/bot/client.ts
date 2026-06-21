@@ -336,18 +336,58 @@ export class DiscordBot {
         msg.channel.type === ChannelType.PublicThread ||
         msg.channel.type === ChannelType.PrivateThread;
 
-      // For bot messages, only allow if they mention the thread's agent
+      // For bot messages, only allow if they mention an agent
       if (msg.author.bot) {
         // Only allow bot messages in threads (not channels)
         if (!isThread) return;
 
-        const session = this.sessionManager.getDb().getThreadSession(msg.channelId);
-        if (!session) return; // No session, ignore bot message
-
         const invocations = parseAgentInvocations(msg.content);
-        // Allow if bot mentions the thread's agent (other agent mentions are stripped by parser)
-        const mentionsThreadAgent = invocations.some(inv => inv.agent === session.agent);
+        if (invocations.length === 0) return; // No agent mentioned, ignore
 
+        const session = this.sessionManager.getDb().getThreadSession(msg.channelId);
+
+        if (!session) {
+          // No session exists - create one for the first mentioned agent
+          const thread = msg.channel as ThreadChannel;
+          const parent = thread.parent as TextChannel | null;
+          if (!parent) return; // Can't create session without parent channel
+
+          const { agent: agentKey, prompt, model: modelOverride } = invocations[0]!;
+
+          // Generate thread title and prepare for session creation
+          const titleLabel = await generateThreadTitle(agentKey, prompt).catch(
+            () => firstLine(prompt)
+          );
+
+          // Rename thread to match agent
+          const tName = threadName(agentKey, titleLabel);
+          await thread.setName(tName).catch(() => {});
+
+          const attachments = await this.downloadMsgAttachments(msg);
+          const fullPrompt = buildPromptWithAttachments(prompt, attachments);
+          const discordContext = {
+            channelId: thread.id,
+            channelName: tName,
+            userId: msg.author.id,
+            messageId: msg.id,
+          };
+
+          // Start agent run (creates session)
+          await this.startThreadAgentRun({
+            thread,
+            channel: parent,
+            agentKey,
+            titleLabel,
+            prompt: fullPrompt,
+            triggerMsg: msg,
+            explicitModel: modelOverride,
+            discordContext,
+          });
+          return; // Handled
+        }
+
+        // Session exists - only allow if bot mentions the thread's agent
+        const mentionsThreadAgent = invocations.some(inv => inv.agent === session.agent);
         if (!mentionsThreadAgent) {
           return; // Ignore bot messages that don't mention this thread's agent
         }
