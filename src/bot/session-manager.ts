@@ -259,6 +259,18 @@ export class SessionManager {
     return { waiting: true, resetLabel: new Date(task.nextRunAt).toLocaleString() };
   }
 
+  /** Handoff @-mention belongs in Done only when the thread is going fully idle. */
+  shouldIncludeHandoffInDone(threadId: string, session: ActiveSession): boolean {
+    const threadSession = this.db.getThreadSession(threadId);
+    if (!threadSession?.handoffBot) return false;
+    if (this.getQueueLength(threadId) > 0) return false;
+    if (this.pendingPostRunPrompts.has(threadId)) return false;
+    if (this.getUsageLimitWait(threadId).waiting) return false;
+    if (session.pendingUsageLimitResume || session.pendingTurnLimitResume) return false;
+    if (this.db.listScheduledTasks(threadId).some((t) => t.enabled)) return false;
+    return true;
+  }
+
   isWaitingForUsageLimitReset(threadId: string): boolean {
     return this.getUsageLimitWait(threadId).waiting;
   }
@@ -1090,11 +1102,13 @@ export class SessionManager {
       const statsLine = parts.length ? `*${parts.join(" · ")}*` : "Complete.";
       const threadSession = this.db.getThreadSession(threadId);
       const handoffBot = threadSession?.handoffBot;
+      const includeHandoff =
+        handoffBot && this.shouldIncludeHandoffInDone(threadId, session);
       outbox.enqueue(() => {
-        if (handoffBot) {
+        if (includeHandoff) {
           const { text } = this.extractRunResult(session);
           const summary = summarizeForHandoff(text);
-          const desc = handoffDoneDescription(statsLine, summary, handoffBot, session.agentKey);
+          const desc = handoffDoneDescription(statsLine, summary, handoffBot!, session.agentKey);
           return thread.send({ embeds: [embed("✅ Done", desc, 0x00ff00)] });
         }
         return thread.send({ embeds: [embed("✅ Done", statsLine, 0x00ff00)] });

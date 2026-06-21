@@ -1080,7 +1080,7 @@ export class DiscordBot {
         messageId: msg.id,
       };
 
-      this.pendingInteractions.set(msg.id, {
+      const pending: PendingInteraction = {
         prompt: fullPrompt,
         originalText: messageText,
         discordContext,
@@ -1088,7 +1088,14 @@ export class DiscordBot {
         workDir: session.workDir,
         channelId: session.channelId,
         thread,
-      });
+      };
+
+      if (fromBot) {
+        this.sessionManager.enqueueMessage(thread.id, pending);
+        return;
+      }
+
+      this.pendingInteractions.set(msg.id, pending);
 
       const queueLen = this.sessionManager.getQueueLength(thread.id);
       const queueNote = queueLen > 0
