@@ -347,34 +347,13 @@ export class DiscordBot {
 
           const { agent: agentKey, prompt, model: modelOverride } = invocations[0]!;
 
-          // Generate thread title and prepare for session creation
-          const titleLabel = await generateThreadTitle(agentKey, prompt).catch(
-            () => firstLine(prompt)
-          );
-
-          // Rename thread to match agent
-          const tName = threadName(agentKey, titleLabel);
-          await thread.setName(tName).catch(() => {});
-
-          const attachments = await this.downloadMsgAttachments(msg);
-          const fullPrompt = buildPromptWithAttachments(prompt, attachments);
-          const discordContext = {
-            channelId: thread.id,
-            channelName: tName,
-            userId: msg.author.id,
-            messageId: msg.id,
-          };
-
-          // Start agent run (creates session)
-          await this.startThreadAgentRun({
+          await this.prepareAndStartAgentRun({
             thread,
-            channel: parent,
+            parentChannel: parent,
             agentKey,
-            titleLabel,
-            prompt: fullPrompt,
+            prompt,
             triggerMsg: msg,
-            explicitModel: modelOverride,
-            discordContext,
+            modelOverride,
           });
           return; // Handled
         }
@@ -646,6 +625,53 @@ export class DiscordBot {
       prompt: fullPrompt,
       agentKey: freshSession.agent,
       modelOverride,
+      discordContext,
+    });
+  }
+
+  /**
+   * Prepare and start an agent run in an existing thread.
+   * Handles: title generation, thread renaming, attachments, and starting the run.
+   */
+  private async prepareAndStartAgentRun(opts: {
+    thread: ThreadChannel;
+    parentChannel: TextChannel;
+    agentKey: string;
+    prompt: string;
+    triggerMsg: Message;
+    modelOverride?: string;
+  }): Promise<void> {
+    const { thread, parentChannel, agentKey, prompt, triggerMsg, modelOverride } = opts;
+
+    // Generate thread title
+    const titleLabel = await generateThreadTitle(agentKey, prompt).catch(
+      () => firstLine(prompt)
+    );
+
+    // Rename thread to match agent
+    const tName = threadName(agentKey, titleLabel);
+    await thread.setName(tName).catch(() => {});
+
+    // Process attachments
+    const attachments = await this.downloadMsgAttachments(triggerMsg);
+    const fullPrompt = buildPromptWithAttachments(prompt, attachments);
+
+    const discordContext = {
+      channelId: thread.id,
+      channelName: tName,
+      userId: triggerMsg.author.id,
+      messageId: triggerMsg.id,
+    };
+
+    // Start agent run (creates session)
+    await this.startThreadAgentRun({
+      thread,
+      channel: parentChannel,
+      agentKey,
+      titleLabel,
+      prompt: fullPrompt,
+      triggerMsg,
+      explicitModel: modelOverride,
       discordContext,
     });
   }
