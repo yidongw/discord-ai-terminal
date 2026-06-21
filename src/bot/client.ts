@@ -116,12 +116,12 @@ export class DiscordBot {
     return true;
   }
 
-  private ensureThreadSessionRecord(
+  private ensureBotRepoThreadSession(
     threadId: string,
     channelId: string,
     agentKey: string,
     workDir: string,
-    opts?: { branch?: string; isWorktree?: boolean; modelOverride?: string }
+    opts?: { branch?: string; modelOverride?: string }
   ): void {
     const existing = this.sessionManager.getDb().getThreadSession(threadId);
     const modelOverride =
@@ -130,21 +130,8 @@ export class DiscordBot {
 
     ensureThreadSession(this.sessionManager.getDb(), threadId, channelId, agentKey, workDir, {
       branch: opts?.branch,
-      isWorktree: opts?.isWorktree,
-      modelOverride,
-    });
-  }
-
-  private ensureBotRepoThreadSession(
-    threadId: string,
-    channelId: string,
-    agentKey: string,
-    workDir: string,
-    opts?: { branch?: string; modelOverride?: string }
-  ): void {
-    this.ensureThreadSessionRecord(threadId, channelId, agentKey, workDir, {
-      ...opts,
       isWorktree: true,
+      modelOverride,
     });
   }
 
