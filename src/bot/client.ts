@@ -1165,6 +1165,14 @@ export class DiscordBot {
       messageId: msg.id,
     };
 
+    // For bot messages, extract model override from @agent mention (e.g., @cc4.8)
+    let modelOverride: string | undefined;
+    if (msg.author.bot) {
+      const invocations = parseAgentInvocations(msg.content);
+      const threadAgentInvocation = invocations.find(inv => inv.agent === session.agent);
+      modelOverride = threadAgentInvocation?.model;
+    }
+
     try {
       await this.dispatchAgentRun(
         thread.id,
@@ -1173,7 +1181,8 @@ export class DiscordBot {
         session.agent,
         session.workDir,
         fullPrompt,
-        discordContext
+        discordContext,
+        modelOverride ? { modelOverride } : undefined
       );
     } catch (err: any) {
       await msg.reply(`❌ Failed to resume **${session.agent}**: ${err.message}`);
