@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   hasAnyMention,
   parseAgentFromThreadName,
+  parseAgentInvocations,
   titleFromThreadName,
 } from "../../src/bot/parser.js";
 
@@ -20,6 +21,32 @@ describe("hasAnyMention", () => {
 
   it("returns false when @ is not followed by a token", () => {
     expect(hasAnyMention("email me @ example.com")).toBe(false);
+  });
+});
+
+describe("parseAgentInvocations", () => {
+  it("parses @cc4.8 with model override and clean prompt", () => {
+    expect(parseAgentInvocations("@cc4.8 fix this")).toEqual([
+      { agent: "cc", prompt: "fix this", model: "claude-opus-4-8" },
+    ]);
+  });
+
+  it("parses @cc 4.8 with space-separated model override", () => {
+    expect(parseAgentInvocations("@cc 4.8 fix this")).toEqual([
+      { agent: "cc", prompt: "fix this", model: "claude-opus-4-8" },
+    ]);
+  });
+
+  it("parses plain @cc without model override", () => {
+    expect(parseAgentInvocations("@cc fix this")).toEqual([
+      { agent: "cc", prompt: "fix this" },
+    ]);
+  });
+
+  it("parses @cco4.8 shorthand", () => {
+    expect(parseAgentInvocations("@cco4.8 fix this")).toEqual([
+      { agent: "cc", prompt: "fix this", model: "claude-opus-4-8" },
+    ]);
   });
 });
 

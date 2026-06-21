@@ -29,15 +29,30 @@ export function parseAgentInvocations(content: string): ParsedInvocation[] {
 
   const invocations: Array<{ agent: string; model?: string }> = [];
   const matched = new Set<string>(); // deduplicate by agent key
+  const removeSpans: Array<{ start: number; end: number }> = [];
   let match: RegExpExecArray | null;
 
   while ((match = mentionPattern.exec(content)) !== null) {
     const token = match[1]!.toLowerCase();
+    const mentionStart = match.index;
+    let mentionEnd = match.index + match[0].length;
 
-    // Exact agent key match
+    // Exact agent key match, optionally followed by a space-separated model alias
+    // (e.g. @cc 4.8).
     if (knownAgents.has(token) && !matched.has(token)) {
       matched.add(token);
-      invocations.push({ agent: token });
+      let model: string | undefined;
+      const afterMention = content.slice(mentionEnd);
+      const spaceModel = /^\s+([a-zA-Z0-9._-]+)/.exec(afterMention);
+      if (spaceModel) {
+        const resolved = resolveModelAlias(token, spaceModel[1]!);
+        if (resolved !== undefined) {
+          model = resolved;
+          mentionEnd += spaceModel[0].length;
+        }
+      }
+      invocations.push({ agent: token, model });
+      removeSpans.push({ start: mentionStart, end: mentionEnd });
       continue;
     }
 
@@ -49,6 +64,7 @@ export function parseAgentInvocations(content: string): ParsedInvocation[] {
         if (model !== undefined) {
           matched.add(key);
           invocations.push({ agent: key, model });
+          removeSpans.push({ start: mentionStart, end: mentionEnd });
           break;
         }
       }
@@ -57,14 +73,11 @@ export function parseAgentInvocations(content: string): ParsedInvocation[] {
 
   if (invocations.length === 0) return [];
 
-  // Strip ALL @agent mentions (with any trailing model suffix) to build the
-  // clean prompt. Collapse only horizontal whitespace; preserve newlines.
-  const allAgentPattern = new RegExp(
-    `@(${Array.from(knownAgents).join("|")})[a-zA-Z0-9._-]*`,
-    "gi"
-  );
-  const cleanPrompt = content
-    .replace(allAgentPattern, "")
+  let cleanPrompt = content;
+  for (const span of removeSpans.sort((a, b) => b.start - a.start)) {
+    cleanPrompt = cleanPrompt.slice(0, span.start) + cleanPrompt.slice(span.end);
+  }
+  cleanPrompt = cleanPrompt
     .replace(/[^\S\n]+/g, " ")
     .replace(/ *\n */g, "\n")
     .trim();
