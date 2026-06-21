@@ -345,13 +345,15 @@ export class DiscordBot {
         if (!session) return; // No session, ignore bot message
 
         const invocations = parseAgentInvocations(msg.content);
-        // Allow if bot mentions exactly the thread's agent (e.g., @cc in a cc thread)
-        const mentionsThreadAgent = invocations.length === 1 && invocations[0]!.agent === session.agent;
+        // Allow if bot mentions the thread's agent (other agent mentions are stripped by parser)
+        const mentionsThreadAgent = invocations.some(inv => inv.agent === session.agent);
 
         if (!mentionsThreadAgent) {
           return; // Ignore bot messages that don't mention this thread's agent
         }
         // Bot message is allowed - fall through to handleThreadMessage
+        // Note: parseAgentInvocations already strips all @agent mentions, so if the bot
+        // said "@cc @cx do this", the prompt will be "do this" and cc will handle it
       } else {
         // For human users, still check allowed list
         if (!this.allowedUserIds.includes(msg.author.id)) {
@@ -972,8 +974,9 @@ export class DiscordBot {
 
     // If the message mentions an agent, ask whether to branch into a new sibling
     // thread or just send the message to the current thread's agent.
+    // Skip this for bot messages - they go directly to the thread's agent.
     const invocations = parseAgentInvocations(msg.content);
-    if (invocations.length > 0) {
+    if (invocations.length > 0 && !msg.author.bot) {
       this.pendingBranchInteractions.set(msg.id, { msg, thread, session });
       const agentList = invocations.map((i) => `**${i.agent}**`).join(", ");
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
