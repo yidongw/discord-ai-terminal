@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { ensureThreadSession } from "./session-utils.js";
 import { createGhWrapper } from "../github/gh-wrapper.js";
 import { AttachmentBuilder, EmbedBuilder, type Client } from "discord.js";
 import { formatForDiscord } from "../utils/discord-format.js";
@@ -598,20 +599,11 @@ export class SessionManager {
     // so a (rate-limited) rename never delays the run itself.
     void setThreadStatus(thread, "working");
 
-    if (!existing || existing.agent !== agentKey) {
-      this.db.createThreadSession({
-        threadId,
-        channelId,
-        agent: agentKey,
-        workDir,
-        branch: opts?.branch ?? existing?.branch,
-        isWorktree: opts?.isWorktree ?? existing?.isWorktree ?? false,
-        createdAt: existing?.createdAt ?? Date.now(),
-        modelOverride: effectiveModelOverride,
-      });
-    } else if (effectiveModelOverride !== existing.modelOverride) {
-      this.db.updateModelOverride(threadId, effectiveModelOverride ?? null);
-    }
+    ensureThreadSession(this.db, threadId, channelId, agentKey, workDir, {
+      branch: opts?.branch,
+      isWorktree: opts?.isWorktree,
+      modelOverride: effectiveModelOverride,
+    });
 
     // Capture the exit code so the tailer can surface an abnormal exit. (A
     // re-attached run has no handle, so it relies on the agent's own done/error
