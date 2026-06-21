@@ -27,7 +27,7 @@ import {
   stripLocalImageReferences,
 } from "../utils/attachments.js";
 import { getChannelModelForAgent } from "../utils/models.js";
-import { handoffDoneDescription, summarizeForHandoff } from "./handoff.js";
+import { handoffDoneDescription, shouldSendHandoffDone, summarizeForHandoff } from "./handoff.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -262,13 +262,15 @@ export class SessionManager {
   /** Handoff @-mention belongs in Done only when the thread is going fully idle. */
   shouldIncludeHandoffInDone(threadId: string, session: ActiveSession): boolean {
     const threadSession = this.db.getThreadSession(threadId);
-    if (!threadSession?.handoffBot) return false;
-    if (this.getQueueLength(threadId) > 0) return false;
-    if (this.pendingPostRunPrompts.has(threadId)) return false;
-    if (this.getUsageLimitWait(threadId).waiting) return false;
-    if (session.pendingUsageLimitResume || session.pendingTurnLimitResume) return false;
-    if (this.db.listScheduledTasks(threadId).some((t) => t.enabled)) return false;
-    return true;
+    return shouldSendHandoffDone({
+      handoffBot: threadSession?.handoffBot,
+      queueLength: this.getQueueLength(threadId),
+      hasPendingPostRunPrompt: this.pendingPostRunPrompts.has(threadId),
+      usageLimitWaiting: this.getUsageLimitWait(threadId).waiting,
+      pendingUsageLimitResume: !!session.pendingUsageLimitResume,
+      pendingTurnLimitResume: !!session.pendingTurnLimitResume,
+      hasEnabledScheduledTasks: this.db.listScheduledTasks(threadId).some((t) => t.enabled),
+    });
   }
 
   isWaitingForUsageLimitReset(threadId: string): boolean {
