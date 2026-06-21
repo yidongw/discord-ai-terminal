@@ -332,21 +332,32 @@ export class DiscordBot {
     this.client.on("interactionCreate", (i) => this.handleInteraction(i));
 
     this.client.on("messageCreate", async (msg) => {
-      // Allow bot messages ONLY if they mention exactly one agent
-      const isBotWithAgentMention = msg.author.bot && parseAgentInvocations(msg.content).length === 1;
-
-      if (msg.author.bot && !isBotWithAgentMention) {
-        return; // Ignore bot messages without agent mentions or with multiple agents
-      }
-
-      // For human users, still check allowed list
-      if (!msg.author.bot && !this.allowedUserIds.includes(msg.author.id)) {
-        return;
-      }
-
       const isThread =
         msg.channel.type === ChannelType.PublicThread ||
         msg.channel.type === ChannelType.PrivateThread;
+
+      // For bot messages, only allow if they mention the thread's agent
+      if (msg.author.bot) {
+        // Only allow bot messages in threads (not channels)
+        if (!isThread) return;
+
+        const session = this.sessionManager.getDb().getThreadSession(msg.channelId);
+        if (!session) return; // No session, ignore bot message
+
+        const invocations = parseAgentInvocations(msg.content);
+        // Allow if bot mentions exactly the thread's agent (e.g., @cc in a cc thread)
+        const mentionsThreadAgent = invocations.length === 1 && invocations[0]!.agent === session.agent;
+
+        if (!mentionsThreadAgent) {
+          return; // Ignore bot messages that don't mention this thread's agent
+        }
+        // Bot message is allowed - fall through to handleThreadMessage
+      } else {
+        // For human users, still check allowed list
+        if (!this.allowedUserIds.includes(msg.author.id)) {
+          return;
+        }
+      }
 
       if (isThread) {
         await this.handleThreadMessage(msg);
