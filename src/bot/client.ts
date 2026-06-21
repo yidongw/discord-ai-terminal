@@ -338,7 +338,7 @@ export class DiscordBot {
         msg.channel.type === ChannelType.PrivateThread;
 
       if (msg.author.bot) {
-        if (isThread) await this.handleBotThreadMessage(msg);
+        if (isThread) await this.handleThreadMessage(msg, { fromBot: true });
         return;
       }
 
@@ -921,11 +921,17 @@ export class DiscordBot {
     }
   }
 
-  private async handleThreadMessage(msg: Message): Promise<void> {
+  private async handleThreadMessage(
+    msg: Message,
+    opts?: { fromBot?: boolean }
+  ): Promise<void> {
     const thread = msg.channel as ThreadChannel;
+    const fromBot = opts?.fromBot ?? false;
+
+    if (fromBot && msg.author.id === this.client.user?.id) return;
 
     // /test command: run manual test flow for the PR linked to this maker thread
-    if (msg.content.trim() === "/test" && this.githubHandler) {
+    if (!fromBot && msg.content.trim() === "/test" && this.githubHandler) {
       const prLink = this.sessionManager.getDb().findPrForMakerThread(thread.id);
       if (prLink) {
         await msg.react("🧪").catch(() => {});
@@ -938,11 +944,24 @@ export class DiscordBot {
       }
     }
 
-    const session = this.sessionManager.getDb().getThreadSession(thread.id);
+    const invocations = parseAgentInvocations(msg.content);
+    if (fromBot && invocations.length === 0) return;
+
+    let session = this.sessionManager.getDb().getThreadSession(thread.id);
 
     if (!session) {
-      if (await this.tryBootstrapOrphanedThread(msg, thread)) return;
-      return;
+      if (fromBot) {
+        session =
+          ensureMinimalThreadSession(
+            this.sessionManager.getDb(),
+            thread,
+            this.baseFolder,
+            invocations[0]!.agent
+          ) ?? undefined;
+      } else if (await this.tryBootstrapOrphanedThread(msg, thread)) {
+        return;
+      }
+      if (!session) return;
     }
 
     // Record this message as seen so restart recovery picks up only newer ones.
@@ -955,91 +974,53 @@ export class DiscordBot {
       return;
     }
 
-    // If the message mentions an agent, ask whether to branch into a new sibling
-    // thread or just send the message to the current thread's agent.
-    const invocations = parseAgentInvocations(msg.content);
+    let messageText = msg.content;
+    let modelOverride: string | undefined;
+
+    // Bot @agent mentions skip branch dialog and only run when the mention matches
+    // this thread's agent. User @agent mentions open the branch-or-continue prompt.
     if (invocations.length > 0) {
-      this.pendingBranchInteractions.set(msg.id, { msg, thread, session });
-      const agentList = invocations.map((i) => `**${i.agent}**`).join(", ");
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`branch_confirm_${msg.id}`)
-          .setLabel("Branch off → new thread")
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId(`branch_here_${msg.id}`)
-          .setLabel("Send to this thread")
-          .setStyle(ButtonStyle.Secondary)
-      );
-      await msg.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("🌿 Branch or continue here?")
-            .setDescription(
-              `You mentioned ${agentList}. Do you want to spin up a new thread branched off this one, or just send this message to the current agent?`
-            )
-            .setColor(0x5865f2),
-        ],
-        components: [row],
-      });
-      return;
+      if (fromBot) {
+        const invocation = invocations.find((i) => i.agent === session!.agent);
+        if (!invocation) return;
+        messageText = invocation.prompt || msg.content;
+        if (invocation.model) {
+          this.sessionManager.getDb().updateModelOverride(thread.id, invocation.model);
+          modelOverride = invocation.model;
+        }
+      } else {
+        this.pendingBranchInteractions.set(msg.id, { msg, thread, session });
+        const agentList = invocations.map((i) => `**${i.agent}**`).join(", ");
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`branch_confirm_${msg.id}`)
+            .setLabel("Branch off → new thread")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId(`branch_here_${msg.id}`)
+            .setLabel("Send to this thread")
+            .setStyle(ButtonStyle.Secondary)
+        );
+        await msg.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("🌿 Branch or continue here?")
+              .setDescription(
+                `You mentioned ${agentList}. Do you want to spin up a new thread branched off this one, or just send this message to the current agent?`
+              )
+              .setColor(0x5865f2),
+          ],
+          components: [row],
+        });
+        return;
+      }
     }
 
-    await this.runThreadMessageForSession(msg, thread, session, msg.content);
-  }
-
-  /** Process a bot message that @-mentions an agent — skips branch dialog. */
-  private async handleBotThreadMessage(msg: Message): Promise<void> {
-    if (msg.author.id === this.client.user?.id) return;
-
-    const thread = msg.channel as ThreadChannel;
-    const invocations = parseAgentInvocations(msg.content);
-    if (invocations.length === 0) return;
-
-    let session = this.sessionManager.getDb().getThreadSession(thread.id);
-    if (!session) {
-      session =
-        ensureMinimalThreadSession(
-          this.sessionManager.getDb(),
-          thread,
-          this.baseFolder,
-          invocations[0]!.agent
-        ) ?? undefined;
-      if (!session) return;
-    }
-
-    const invocation = invocations.find((i) => i.agent === session!.agent);
-    if (!invocation) return;
-
-    this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
-
-    if (invocation.model) {
-      this.sessionManager.getDb().updateModelOverride(thread.id, invocation.model);
-    }
-
-    if (this.isWorkerThread(session) || this.isBotRepoWorktree(session.workDir)) {
-      await this.handleWorkerThreadMessage(msg, thread, session);
-      return;
-    }
-
-    const messageText = invocation.prompt || msg.content;
-    await this.runThreadMessageForSession(msg, thread, session, messageText, {
-      autoQueueOnBusy: true,
-      modelOverride: invocation.model,
-    });
-  }
-
-  private async runThreadMessageForSession(
-    msg: Message,
-    thread: ThreadChannel,
-    session: ThreadSession,
-    messageText: string,
-    opts?: { autoQueueOnBusy?: boolean; modelOverride?: string }
-  ): Promise<void> {
     const isBusy = this.sessionManager.hasActiveProcess(thread.id);
     const usageLimitWait = this.sessionManager.getUsageLimitWait(thread.id);
 
     if (isBusy || usageLimitWait.waiting) {
+      // Download attachments now so we have the full prompt ready for queue/interrupt.
       const attachments = await this.downloadMsgAttachments(msg);
       const replyContext = await this.fetchReplyContext(msg);
       const fullPrompt = buildPromptWithAttachments(
@@ -1053,7 +1034,7 @@ export class DiscordBot {
         messageId: msg.id,
       };
 
-      const pending: PendingInteraction = {
+      this.pendingInteractions.set(msg.id, {
         prompt: fullPrompt,
         originalText: messageText,
         discordContext,
@@ -1061,14 +1042,7 @@ export class DiscordBot {
         workDir: session.workDir,
         channelId: session.channelId,
         thread,
-      };
-
-      if (opts?.autoQueueOnBusy) {
-        this.sessionManager.enqueueMessage(thread.id, pending);
-        return;
-      }
-
-      this.pendingInteractions.set(msg.id, pending);
+      });
 
       const queueLen = this.sessionManager.getQueueLength(thread.id);
       const queueNote = queueLen > 0
@@ -1079,6 +1053,7 @@ export class DiscordBot {
         : "";
       const buttons = [];
 
+      // Session limit case: offer send now, queue, use on resume, cancel
       if (usageLimitWait.waiting && !isBusy) {
         buttons.push(
           new ButtonBuilder()
@@ -1099,6 +1074,7 @@ export class DiscordBot {
             .setStyle(ButtonStyle.Secondary)
         );
       } else {
+        // Agent busy case: offer queue, interrupt, cancel
         buttons.push(
           new ButtonBuilder()
             .setCustomId(`msg_queue_${msg.id}`)
@@ -1136,9 +1112,15 @@ export class DiscordBot {
       return;
     }
 
+    // If the worktree was removed when the thread was archived, re-create it so
+    // the agent resumes in the same path with the same branch (or a fresh one off
+    // the default branch if the old branch was already merged and deleted).
     if (session.isWorktree && !fs.existsSync(session.workDir)) {
       const channelName = thread.parent?.name;
       if (channelName) {
+        // Recover the original label slug from the stored workDir basename,
+        // e.g. "fix-auth-bug-a1b2c3" → "fix-auth-bug". resolveThreadWorkDir
+        // will re-derive the same branch/dir names from that slug + thread id.
         const label = path.basename(session.workDir).replace(/-[a-z0-9]{6}$/i, "");
         resolveThreadWorkDir(channelName, thread.id, label, this.baseFolder);
       }
@@ -1169,7 +1151,7 @@ export class DiscordBot {
         session.workDir,
         fullPrompt,
         discordContext,
-        opts?.modelOverride ? { modelOverride: opts.modelOverride } : undefined
+        modelOverride ? { modelOverride } : undefined
       );
     } catch (err: any) {
       await msg.reply(`❌ Failed to resume **${session.agent}**: ${err.message}`);
