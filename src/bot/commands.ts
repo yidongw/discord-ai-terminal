@@ -168,6 +168,16 @@ export class CommandHandler {
         .addSubcommand((s) =>
           s.setName("list").setDescription("List which tools are hidden/shown in this channel")
         ),
+
+      new SlashCommandBuilder()
+        .setName("handoff")
+        .setDescription("Configure automatic handoff to another bot when agent completes")
+        .addStringOption((o) =>
+          o
+            .setName("bot")
+            .setDescription("Bot name to hand off to (e.g. 'hermes'), or 'clear' to disable")
+            .setRequired(true)
+        ),
     ];
   }
 
@@ -212,6 +222,7 @@ export class CommandHandler {
     if (commandName === "agents") return this.handleAgents(interaction);
     if (commandName === "tools") return this.handleTools(interaction);
     if (commandName === "queue") return this.handleQueue(interaction);
+    if (commandName === "handoff") return this.handleHandoff(interaction);
     if (commandName === "update") return this.handleUpdate(interaction);
   }
 
@@ -514,6 +525,48 @@ export class CommandHandler {
     await i.reply({
       embeds: [embed("✅ Codex Model Set", `Codex model set to **${model}** for this channel. New threads will use it; existing threads are unchanged.`, 0x00ff00)],
     });
+  }
+
+  private async handleHandoff(i: ChatInputCommandInteraction): Promise<void> {
+    const db = this.sessionManager.getDb();
+    const threadId = i.channelId;
+
+    // Handoff only works in threads
+    if (!i.channel?.isThread()) {
+      await i.reply({
+        embeds: [embed("ℹ️ Use in Thread", "The `/handoff` command only works in threads, not channels.", 0x888888)],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const session = db.getThreadSession(threadId);
+    if (!session) {
+      await i.reply({
+        embeds: [embed("ℹ️ No Session", "No session found for this thread. Start a conversation first.", 0x888888)],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const botName = i.options.getString("bot", true).trim().toLowerCase();
+
+    if (botName === "clear") {
+      db.setThreadHandoffBot(threadId, null);
+      await i.reply({
+        embeds: [embed("✅ Handoff Cleared", "Agent will no longer send handoff messages.", 0x00ff00)],
+      });
+    } else {
+      db.setThreadHandoffBot(threadId, botName);
+      await i.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("✅ Handoff Configured")
+            .setDescription(`Agent will mention **@${botName}** when done.`)
+            .setColor(0x00ff00),
+        ],
+      });
+    }
   }
 
   private async handleAgents(i: ChatInputCommandInteraction): Promise<void> {

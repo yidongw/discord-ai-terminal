@@ -332,8 +332,17 @@ export class DiscordBot {
     this.client.on("interactionCreate", (i) => this.handleInteraction(i));
 
     this.client.on("messageCreate", async (msg) => {
-      if (msg.author.bot) return;
-      if (!this.allowedUserIds.includes(msg.author.id)) return;
+      // Allow bot messages ONLY if they mention exactly one agent
+      const isBotWithAgentMention = msg.author.bot && parseAgentInvocations(msg.content).length === 1;
+
+      if (msg.author.bot && !isBotWithAgentMention) {
+        return; // Ignore bot messages without agent mentions or with multiple agents
+      }
+
+      // For human users, still check allowed list
+      if (!msg.author.bot && !this.allowedUserIds.includes(msg.author.id)) {
+        return;
+      }
 
       const isThread =
         msg.channel.type === ChannelType.PublicThread ||

@@ -1086,8 +1086,26 @@ export class SessionManager {
       if (event.turns !== null) parts.push(`${event.turns} turns`);
       if (event.cost !== null) parts.push(event.cost < 0.01 ? `${(event.cost * 100).toFixed(2)}¢` : `$${event.cost.toFixed(2)}`);
       if (event.tokens) parts.push(event.tokens);
+
+      // Check for handoff configuration
+      const handoffBot = this.db.getThreadHandoffBot(threadId);
+      let doneMessage: string;
+
+      if (handoffBot) {
+        // Handoff is configured - include bot mention and instructions
+        const summary = parts.length ? parts.join(" · ") : "Complete";
+        const agentKey = session.agentKey;
+        doneMessage =
+          `${summary}\n\n` +
+          `@${handoffBot} - Please review the above and provide next steps or mark as complete. ` +
+          `Use \`@${agentKey}\` to continue with this agent.`;
+      } else {
+        // No handoff - use original message
+        doneMessage = parts.length ? `*${parts.join(" · ")}*` : "Complete.";
+      }
+
       outbox.enqueue(() =>
-        thread.send({ embeds: [embed("✅ Done", parts.length ? `*${parts.join(" · ")}*` : "Complete.", 0x00ff00)] })
+        thread.send({ embeds: [embed("✅ Done", doneMessage, 0x00ff00)] })
       );
       // The completion action (if any) runs at finalize, from the full log text.
       this.stopProcess(session);
