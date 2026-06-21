@@ -44,7 +44,7 @@ import type { ThreadSession } from "../db/database.js";
 import type { WorkerMessage } from "./worker-mode.js";
 import { resolveEffectiveModel } from "../utils/models.js";
 import { evaluateThreadWorktreeClose } from "../utils/merged-worktree-close.js";
-import { ensureMinimalThreadSession } from "./handoff.js";
+import { ensureMinimalThreadSession, handoffBotNameFromAuthor } from "./handoff.js";
 
 interface PendingInteraction extends QueuedMessage {}
 
@@ -958,6 +958,11 @@ export class DiscordBot {
             this.baseFolder,
             invocations[0]!.agent
           ) ?? undefined;
+        if (session) {
+          this.sessionManager
+            .getDb()
+            .updateHandoffBot(thread.id, handoffBotNameFromAuthor(msg.author));
+        }
       } else if (await this.tryBootstrapOrphanedThread(msg, thread)) {
         return;
       }

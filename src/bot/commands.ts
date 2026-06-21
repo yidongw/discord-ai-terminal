@@ -22,7 +22,6 @@ import {
 } from "../utils/models.js";
 import { getAgent, listAgentKeys } from "../agents/index.js";
 import { mainRepoOf, worktreeCloseBlockReason } from "../utils/path-resolver.js";
-import { ensureMinimalThreadSession } from "./handoff.js";
 
 export class CommandHandler {
   constructor(
@@ -371,8 +370,6 @@ export class CommandHandler {
       return;
     }
 
-    const thread = i.channel as ThreadChannel;
-
     if (botArg.toLowerCase() === "clear") {
       const session = db.getThreadSession(threadId);
       if (!session?.handoffBot) {
@@ -390,16 +387,13 @@ export class CommandHandler {
     }
 
     const botName = botArg.replace(/^@/, "");
-    const session =
-      ensureMinimalThreadSession(db, thread, this.baseFolder) ??
-      db.getThreadSession(threadId);
-
+    const session = db.getThreadSession(threadId);
     if (!session) {
       await i.reply({
         embeds: [
           embed(
-            "ℹ️ Cannot Configure",
-            "Could not create a session — thread name must include an agent prefix (e.g. `cc • …`) and the thread must have a parent channel.",
+            "ℹ️ No Session",
+            "No session found for this thread. Start a conversation first.",
             0x888888
           ),
         ],

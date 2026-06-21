@@ -3,6 +3,11 @@ import { parseAgentFromThreadName, titleFromThreadName } from "./parser.js";
 import { resolveThreadWorkDir } from "../utils/path-resolver.js";
 import type { DatabaseManager, ThreadSession } from "../db/database.js";
 
+/** Derive the handoff target name from the Discord bot that sent the message. */
+export function handoffBotNameFromAuthor(author: { username: string }): string {
+  return author.username;
+}
+
 /** Create a thread session record without starting an agent run. */
 export function ensureMinimalThreadSession(
   db: DatabaseManager,

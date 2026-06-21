@@ -1,8 +1,15 @@
 import { describe, it, expect } from "vitest";
 import {
   handoffDoneDescription,
+  handoffBotNameFromAuthor,
   summarizeForHandoff,
 } from "../../src/bot/handoff.js";
+
+describe("handoffBotNameFromAuthor", () => {
+  it("uses the Discord username", () => {
+    expect(handoffBotNameFromAuthor({ username: "hermes" })).toBe("hermes");
+  });
+});
 
 describe("handoffDoneDescription", () => {
   it("includes stats, summary, handoff bot, and continue instructions", () => {
