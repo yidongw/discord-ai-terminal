@@ -617,8 +617,45 @@ export class DiscordBot {
   }
 
   /**
+   * Start agent run with prompt (already including attachments) and context.
+   * Shared by bot message handler and channel message handler.
+   */
+  private async startAgentWithPrompt(opts: {
+    thread: ThreadChannel;
+    parentChannel: TextChannel;
+    agentKey: string;
+    titleLabel: string;
+    fullPrompt: string;
+    triggerMsg: Message;
+    modelOverride?: string;
+  }): Promise<void> {
+    const { thread, parentChannel, agentKey, titleLabel, fullPrompt, triggerMsg, modelOverride } = opts;
+
+    const tName = threadName(agentKey, titleLabel);
+
+    const discordContext = {
+      channelId: thread.id,
+      channelName: tName,
+      userId: triggerMsg.author.id,
+      messageId: triggerMsg.id,
+    };
+
+    // Start agent run
+    await this.startThreadAgentRun({
+      thread,
+      channel: parentChannel,
+      agentKey,
+      titleLabel,
+      prompt: fullPrompt,
+      triggerMsg,
+      explicitModel: modelOverride,
+      discordContext,
+    });
+  }
+
+  /**
    * Prepare and start an agent run in an existing thread.
-   * Handles: title generation, thread renaming, attachments, and starting the run.
+   * Handles: title generation, thread renaming, and starting the run.
    */
   private async prepareAndStartAgentRun(opts: {
     thread: ThreadChannel;
@@ -642,27 +679,19 @@ export class DiscordBot {
     const tName = threadName(agentKey, titleLabel);
     await thread.setName(tName).catch(() => {});
 
-    // Process attachments
+    // Download attachments and build full prompt
     const attachments = await this.downloadMsgAttachments(triggerMsg);
     const fullPrompt = buildPromptWithAttachments(prompt, attachments);
 
-    const discordContext = {
-      channelId: thread.id,
-      channelName: tName,
-      userId: triggerMsg.author.id,
-      messageId: triggerMsg.id,
-    };
-
     // Start agent run
-    await this.startThreadAgentRun({
+    await this.startAgentWithPrompt({
       thread,
-      channel: parentChannel,
+      parentChannel,
       agentKey,
       titleLabel,
-      prompt: fullPrompt,
+      fullPrompt,
       triggerMsg,
-      explicitModel: modelOverride,
-      discordContext,
+      modelOverride,
     });
   }
 
@@ -963,22 +992,14 @@ export class DiscordBot {
         })) as ThreadChannel;
       }
 
-      const discordContext = {
-        channelId: thread.id,
-        channelName: tName,
-        userId: msg.author.id,
-        messageId: msg.id,
-      };
-
-      await this.startThreadAgentRun({
+      await this.startAgentWithPrompt({
         thread,
-        channel,
+        parentChannel: channel,
         agentKey: agent,
         titleLabel,
-        prompt: fullPrompt,
+        fullPrompt,
         triggerMsg: msg,
-        explicitModel: modelOverride,
-        discordContext,
+        modelOverride,
       });
     }
   }
