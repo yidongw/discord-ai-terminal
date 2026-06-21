@@ -27,6 +27,7 @@ import {
   stripLocalImageReferences,
 } from "../utils/attachments.js";
 import { getChannelModelForAgent } from "../utils/models.js";
+import { handoffDoneDescription, summarizeForHandoff } from "./handoff.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -1086,9 +1087,18 @@ export class SessionManager {
       if (event.turns !== null) parts.push(`${event.turns} turns`);
       if (event.cost !== null) parts.push(event.cost < 0.01 ? `${(event.cost * 100).toFixed(2)}¢` : `$${event.cost.toFixed(2)}`);
       if (event.tokens) parts.push(event.tokens);
-      outbox.enqueue(() =>
-        thread.send({ embeds: [embed("✅ Done", parts.length ? `*${parts.join(" · ")}*` : "Complete.", 0x00ff00)] })
-      );
+      const statsLine = parts.length ? `*${parts.join(" · ")}*` : "Complete.";
+      const threadSession = this.db.getThreadSession(threadId);
+      const handoffBot = threadSession?.handoffBot;
+      outbox.enqueue(() => {
+        if (handoffBot) {
+          const { text } = this.extractRunResult(session);
+          const summary = summarizeForHandoff(text);
+          const desc = handoffDoneDescription(statsLine, summary, handoffBot, session.agentKey);
+          return thread.send({ embeds: [embed("✅ Done", desc, 0x00ff00)] });
+        }
+        return thread.send({ embeds: [embed("✅ Done", statsLine, 0x00ff00)] });
+      });
       // The completion action (if any) runs at finalize, from the full log text.
       this.stopProcess(session);
       return;

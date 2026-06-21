@@ -22,6 +22,7 @@ import {
 } from "../utils/models.js";
 import { getAgent, listAgentKeys } from "../agents/index.js";
 import { mainRepoOf, worktreeCloseBlockReason } from "../utils/path-resolver.js";
+import { ensureMinimalThreadSession } from "./handoff.js";
 
 export class CommandHandler {
   constructor(
@@ -139,6 +140,16 @@ export class CommandHandler {
         ),
 
       new SlashCommandBuilder()
+        .setName("handoff")
+        .setDescription("Configure a bot to review when the agent completes (threads only)")
+        .addStringOption((o) =>
+          o
+            .setName("bot")
+            .setDescription("Bot name to hand off to (e.g. hermes), or 'clear' to disable")
+            .setRequired(true)
+        ),
+
+      new SlashCommandBuilder()
         .setName("queue")
         .setDescription("View messages queued to run after the current agent finishes"),
 
@@ -209,6 +220,7 @@ export class CommandHandler {
     if (commandName === "mode") return this.handleMode(interaction);
     if (commandName === "model") return this.handleModel(interaction);
     if (commandName === "goal") return this.handleGoal(interaction);
+    if (commandName === "handoff") return this.handleHandoff(interaction);
     if (commandName === "agents") return this.handleAgents(interaction);
     if (commandName === "tools") return this.handleTools(interaction);
     if (commandName === "queue") return this.handleQueue(interaction);
@@ -343,6 +355,68 @@ export class CommandHandler {
     this.sessionManager.getDb().setMode(this.channelKey(i), mode);
     await i.reply({
       embeds: [embed("✅ Mode Set", `Permission mode set to **${mode}** for this channel.`, 0x00ff00)],
+    });
+  }
+
+  private async handleHandoff(i: ChatInputCommandInteraction): Promise<void> {
+    const db = this.sessionManager.getDb();
+    const threadId = i.channelId;
+    const botArg = i.options.getString("bot", true).trim();
+
+    if (!i.channel?.isThread()) {
+      await i.reply({
+        embeds: [embed("ℹ️ Use in Thread", "The `/handoff` command only works in threads.", 0x888888)],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const thread = i.channel as ThreadChannel;
+
+    if (botArg.toLowerCase() === "clear") {
+      const session = db.getThreadSession(threadId);
+      if (!session?.handoffBot) {
+        await i.reply({
+          embeds: [embed("ℹ️ No Handoff", "No handoff bot is configured for this thread.", 0x888888)],
+          ephemeral: true,
+        });
+        return;
+      }
+      db.updateHandoffBot(threadId, null);
+      await i.reply({
+        embeds: [embed("✅ Handoff Cleared", "The agent will no longer mention a bot on completion.", 0x00ff00)],
+      });
+      return;
+    }
+
+    const botName = botArg.replace(/^@/, "");
+    const session =
+      ensureMinimalThreadSession(db, thread, this.baseFolder) ??
+      db.getThreadSession(threadId);
+
+    if (!session) {
+      await i.reply({
+        embeds: [
+          embed(
+            "ℹ️ Cannot Configure",
+            "Could not create a session — thread name must include an agent prefix (e.g. `cc • …`) and the thread must have a parent channel.",
+            0x888888
+          ),
+        ],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    db.updateHandoffBot(threadId, botName);
+    await i.reply({
+      embeds: [
+        embed(
+          "✅ Handoff Configured",
+          `When **@${session.agent}** completes, I'll mention **@${botName}** with a summary and ask for next steps.`,
+          0x00ff00
+        ),
+      ],
     });
   }
 

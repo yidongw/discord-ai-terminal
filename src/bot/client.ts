@@ -44,6 +44,7 @@ import type { ThreadSession } from "../db/database.js";
 import type { WorkerMessage } from "./worker-mode.js";
 import { resolveEffectiveModel } from "../utils/models.js";
 import { evaluateThreadWorktreeClose } from "../utils/merged-worktree-close.js";
+import { ensureMinimalThreadSession } from "./handoff.js";
 
 interface PendingInteraction extends QueuedMessage {}
 
@@ -332,12 +333,16 @@ export class DiscordBot {
     this.client.on("interactionCreate", (i) => this.handleInteraction(i));
 
     this.client.on("messageCreate", async (msg) => {
-      if (msg.author.bot) return;
-      if (!this.allowedUserIds.includes(msg.author.id)) return;
-
       const isThread =
         msg.channel.type === ChannelType.PublicThread ||
         msg.channel.type === ChannelType.PrivateThread;
+
+      if (msg.author.bot) {
+        if (isThread) await this.handleBotThreadMessage(msg);
+        return;
+      }
+
+      if (!this.allowedUserIds.includes(msg.author.id)) return;
 
       if (isThread) {
         await this.handleThreadMessage(msg);
@@ -980,14 +985,67 @@ export class DiscordBot {
       return;
     }
 
+    await this.runThreadMessageForSession(msg, thread, session, msg.content);
+  }
+
+  /** Process a bot message that @-mentions an agent — skips branch dialog. */
+  private async handleBotThreadMessage(msg: Message): Promise<void> {
+    if (msg.author.id === this.client.user?.id) return;
+
+    const thread = msg.channel as ThreadChannel;
+    const invocations = parseAgentInvocations(msg.content);
+    if (invocations.length === 0) return;
+
+    let session = this.sessionManager.getDb().getThreadSession(thread.id);
+    if (!session) {
+      session =
+        ensureMinimalThreadSession(
+          this.sessionManager.getDb(),
+          thread,
+          this.baseFolder,
+          invocations[0]!.agent
+        ) ?? undefined;
+      if (!session) return;
+    }
+
+    const invocation = invocations.find((i) => i.agent === session!.agent);
+    if (!invocation) return;
+
+    this.sessionManager.getDb().updateLastSeenMessageId(thread.id, msg.id);
+
+    if (invocation.model) {
+      this.sessionManager.getDb().updateModelOverride(thread.id, invocation.model);
+    }
+
+    if (this.isWorkerThread(session) || this.isBotRepoWorktree(session.workDir)) {
+      await this.handleWorkerThreadMessage(msg, thread, session);
+      return;
+    }
+
+    const messageText = invocation.prompt || msg.content;
+    await this.runThreadMessageForSession(msg, thread, session, messageText, {
+      autoQueueOnBusy: true,
+      modelOverride: invocation.model,
+    });
+  }
+
+  private async runThreadMessageForSession(
+    msg: Message,
+    thread: ThreadChannel,
+    session: ThreadSession,
+    messageText: string,
+    opts?: { autoQueueOnBusy?: boolean; modelOverride?: string }
+  ): Promise<void> {
     const isBusy = this.sessionManager.hasActiveProcess(thread.id);
     const usageLimitWait = this.sessionManager.getUsageLimitWait(thread.id);
 
     if (isBusy || usageLimitWait.waiting) {
-      // Download attachments now so we have the full prompt ready for queue/interrupt.
       const attachments = await this.downloadMsgAttachments(msg);
       const replyContext = await this.fetchReplyContext(msg);
-      const fullPrompt = buildPromptWithAttachments(replyContext.text + msg.content, [...replyContext.attachments, ...attachments]);
+      const fullPrompt = buildPromptWithAttachments(
+        replyContext.text + messageText,
+        [...replyContext.attachments, ...attachments]
+      );
       const discordContext = {
         channelId: thread.id,
         channelName: thread.name,
@@ -995,15 +1053,22 @@ export class DiscordBot {
         messageId: msg.id,
       };
 
-      this.pendingInteractions.set(msg.id, {
+      const pending: PendingInteraction = {
         prompt: fullPrompt,
-        originalText: msg.content,
+        originalText: messageText,
         discordContext,
         agentKey: session.agent,
         workDir: session.workDir,
         channelId: session.channelId,
         thread,
-      });
+      };
+
+      if (opts?.autoQueueOnBusy) {
+        this.sessionManager.enqueueMessage(thread.id, pending);
+        return;
+      }
+
+      this.pendingInteractions.set(msg.id, pending);
 
       const queueLen = this.sessionManager.getQueueLength(thread.id);
       const queueNote = queueLen > 0
@@ -1014,7 +1079,6 @@ export class DiscordBot {
         : "";
       const buttons = [];
 
-      // Session limit case: offer send now, queue, use on resume, cancel
       if (usageLimitWait.waiting && !isBusy) {
         buttons.push(
           new ButtonBuilder()
@@ -1035,7 +1099,6 @@ export class DiscordBot {
             .setStyle(ButtonStyle.Secondary)
         );
       } else {
-        // Agent busy case: offer queue, interrupt, cancel
         buttons.push(
           new ButtonBuilder()
             .setCustomId(`msg_queue_${msg.id}`)
@@ -1073,15 +1136,9 @@ export class DiscordBot {
       return;
     }
 
-    // If the worktree was removed when the thread was archived, re-create it so
-    // the agent resumes in the same path with the same branch (or a fresh one off
-    // the default branch if the old branch was already merged and deleted).
     if (session.isWorktree && !fs.existsSync(session.workDir)) {
       const channelName = thread.parent?.name;
       if (channelName) {
-        // Recover the original label slug from the stored workDir basename,
-        // e.g. "fix-auth-bug-a1b2c3" → "fix-auth-bug". resolveThreadWorkDir
-        // will re-derive the same branch/dir names from that slug + thread id.
         const label = path.basename(session.workDir).replace(/-[a-z0-9]{6}$/i, "");
         resolveThreadWorkDir(channelName, thread.id, label, this.baseFolder);
       }
@@ -1091,7 +1148,10 @@ export class DiscordBot {
 
     const attachments = await this.downloadMsgAttachments(msg);
     const replyContext = await this.fetchReplyContext(msg);
-    const fullPrompt = buildPromptWithAttachments(replyContext.text + msg.content, [...replyContext.attachments, ...attachments]);
+    const fullPrompt = buildPromptWithAttachments(
+      replyContext.text + messageText,
+      [...replyContext.attachments, ...attachments]
+    );
 
     const discordContext = {
       channelId: thread.id,
@@ -1108,7 +1168,8 @@ export class DiscordBot {
         session.agent,
         session.workDir,
         fullPrompt,
-        discordContext
+        discordContext,
+        opts?.modelOverride ? { modelOverride: opts.modelOverride } : undefined
       );
     } catch (err: any) {
       await msg.reply(`❌ Failed to resume **${session.agent}**: ${err.message}`);
