@@ -25,6 +25,7 @@ import {
   threadName,
   firstLine,
 } from "./parser.js";
+import { createOrphanedThreadSession } from "./session-utils.js";
 import { listAgentKeys, getAgent } from "../agents/index.js";
 import { resolveThreadWorkDir, mainRepoOf } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
@@ -755,6 +756,7 @@ export class DiscordBot {
       await thread.send(`❌ Failed to start **${agentKey}**: ${err.message}`);
     }
   }
+
 
   private async tryBootstrapOrphanedThread(msg: Message, thread: ThreadChannel): Promise<boolean> {
     const agentKey = parseAgentFromThreadName(thread.name);

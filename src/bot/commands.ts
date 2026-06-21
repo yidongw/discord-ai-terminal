@@ -22,7 +22,7 @@ import {
 } from "../utils/models.js";
 import { getAgent, listAgentKeys } from "../agents/index.js";
 import { mainRepoOf, worktreeCloseBlockReason } from "../utils/path-resolver.js";
-import { parseAgentFromThreadName, titleFromThreadName } from "./parser.js";
+import { createOrphanedThreadSession } from "./session-utils.js";
 
 export class CommandHandler {
   constructor(
@@ -546,10 +546,9 @@ export class CommandHandler {
     // If no session exists, try to create one from thread name
     if (!session) {
       const thread = i.channel as any;
-      const agentKey = parseAgentFromThreadName(thread.name);
-      const parent = thread.parent as any;
+      const created = createOrphanedThreadSession(thread, db, this.baseFolder);
 
-      if (!agentKey || !parent) {
+      if (!created) {
         await i.reply({
           embeds: [embed("ℹ️ No Session", "No session found for this thread. Start a conversation first.", 0x888888)],
           ephemeral: true,
@@ -557,22 +556,7 @@ export class CommandHandler {
         return;
       }
 
-      // Create minimal session for this thread
-      const titleLabel = titleFromThreadName(thread.name) ?? "thread";
-      const channelId = parent.id;
-      const workDir = path.join(this.baseFolder, parent.name);
-
-      db.createThreadSession({
-        threadId,
-        channelId,
-        agent: agentKey,
-        workDir,
-        isWorktree: false,
-        createdAt: Date.now(),
-      });
-
       session = db.getThreadSession(threadId)!;
-      console.log(`[handoff] created session for orphaned thread ${threadId} (agent=${agentKey})`);
     }
 
     const botName = i.options.getString("bot", true).trim().toLowerCase();
