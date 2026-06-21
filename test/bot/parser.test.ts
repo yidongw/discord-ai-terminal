@@ -25,14 +25,14 @@ describe("hasAnyMention", () => {
 });
 
 describe("parseAgentInvocations", () => {
-  it("parses @cc4.8 with model override and clean prompt", () => {
-    expect(parseAgentInvocations("@cc4.8 fix this")).toEqual([
+  it("parses @cco4.8 with model override and clean prompt", () => {
+    expect(parseAgentInvocations("@cco4.8 fix this")).toEqual([
       { agent: "cc", prompt: "fix this", model: "claude-opus-4-8" },
     ]);
   });
 
-  it("parses @cc 4.8 with space-separated model override", () => {
-    expect(parseAgentInvocations("@cc 4.8 fix this")).toEqual([
+  it("parses @cc o4.8 with space-separated model override", () => {
+    expect(parseAgentInvocations("@cc o4.8 fix this")).toEqual([
       { agent: "cc", prompt: "fix this", model: "claude-opus-4-8" },
     ]);
   });
@@ -43,14 +43,8 @@ describe("parseAgentInvocations", () => {
     ]);
   });
 
-  it("parses @cco4.8 shorthand", () => {
-    expect(parseAgentInvocations("@cco4.8 fix this")).toEqual([
-      { agent: "cc", prompt: "fix this", model: "claude-opus-4-8" },
-    ]);
-  });
-
   it("keeps only the first model when the same agent is mentioned twice", () => {
-    expect(parseAgentInvocations("@cc4.7 @cc4.6 fix this")).toEqual([
+    expect(parseAgentInvocations("@cco4.7 @cco4.6 fix this")).toEqual([
       { agent: "cc", prompt: "fix this", model: "claude-opus-4-7" },
     ]);
   });
