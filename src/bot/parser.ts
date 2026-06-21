@@ -39,31 +39,35 @@ export function parseAgentInvocations(content: string): ParsedInvocation[] {
 
     // Exact agent key match, optionally followed by a space-separated model alias
     // (e.g. @cc 4.8).
-    if (knownAgents.has(token) && !matched.has(token)) {
-      matched.add(token);
-      let model: string | undefined;
-      const afterMention = content.slice(mentionEnd);
-      const spaceModel = /^\s+([a-zA-Z0-9._-]+)/.exec(afterMention);
-      if (spaceModel) {
-        const resolved = resolveModelAlias(token, spaceModel[1]!);
-        if (resolved !== undefined) {
-          model = resolved;
-          mentionEnd += spaceModel[0].length;
+    if (knownAgents.has(token)) {
+      if (!matched.has(token)) {
+        matched.add(token);
+        let model: string | undefined;
+        const afterMention = content.slice(mentionEnd);
+        const spaceModel = /^\s+([a-zA-Z0-9._-]+)/.exec(afterMention);
+        if (spaceModel) {
+          const resolved = resolveModelAlias(token, spaceModel[1]!);
+          if (resolved !== undefined) {
+            model = resolved;
+            mentionEnd += spaceModel[0].length;
+          }
         }
+        invocations.push({ agent: token, model });
       }
-      invocations.push({ agent: token, model });
       removeSpans.push({ start: mentionStart, end: mentionEnd });
       continue;
     }
 
     // Agent key prefix + model suffix (e.g. "cx5.5" → agent "cx", suffix "5.5")
     for (const key of knownAgents) {
-      if (!matched.has(key) && token.startsWith(key) && token.length > key.length) {
+      if (token.startsWith(key) && token.length > key.length) {
         const suffix = token.slice(key.length);
         const model = resolveModelAlias(key, suffix);
         if (model !== undefined) {
-          matched.add(key);
-          invocations.push({ agent: key, model });
+          if (!matched.has(key)) {
+            matched.add(key);
+            invocations.push({ agent: key, model });
+          }
           removeSpans.push({ start: mentionStart, end: mentionEnd });
           break;
         }

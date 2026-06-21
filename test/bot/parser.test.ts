@@ -48,6 +48,12 @@ describe("parseAgentInvocations", () => {
       { agent: "cc", prompt: "fix this", model: "claude-opus-4-8" },
     ]);
   });
+
+  it("keeps only the first model when the same agent is mentioned twice", () => {
+    expect(parseAgentInvocations("@cc4.7 @cc4.6 fix this")).toEqual([
+      { agent: "cc", prompt: "fix this", model: "claude-opus-4-7" },
+    ]);
+  });
 });
 
 describe("parseAgentFromThreadName", () => {
