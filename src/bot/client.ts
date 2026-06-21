@@ -44,7 +44,8 @@ import type { ThreadSession } from "../db/database.js";
 import type { WorkerMessage } from "./worker-mode.js";
 import { resolveEffectiveModel } from "../utils/models.js";
 import { evaluateThreadWorktreeClose } from "../utils/merged-worktree-close.js";
-import { ensureMinimalThreadSession, handoffBotNameFromAuthor } from "./handoff.js";
+import { handoffBotNameFromAuthor } from "./handoff.js";
+import type { ParsedInvocation } from "./parser.js";
 
 interface PendingInteraction extends QueuedMessage {}
 
@@ -921,6 +922,56 @@ export class DiscordBot {
     }
   }
 
+  /**
+   * First @agent message from a handoff bot in a sessionless thread: full setup
+   * (worktree, thread rename, agent run) and auto-configure handoff to the sender.
+   */
+  private async startThreadFromBotMention(
+    msg: Message,
+    thread: ThreadChannel,
+    invocation: ParsedInvocation
+  ): Promise<void> {
+    const parent = thread.parent as TextChannel | null;
+    if (!parent) return;
+
+    await msg.react("👀").catch(() => {});
+
+    const attachments = await this.downloadMsgAttachments(msg);
+    const replyContext = await this.fetchReplyContext(msg);
+    const messageText = invocation.prompt || msg.content;
+    const fullPrompt = buildPromptWithAttachments(
+      replyContext.text + messageText,
+      [...replyContext.attachments, ...attachments]
+    );
+
+    const titleLabel = await generateThreadTitle(invocation.agent, messageText).catch(
+      () => firstLine(messageText)
+    );
+    const tName = threadName(invocation.agent, titleLabel);
+    await thread.setName(tName).catch(() => {});
+    void setThreadStatus(thread, "working");
+
+    await this.startThreadAgentRun({
+      thread,
+      channel: parent,
+      agentKey: invocation.agent,
+      titleLabel,
+      prompt: fullPrompt,
+      triggerMsg: msg,
+      explicitModel: invocation.model,
+      discordContext: {
+        channelId: thread.id,
+        channelName: tName,
+        userId: msg.author.id,
+        messageId: msg.id,
+      },
+    });
+
+    this.sessionManager
+      .getDb()
+      .updateHandoffBot(thread.id, handoffBotNameFromAuthor(msg.author));
+  }
+
   private async handleThreadMessage(
     msg: Message,
     opts?: { fromBot?: boolean }
@@ -951,22 +1002,12 @@ export class DiscordBot {
 
     if (!session) {
       if (fromBot) {
-        session =
-          ensureMinimalThreadSession(
-            this.sessionManager.getDb(),
-            thread,
-            this.baseFolder,
-            invocations[0]!.agent
-          ) ?? undefined;
-        if (session) {
-          this.sessionManager
-            .getDb()
-            .updateHandoffBot(thread.id, handoffBotNameFromAuthor(msg.author));
-        }
+        await this.startThreadFromBotMention(msg, thread, invocations[0]!);
+        return;
       } else if (await this.tryBootstrapOrphanedThread(msg, thread)) {
         return;
       }
-      if (!session) return;
+      return;
     }
 
     // Record this message as seen so restart recovery picks up only newer ones.
