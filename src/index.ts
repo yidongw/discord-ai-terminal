@@ -4,6 +4,7 @@ import { SessionManager } from "./bot/session-manager.js";
 import { Scheduler } from "./bot/scheduler.js";
 import { BackgroundJobManager } from "./bot/background-jobs.js";
 import { validateConfig } from "./utils/config.js";
+import { resolveMcpPort } from "./utils/bot-identity.js";
 import { MCPPermissionServer } from "./mcp/server.js";
 import { GitHubHandler } from "./github/handler.js";
 import { GitHubWebhookServer, registerGitHubWebhook } from "./github/webhook.js";
@@ -19,7 +20,10 @@ if (process.env.DISCORD_AI_TERMINAL_THREAD_ID) {
 async function main() {
   const config = validateConfig();
 
-  const mcpPort = parseInt(process.env.MCP_SERVER_PORT || "3001");
+  console.log(`Starting as role="${config.botRole}" (default responder: ${config.isDefaultResponder})`);
+
+  // Port is role-derived so a second instance doesn't collide on 3001.
+  const mcpPort = resolveMcpPort(config.botRole);
   const mcpServer = new MCPPermissionServer(mcpPort);
   await mcpServer.start();
 
@@ -28,7 +32,7 @@ async function main() {
   // sessions the scheduler and bot read from.
   mcpServer.setDb(sessionManager.getDb());
 
-  const bot = new DiscordBot(sessionManager, config.allowedUserIds, config.baseFolder, config.discordAiTerminalChannelId, config.reviewBotIds);
+  const bot = new DiscordBot(sessionManager, config.allowedUserIds, config.baseFolder, config.discordAiTerminalChannelId, config.reviewBotIds, config.isDefaultResponder);
   bot.setMCPServer(mcpServer);
 
   // The scheduler is the durable timer that replays recurring tasks: it survives

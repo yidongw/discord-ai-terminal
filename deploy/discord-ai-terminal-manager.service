@@ -1,0 +1,37 @@
+# Second instance: the MANAGER bot. Same code as the worker, run as a separate
+# user service with its own Discord token and BOT_ROLE=manager. The role
+# auto-derives a separate DB (manager-sessions.db) and MCP port (3011) so it
+# never shares state with the worker.
+#
+# systemd Environment= lines take precedence over the project's .env, so shared
+# settings (ALLOWED_USER_IDS, BASE_FOLDER, DISCORD_AI_TERMINAL) come from .env
+# while the per-instance overrides below distinguish this process.
+#
+# Install:
+#   cp deploy/discord-ai-terminal-manager.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now discord-ai-terminal-manager
+[Unit]
+Description=Discord AI Terminal (manager)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/discord-ai-terminal
+ExecStartPre=/bin/sleep 15
+ExecStart=%h/.bun/bin/bun run src/index.ts
+Restart=on-failure
+RestartSec=10
+Environment=PATH=%h/.local/share/fnm/node-versions/v24.12.0/installation/bin:%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+# The manager's own bot token (different from the worker's).
+Environment=DISCORD_TOKEN=REPLACE_WITH_MANAGER_BOT_TOKEN
+# Role → separate DB + MCP port automatically.
+Environment=BOT_ROLE=manager
+# Keep GitHub webhook/linker servers off here so they don't fight the worker for
+# ports 3002/3003.
+Environment=GITHUB_WEBHOOK_SECRET=
+Environment=GITHUB_TOKEN=
+
+[Install]
+WantedBy=default.target

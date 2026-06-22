@@ -4,8 +4,53 @@ import {
   hasReviewBotMention,
   parseAgentFromThreadName,
   parseAgentInvocations,
+  shouldHandleAddressedMessage,
   titleFromThreadName,
 } from "../../src/bot/parser.js";
+
+describe("shouldHandleAddressedMessage", () => {
+  const SELF = "self-bot-id";
+  const OTHER = "other-bot-id";
+
+  it("the default responder handles messages that address no bot", () => {
+    expect(
+      shouldHandleAddressedMessage({ selfId: SELF, isDefaultResponder: true, addressedBotIds: [] })
+    ).toBe(true);
+  });
+
+  it("a non-default instance ignores messages that address no bot", () => {
+    expect(
+      shouldHandleAddressedMessage({ selfId: SELF, isDefaultResponder: false, addressedBotIds: [] })
+    ).toBe(false);
+  });
+
+  it("a bot handles a message that addresses it, regardless of default status", () => {
+    expect(
+      shouldHandleAddressedMessage({ selfId: SELF, isDefaultResponder: false, addressedBotIds: [SELF] })
+    ).toBe(true);
+    expect(
+      shouldHandleAddressedMessage({ selfId: SELF, isDefaultResponder: true, addressedBotIds: [SELF] })
+    ).toBe(true);
+  });
+
+  it("a bot ignores a message that addresses only another bot, even if it is the default", () => {
+    expect(
+      shouldHandleAddressedMessage({ selfId: SELF, isDefaultResponder: true, addressedBotIds: [OTHER] })
+    ).toBe(false);
+  });
+
+  it("a bot handles a message that addresses both it and another bot", () => {
+    expect(
+      shouldHandleAddressedMessage({ selfId: SELF, isDefaultResponder: false, addressedBotIds: [OTHER, SELF] })
+    ).toBe(true);
+  });
+
+  it("ignores when self id is not yet known", () => {
+    expect(
+      shouldHandleAddressedMessage({ selfId: undefined, isDefaultResponder: false, addressedBotIds: [SELF] })
+    ).toBe(false);
+  });
+});
 
 describe("hasReviewBotMention", () => {
   const reviewBotIds = ["123456789", "hermes", "review-bot"];

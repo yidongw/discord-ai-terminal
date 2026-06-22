@@ -213,6 +213,40 @@ Bot: 🔧 LS (path: .)
 
 For detailed setup instructions, troubleshooting, and development information, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Running a Second Instance (worker + manager)
+
+You can run the same code as **two bots in the same channels** — a *worker* that
+does the work and a *manager* that keeps it on-goal and reviews. They are two
+processes, each with its own Discord token, distinguished by a single env var:
+
+| Variable | Worker | Manager |
+| --- | --- | --- |
+| `DISCORD_TOKEN` | worker token | manager token |
+| `BOT_ROLE` | `worker` (default) | `manager` |
+| `DB_PATH` | auto → `sessions.db` | auto → `manager-sessions.db` |
+| `MCP_SERVER_PORT` | auto → `3001` | auto → `3011` |
+
+Setting `BOT_ROLE` is enough — the DB file and MCP port are **derived from the
+role automatically**, so the two instances never share state or collide on a
+port. `DB_PATH` / `MCP_SERVER_PORT` only need setting if you want to override the
+derived defaults.
+
+### Who responds
+
+When several instances listen in one channel, exactly one acts on each message:
+
+- **Addresses no bot** → only the **default responder** acts (the *worker* by
+  default; set `DEFAULT_RESPONDER=manager` in *both* instances' env to flip it).
+- **@-mentions a specific bot** → only that bot acts; the others ignore it.
+
+So everyday messages go to the worker, and you pull in the manager by
+@-mentioning it.
+
+Deploy the second instance with the provided
+`deploy/com.discord-ai-terminal-manager.plist` (macOS) or
+`deploy/discord-ai-terminal-manager.service` (Linux) — copies of the worker units
+with the manager's token and `BOT_ROLE=manager` set.
+
 ## Running as a Service (macOS)
 
 To keep the bot running persistently and start it automatically after a reboot,
