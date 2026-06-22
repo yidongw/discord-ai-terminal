@@ -19,7 +19,7 @@ describe("Handoff Database Operations", () => {
     } catch {}
   });
 
-  it("should store and retrieve handoff bot", () => {
+  it("should store and retrieve handoff bot with id", () => {
     db.createThreadSession({
       threadId: "thread-1",
       channelId: "channel-1",
@@ -28,10 +28,11 @@ describe("Handoff Database Operations", () => {
       isWorktree: false,
       createdAt: Date.now(),
     });
-    db.updateHandoffBot("thread-1", "hermes");
+    db.updateHandoffBot("thread-1", "hermes", "bot-user-id");
 
     const session = db.getThreadSession("thread-1");
     expect(session?.handoffBot).toBe("hermes");
+    expect(session?.handoffBotId).toBe("bot-user-id");
   });
 
   it("should clear handoff bot", () => {
@@ -48,6 +49,7 @@ describe("Handoff Database Operations", () => {
 
     const session = db.getThreadSession("thread-2");
     expect(session?.handoffBot).toBeUndefined();
+    expect(session?.handoffBotId).toBeUndefined();
   });
 
   it("should preserve handoff when session is replaced without handoff field", () => {

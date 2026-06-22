@@ -969,7 +969,11 @@ export class DiscordBot {
 
     this.sessionManager
       .getDb()
-      .updateHandoffBot(thread.id, handoffBotNameFromAuthor(msg.author));
+      .updateHandoffBot(
+        thread.id,
+        handoffBotNameFromAuthor(msg.author),
+        msg.author.id
+      );
   }
 
   private async handleThreadMessage(

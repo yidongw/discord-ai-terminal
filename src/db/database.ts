@@ -57,6 +57,8 @@ export interface ThreadSession {
   goal?: string;
   // Bot to @-mention when the agent completes (/handoff).
   handoffBot?: string;
+  // Discord user ID for handoff bot — required for real pings (embed text @name does not notify).
+  handoffBotId?: string;
 }
 
 // A run whose agent process is detached and surviving across bot restarts. The
@@ -148,7 +150,8 @@ export class DatabaseManager {
         last_seen_message_id  TEXT,
         model_override        TEXT,
         goal                  TEXT,
-        handoff_bot           TEXT
+        handoff_bot           TEXT,
+        handoff_bot_id        TEXT
       );
 
       CREATE TABLE IF NOT EXISTS channel_modes (
@@ -273,6 +276,9 @@ export class DatabaseManager {
     if (!cols.includes("handoff_bot")) {
       this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN handoff_bot TEXT`);
     }
+    if (!cols.includes("handoff_bot_id")) {
+      this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN handoff_bot_id TEXT`);
+    }
     // active_runs shipped before completion_json existed, so a DB created by that
     // build has the table but not the column. initializeTables() runs first, so
     // the table always exists here — just add the column when it's missing.
@@ -312,11 +318,13 @@ export class DatabaseManager {
     const existing = this.getThreadSession(ts.threadId);
     const handoffBot =
       ts.handoffBot !== undefined ? ts.handoffBot : existing?.handoffBot ?? null;
+    const handoffBotId =
+      ts.handoffBotId !== undefined ? ts.handoffBotId : existing?.handoffBotId ?? null;
     this.db
       .prepare(
         `INSERT OR REPLACE INTO thread_sessions
-         (thread_id, channel_id, agent, session_id, work_dir, branch, is_worktree, created_at, last_seen_message_id, model_override, goal, handoff_bot)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (thread_id, channel_id, agent, session_id, work_dir, branch, is_worktree, created_at, last_seen_message_id, model_override, goal, handoff_bot, handoff_bot_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         ts.threadId,
@@ -330,7 +338,8 @@ export class DatabaseManager {
         ts.lastSeenMessageId ?? null,
         ts.modelOverride ?? null,
         ts.goal ?? null,
-        handoffBot ?? null
+        handoffBot ?? null,
+        handoffBotId ?? null
       );
   }
 
@@ -346,9 +355,31 @@ export class DatabaseManager {
       .run(goal, threadId);
   }
 
-  updateHandoffBot(threadId: string, handoffBot: string | null): void {
+  updateHandoffBot(
+    threadId: string,
+    handoffBot: string | null,
+    handoffBotId?: string | null
+  ): void {
+    if (handoffBot === null) {
+      this.db
+        .prepare(
+          `UPDATE thread_sessions SET handoff_bot = NULL, handoff_bot_id = NULL WHERE thread_id = ?`
+        )
+        .run(threadId);
+      return;
+    }
+    if (handoffBotId) {
+      this.db
+        .prepare(
+          `UPDATE thread_sessions SET handoff_bot = ?, handoff_bot_id = ? WHERE thread_id = ?`
+        )
+        .run(handoffBot, handoffBotId, threadId);
+      return;
+    }
     this.db
-      .prepare(`UPDATE thread_sessions SET handoff_bot = ? WHERE thread_id = ?`)
+      .prepare(
+        `UPDATE thread_sessions SET handoff_bot = ?, handoff_bot_id = NULL WHERE thread_id = ?`
+      )
       .run(handoffBot, threadId);
   }
 
@@ -374,6 +405,7 @@ export class DatabaseManager {
       goal: row.goal ?? undefined,
       modelOverride: row.model_override ?? undefined,
       handoffBot: row.handoff_bot ?? undefined,
+      handoffBotId: row.handoff_bot_id ?? undefined,
     };
   }
 
