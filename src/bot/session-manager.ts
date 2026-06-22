@@ -27,7 +27,7 @@ import {
   stripLocalImageReferences,
 } from "../utils/attachments.js";
 import { getChannelModelForAgent } from "../utils/models.js";
-import { handoffDoneDescription, shouldSendHandoffDone, summarizeForHandoff } from "./handoff.js";
+import { handoffDoneContent, handoffDoneEmbedDescription, resolveHandoffBotId, shouldSendHandoffDone, summarizeForHandoff } from "./handoff.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -1110,8 +1110,18 @@ export class SessionManager {
         if (includeHandoff) {
           const { text } = this.extractRunResult(session);
           const summary = summarizeForHandoff(text);
-          const desc = handoffDoneDescription(statsLine, summary, handoffBot!, session.agentKey);
-          return thread.send({ embeds: [embed("✅ Done", desc, 0x00ff00)] });
+          const handoffBotId = resolveHandoffBotId(
+            thread.guild,
+            handoffBot!,
+            threadSession?.handoffBotId
+          );
+          const content = handoffDoneContent(handoffBot!, session.agentKey, handoffBotId);
+          const desc = handoffDoneEmbedDescription(statsLine, summary);
+          return thread.send({
+            content,
+            embeds: [embed("✅ Done", desc, 0x00ff00)],
+            allowedMentions: handoffBotId ? { users: [handoffBotId] } : undefined,
+          });
         }
         return thread.send({ embeds: [embed("✅ Done", statsLine, 0x00ff00)] });
       });

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  handoffDoneDescription,
+  handoffDoneContent,
+  handoffDoneEmbedDescription,
   handoffBotNameFromAuthor,
+  resolveHandoffBotId,
   shouldSendHandoffDone,
   summarizeForHandoff,
 } from "../../src/bot/handoff.js";
@@ -102,18 +104,43 @@ describe("SessionManager handoff idle detection", () => {
   });
 });
 
-describe("handoffDoneDescription", () => {
-  it("includes stats, summary, handoff bot, and continue instructions", () => {
-    const desc = handoffDoneDescription(
-      "*3 turns · $0.12*",
-      "Implemented the feature.",
-      "hermes",
-      "cc"
-    );
+describe("handoffDoneEmbedDescription", () => {
+  it("includes stats and summary without mention line", () => {
+    const desc = handoffDoneEmbedDescription("*3 turns · $0.12*", "Implemented the feature.");
     expect(desc).toContain("*3 turns · $0.12*");
     expect(desc).toContain("Implemented the feature.");
-    expect(desc).toContain("@hermes");
-    expect(desc).toContain("Use @cc to continue.");
+    expect(desc).not.toContain("@hermes");
+  });
+});
+
+describe("handoffDoneContent", () => {
+  it("uses a real mention when bot id is known", () => {
+    const content = handoffDoneContent("hermes", "cc", "123456789");
+    expect(content).toContain("<@123456789>");
+    expect(content).toContain("Use @cc to continue.");
+  });
+
+  it("falls back to @username when id is unknown", () => {
+    const content = handoffDoneContent("hermes", "cc");
+    expect(content).toContain("@hermes");
+  });
+});
+
+describe("resolveHandoffBotId", () => {
+  it("returns stored id without guild lookup", () => {
+    expect(resolveHandoffBotId(null, "hermes", "999")).toBe("999");
+  });
+
+  it("finds bot member by username", () => {
+    const guild = {
+      members: {
+        cache: {
+          find: (fn: (m: { user: { id: string; username: string; bot: boolean } }) => boolean) =>
+            fn({ user: { id: "111", username: "Hermes", bot: true } }) ? { user: { id: "111" } } : undefined,
+        },
+      },
+    };
+    expect(resolveHandoffBotId(guild, "hermes")).toBe("111");
   });
 });
 

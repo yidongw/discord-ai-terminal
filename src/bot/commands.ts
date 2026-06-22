@@ -402,7 +402,10 @@ export class CommandHandler {
       return;
     }
 
-    db.updateHandoffBot(threadId, botName);
+    const botMember = i.guild?.members.cache.find(
+      (m) => m.user.bot && m.user.username.toLowerCase() === botName.toLowerCase()
+    );
+    db.updateHandoffBot(threadId, botName, botMember?.user.id);
     await i.reply({
       embeds: [
         embed(
