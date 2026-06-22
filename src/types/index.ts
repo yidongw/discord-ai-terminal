@@ -39,6 +39,7 @@ export interface Config {
   allowedUserIds: string[];
   baseFolder: string;
   discordAiTerminalChannelId?: string;
+  reviewBotIds: string[];
 }
 
 export interface ThreadContext {

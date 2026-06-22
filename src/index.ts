@@ -28,7 +28,7 @@ async function main() {
   // sessions the scheduler and bot read from.
   mcpServer.setDb(sessionManager.getDb());
 
-  const bot = new DiscordBot(sessionManager, config.allowedUserIds, config.baseFolder, config.discordAiTerminalChannelId);
+  const bot = new DiscordBot(sessionManager, config.allowedUserIds, config.baseFolder, config.discordAiTerminalChannelId, config.reviewBotIds);
   bot.setMCPServer(mcpServer);
 
   // The scheduler is the durable timer that replays recurring tasks: it survives

@@ -19,6 +19,8 @@ A Discord bot that runs Claude Code or Codex sessions on different projects base
    DISCORD_TOKEN=your_discord_bot_token_here
    ALLOWED_USER_ID=your_discord_user_id_here
    BASE_FOLDER=/path/to/your/repos
+   # Optional: Ignore messages mentioning these review bots (IDs or usernames)
+   REVIEW_BOT_IDS=
    ```
 5. Run: `bun start`
 
@@ -97,6 +99,12 @@ ALLOWED_USER_ID=your_discord_user_id_here
 # Example: if BASE_FOLDER=/Users/you/repos and channel is #my-project
 # The bot will operate in /Users/you/repos/my-project
 BASE_FOLDER=/path/to/your/repos
+
+# Optional: Review bot IDs or usernames to ignore (comma-separated)
+# Messages mentioning these bots will not trigger the AI terminal
+# Can be Discord user IDs or bot usernames
+# Example: REVIEW_BOT_IDS=123456789,hermes,review-bot
+REVIEW_BOT_IDS=
 ```
 
 ### 7. Prepare Your Repository Structure

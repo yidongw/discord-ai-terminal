@@ -2,6 +2,34 @@ import { listAgentKeys } from "../agents/index.js";
 import { resolveModelAlias } from "../utils/models.js";
 import { stripStatusEmoji } from "../utils/thread-status.js";
 
+/**
+ * Check if the message mentions a configured review bot (by Discord ID or username).
+ * @param content - The message content
+ * @param reviewBotIds - Array of bot IDs or usernames from REVIEW_BOT_IDS env var
+ * @returns true if the message mentions a review bot (case-insensitive for usernames)
+ */
+export function hasReviewBotMention(content: string, reviewBotIds: string[]): boolean {
+  if (reviewBotIds.length === 0) return false;
+
+  // Check for Discord user ID mentions like <@123456789> or <@!123456789>
+  const discordMentionPattern = /<@!?(\d+)>/g;
+  let match: RegExpExecArray | null;
+  while ((match = discordMentionPattern.exec(content)) !== null) {
+    const mentionedId = match[1]!;
+    if (reviewBotIds.includes(mentionedId)) return true;
+  }
+
+  // Check for text @username mentions (case-insensitive)
+  const lowerBotNames = reviewBotIds.map((id) => id.toLowerCase());
+  const textMentionPattern = /@([a-zA-Z0-9_.-]+)/g;
+  while ((match = textMentionPattern.exec(content)) !== null) {
+    const token = match[1]!.toLowerCase();
+    if (lowerBotNames.includes(token)) return true;
+  }
+
+  return false;
+}
+
 /** True when the message contains any @ token (Discord ping or text @foo). */
 export function hasAnyMention(content: string): boolean {
   if (/<@[!&]?\d+>/.test(content)) return true;

@@ -19,6 +19,7 @@ import { CommandHandler } from "./commands.js";
 import {
   parseAgentInvocations,
   hasAnyMention,
+  hasReviewBotMention,
   parseAgentFromThreadName,
   titleFromThreadName,
   starterMessageText,
@@ -71,7 +72,8 @@ export class DiscordBot {
     private sessionManager: SessionManager,
     private allowedUserIds: string[],
     private baseFolder: string,
-    private discordAiTerminalChannelId?: string
+    private discordAiTerminalChannelId?: string,
+    private reviewBotIds: string[] = []
   ) {
     this.client = new Client({
       intents: [
@@ -739,6 +741,9 @@ export class DiscordBot {
   }
 
   private async handleBotInstanceChannelMessage(msg: Message, channel: TextChannel): Promise<void> {
+    // Block messages that mention review bots to prevent interference.
+    if (hasReviewBotMention(msg.content, this.reviewBotIds)) return;
+
     const invocations = parseAgentInvocations(msg.content);
 
     if (invocations.length === 0) {
@@ -845,6 +850,9 @@ export class DiscordBot {
 
   private async handleChannelMessage(msg: Message): Promise<void> {
     const channel = msg.channel as TextChannel;
+
+    // Block messages that mention review bots to prevent interference.
+    if (hasReviewBotMention(msg.content, this.reviewBotIds)) return;
 
     // discord-ai-terminal channel: each message spawns a new bot-instance thread.
     if (this.discordAiTerminalChannelId && channel.id === this.discordAiTerminalChannelId) {
@@ -984,6 +992,9 @@ export class DiscordBot {
     const fromBot = opts?.fromBot ?? false;
 
     if (fromBot && msg.author.id === this.client.user?.id) return;
+
+    // Block messages that mention review bots to prevent interference.
+    if (!fromBot && hasReviewBotMention(msg.content, this.reviewBotIds)) return;
 
     // /test command: run manual test flow for the PR linked to this maker thread
     if (!fromBot && msg.content.trim() === "/test" && this.githubHandler) {
