@@ -12,7 +12,8 @@ export interface ResolvedPath {
 }
 
 export interface WorktreeStatus {
-  // Uncommitted changes in the working tree (tracked or untracked).
+  // Tracked uncommitted changes (staged, modified, deleted). Untracked files are
+  // ignored — local artifacts like .env should not block thread close.
   dirty: boolean;
 }
 
@@ -196,9 +197,13 @@ export function mainRepoOf(wtPath: string): string | null {
   return gitDir ? path.dirname(gitDir) : null;
 }
 
-// Inspect a worktree for uncommitted changes that cleanup must not discard.
+// Inspect a worktree for tracked uncommitted changes that cleanup must not discard.
 export function worktreeStatus(repoPath: string, wtPath: string): WorktreeStatus {
-  const status = spawnSync("git", ["-C", wtPath, "status", "--porcelain"], { encoding: "utf8" });
+  const status = spawnSync(
+    "git",
+    ["-C", wtPath, "status", "--porcelain", "--untracked-files=no"],
+    { encoding: "utf8" }
+  );
   const dirty = status.status === 0 ? status.stdout.trim().length > 0 : true;
   return { dirty };
 }
