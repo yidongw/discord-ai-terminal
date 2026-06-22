@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { spawnSync } = vi.hoisted(() => ({
+const { spawnSync, existsSync } = vi.hoisted(() => ({
   spawnSync: vi.fn(),
+  existsSync: vi.fn(() => true),
 }));
 
 vi.mock("child_process", () => ({
   spawnSync,
+}));
+
+vi.mock("fs", () => ({
+  default: { existsSync },
+  existsSync,
 }));
 
 import {
@@ -125,6 +131,8 @@ describe("worktreePassesCloseCheck", () => {
 describe("evaluateThreadWorktreeClose", () => {
   beforeEach(() => {
     spawnSync.mockReset();
+    existsSync.mockReset();
+    existsSync.mockReturnValue(true);
   });
 
   function mockCleanMergedWorktree() {
@@ -155,6 +163,13 @@ describe("evaluateThreadWorktreeClose", () => {
   it("force-removes when all three checks pass", () => {
     mockCleanMergedWorktree();
     expect(evaluateThreadWorktreeClose("/wt", "discord/foo")).toEqual({ action: "forceRemove" });
+  });
+
+  it("force-removes when the worktree directory is already gone", () => {
+    existsSync.mockReturnValue(false);
+    expect(evaluateThreadWorktreeClose("/wt", "discord/foo")).toEqual({ action: "forceRemove" });
+    // Guard must not even shell out to git once the dir is missing.
+    expect(spawnSync).not.toHaveBeenCalled();
   });
 
   it("blocks when branch does not match origin", () => {

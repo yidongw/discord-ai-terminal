@@ -1,4 +1,5 @@
 import { spawnSync } from "child_process";
+import fs from "fs";
 import {
   mainRepoOf,
   worktreeCloseBlockReason,
@@ -97,6 +98,12 @@ export function evaluateThreadWorktreeClose(
 ): ThreadWorktreeCloseDecision {
   if (!branch) {
     return { action: "block", reason: "no branch configured" };
+  }
+
+  // Worktree directory already gone (removed/pruned out of band). Nothing left to
+  // protect — let close proceed so removeWorktree can clear the stale session.
+  if (!fs.existsSync(workDir)) {
+    return { action: "forceRemove" };
   }
 
   const repoPath = mainRepoOf(workDir);
