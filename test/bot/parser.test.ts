@@ -1,10 +1,51 @@
 import { describe, it, expect } from "vitest";
 import {
   hasAnyMention,
+  hasReviewBotMention,
   parseAgentFromThreadName,
   parseAgentInvocations,
   titleFromThreadName,
 } from "../../src/bot/parser.js";
+
+describe("hasReviewBotMention", () => {
+  const reviewBotIds = ["123456789", "hermes", "review-bot"];
+
+  it("returns true for Discord ID mention matching review bot", () => {
+    expect(hasReviewBotMention("<@123456789> please review", reviewBotIds)).toBe(true);
+    expect(hasReviewBotMention("<@!123456789> please review", reviewBotIds)).toBe(true);
+  });
+
+  it("returns true for username mention matching review bot", () => {
+    expect(hasReviewBotMention("@hermes please review this PR", reviewBotIds)).toBe(true);
+    expect(hasReviewBotMention("@review-bot check this", reviewBotIds)).toBe(true);
+  });
+
+  it("is case-insensitive for username mentions", () => {
+    expect(hasReviewBotMention("@Hermes please review", reviewBotIds)).toBe(true);
+    expect(hasReviewBotMention("@HERMES review this", reviewBotIds)).toBe(true);
+  });
+
+  it("returns false when reviewBotIds is empty", () => {
+    expect(hasReviewBotMention("@hermes please review", [])).toBe(false);
+  });
+
+  it("returns false for Discord ID mention not in review bots", () => {
+    expect(hasReviewBotMention("<@987654321> please review", reviewBotIds)).toBe(false);
+  });
+
+  it("returns false for username mention not in review bots", () => {
+    expect(hasReviewBotMention("@cc fix this bug", reviewBotIds)).toBe(false);
+    expect(hasReviewBotMention("@tim can you review?", reviewBotIds)).toBe(false);
+  });
+
+  it("returns false for plain text", () => {
+    expect(hasReviewBotMention("hello world", reviewBotIds)).toBe(false);
+  });
+
+  it("returns false for partial matches", () => {
+    expect(hasReviewBotMention("@hermes123 review", reviewBotIds)).toBe(false);
+  });
+});
 
 describe("hasAnyMention", () => {
   it("returns false for plain text", () => {

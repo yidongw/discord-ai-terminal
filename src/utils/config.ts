@@ -26,5 +26,9 @@ export function validateConfig(): Config {
 
   const discordAiTerminalChannelId = process.env.DISCORD_AI_TERMINAL || undefined;
 
-  return { discordToken, allowedUserIds, baseFolder, discordAiTerminalChannelId };
+  // Parse review bot IDs/usernames (comma-separated list)
+  const reviewBotIdsRaw = process.env.REVIEW_BOT_IDS || "";
+  const reviewBotIds = reviewBotIdsRaw.split(",").map((id) => id.trim()).filter(Boolean);
+
+  return { discordToken, allowedUserIds, baseFolder, discordAiTerminalChannelId, reviewBotIds };
 }
