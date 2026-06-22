@@ -1011,13 +1011,22 @@ export class DiscordBot {
     }
 
     const invocations = parseAgentInvocations(msg.content);
-    if (fromBot && invocations.length === 0) return;
+    const botMentioned = msg.mentions.users.has(this.client.user?.id ?? "");
+    if (fromBot && invocations.length === 0 && !botMentioned) return;
 
     let session = this.sessionManager.getDb().getThreadSession(thread.id);
 
     if (!session) {
       if (fromBot) {
-        await this.startThreadFromBotMention(msg, thread, invocations[0]!);
+        // If bot mentioned us with Discord native mention but no text @agent, infer from thread name
+        let invocation = invocations[0];
+        if (!invocation && botMentioned) {
+          const agentFromThread = parseAgentFromThreadName(thread.name);
+          invocation = { agent: agentFromThread || "cc", prompt: msg.content };
+        }
+        if (invocation) {
+          await this.startThreadFromBotMention(msg, thread, invocation);
+        }
         return;
       } else if (await this.tryBootstrapOrphanedThread(msg, thread)) {
         return;
