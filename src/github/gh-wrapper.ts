@@ -38,9 +38,22 @@ export function createGhWrapper(
   const lines = [
     "#!/bin/bash",
     `# gh control-plane wrapper for Discord thread ${threadId}`,
-    'WRAPPER_DIR="$(dirname "$0")"',
-    'REAL_GH="$(PATH="${PATH#$WRAPPER_DIR:}" command -v gh 2>/dev/null)"',
-    'if [ -z "$REAL_GH" ]; then',
+    'WRAPPER_DIR="$(cd "$(dirname "$0")" && pwd)"',
+    // Resolve the real gh by removing THIS wrapper dir from PATH wherever it
+    // appears. A leading-prefix strip (${PATH#$WRAPPER_DIR:}) breaks the moment
+    // anything prepends another entry to PATH (e.g. sourcing ~/.local/bin/env):
+    // the wrapper dir is no longer first, the strip is a no-op, `command -v gh`
+    // resolves back to this wrapper, and `exec "$REAL_GH"` loops forever —
+    // spawning a fork storm that surfaces as "fork: Resource temporarily
+    // unavailable". Filter every PATH entry and add a self-reference guard.
+    'IFS=":" read -ra _PATH_PARTS <<< "$PATH"',
+    '_REAL_PATH=""',
+    'for _p in "${_PATH_PARTS[@]}"; do',
+    '  [ "$_p" = "$WRAPPER_DIR" ] && continue',
+    '  _REAL_PATH="${_REAL_PATH:+$_REAL_PATH:}$_p"',
+    "done",
+    'REAL_GH="$(PATH="$_REAL_PATH" command -v gh 2>/dev/null)"',
+    'if [ -z "$REAL_GH" ] || [ "$REAL_GH" -ef "$0" ]; then',
     '  echo "gh: real gh not found in PATH" >&2',
     "  exit 127",
     "fi",
