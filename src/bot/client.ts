@@ -1011,7 +1011,9 @@ export class DiscordBot {
     }
 
     const invocations = parseAgentInvocations(msg.content);
-    const botMentioned = msg.mentions.users.has(this.client.user?.id ?? "");
+    // Check if bot was mentioned (but exclude reply-only messages - Discord adds replied-to user to mentions)
+    const isReplyToBot = msg.reference?.messageId && msg.mentions.repliedUser?.id === this.client.user?.id;
+    const botMentioned = msg.mentions.users.has(this.client.user?.id ?? "") && !isReplyToBot;
     if (fromBot && invocations.length === 0 && !botMentioned) return;
 
     let session = this.sessionManager.getDb().getThreadSession(thread.id);
