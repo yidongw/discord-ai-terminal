@@ -427,6 +427,12 @@ export class DiscordBot {
     // marker (survives restarts), so skip re-closing an already-closed thread.
     // Deletion (reason "deleted") always cleans up fully regardless.
     if (reason === "closed" && isClosedThreadName(thread?.name)) {
+      // A 🗑️-named thread can still be unarchived (e.g. Discord reopens it when
+      // we post to it). Don't touch the worktree again, but make sure it ends up
+      // archived — setThreadStatus no-ops here since the emoji already matches.
+      if (thread && thread.archived === false && typeof thread.setArchived === "function") {
+        void thread.setArchived(true).catch(() => {});
+      }
       return;
     }
 
