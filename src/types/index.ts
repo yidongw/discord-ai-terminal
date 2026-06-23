@@ -34,12 +34,18 @@ export type SDKMessage =
       permissionMode: "default" | "acceptEdits" | "bypassPermissions" | "plan";
     };
 
+export type BotRole = "worker" | "manager";
+
 export interface Config {
   discordToken: string;
   allowedUserIds: string[];
   baseFolder: string;
   discordAiTerminalChannelId?: string;
   reviewBotIds: string[];
+  /** This instance's role; distinguishes co-running worker/manager instances. */
+  botRole: BotRole;
+  /** True when this instance answers messages that don't address a specific bot. */
+  isDefaultResponder: boolean;
 }
 
 export interface ThreadContext {

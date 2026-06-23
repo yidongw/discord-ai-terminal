@@ -30,6 +30,27 @@ export function hasReviewBotMention(content: string, reviewBotIds: string[]): bo
   return false;
 }
 
+export interface BotRouting {
+  /** This instance's own Discord user id (undefined before the gateway is ready). */
+  selfId: string | undefined;
+  /** True when this instance answers messages that address no specific bot. */
+  isDefaultResponder: boolean;
+  /** Discord ids of bot users this message explicitly addresses (mentions + reply target). */
+  addressedBotIds: string[];
+}
+
+/**
+ * Decide whether this instance should act on a user message when several bot
+ * instances are listening in the same channel:
+ *   - addresses no bot      → only the default responder acts
+ *   - addresses this bot     → act
+ *   - addresses another bot  → stay silent (that instance will handle it)
+ */
+export function shouldHandleAddressedMessage(r: BotRouting): boolean {
+  if (r.addressedBotIds.length === 0) return r.isDefaultResponder;
+  return !!r.selfId && r.addressedBotIds.includes(r.selfId);
+}
+
 /** True when the message contains any @ token (Discord ping or text @foo). */
 export function hasAnyMention(content: string): boolean {
   if (/<@[!&]?\d+>/.test(content)) return true;

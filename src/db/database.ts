@@ -11,6 +11,7 @@ import {
   normalizeCodexModel,
   normalizeCsModel,
 } from "../utils/models.js";
+import { resolveDbPath } from "../utils/bot-identity.js";
 
 export type PermissionMode = "auto" | "plan" | "approve";
 export type { CcModel, CodexModel, CsModel };
@@ -126,7 +127,9 @@ export class DatabaseManager {
   private mirrorDb?: DatabaseManager;
 
   constructor(dbPath?: string) {
-    const finalPath = dbPath || path.join(process.cwd(), "sessions.db");
+    // No explicit path → derive from BOT_ROLE so a second instance (e.g. the
+    // manager) automatically gets its own DB instead of sharing the worker's.
+    const finalPath = dbPath || resolveDbPath();
     this.db = new Database(finalPath);
     this.initializeTables();
     this.migrate();

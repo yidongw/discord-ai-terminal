@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Second instance: the MANAGER bot. Same code as the worker, run as a separate
+  process with its own Discord token and BOT_ROLE=manager. The role auto-derives
+  a separate DB (manager-sessions.db) and MCP port (3011) so it never shares
+  state with the worker.
+
+  launchd EnvironmentVariables take precedence over the project's .env, so the
+  shared settings (ALLOWED_USER_IDS, BASE_FOLDER, DISCORD_AI_TERMINAL) come from
+  .env while the per-instance overrides below distinguish this process.
+
+  Install:
+    cp deploy/com.discord-ai-terminal-manager.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.discord-ai-terminal-manager.plist
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.discord-ai-terminal-manager</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>cd /Users/xinjuan/git/discord-ai-terminal &amp;&amp; exec /Users/xinjuan/.bun/bin/bun run src/index.ts</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>ThrottleInterval</key>
+	<integer>15</integer>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/Users/xinjuan/.bun/bin:/Users/xinjuan/.local/bin:/Users/xinjuan/.local/share/fnm/node-versions/v24.12.0/installation/bin:/usr/local/bin:/usr/bin:/bin</string>
+
+		<!-- The manager's own bot token (different from the worker's). -->
+		<key>DISCORD_TOKEN</key>
+		<string>REPLACE_WITH_MANAGER_BOT_TOKEN</string>
+
+		<!-- Role → separate DB + MCP port automatically. -->
+		<key>BOT_ROLE</key>
+		<string>manager</string>
+
+		<!-- Keep GitHub webhook/linker servers off here so they don't fight the
+		     worker for ports 3002/3003. Leave DEFAULT_RESPONDER unset (worker is
+		     the default responder); the manager only replies when @-mentioned. -->
+		<key>GITHUB_WEBHOOK_SECRET</key>
+		<string></string>
+		<key>GITHUB_TOKEN</key>
+		<string></string>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>/Users/xinjuan/git/discord-ai-terminal/discord-ai-terminal-manager.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/xinjuan/git/discord-ai-terminal/discord-ai-terminal-manager.log</string>
+</dict>
+</plist>

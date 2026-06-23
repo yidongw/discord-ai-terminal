@@ -1,4 +1,5 @@
 import type { Config } from "../types/index.js";
+import { getBotRole, isDefaultResponder } from "./bot-identity.js";
 
 export function validateConfig(): Config {
   const discordToken = process.env.DISCORD_TOKEN;
@@ -30,5 +31,15 @@ export function validateConfig(): Config {
   const reviewBotIdsRaw = process.env.REVIEW_BOT_IDS || "";
   const reviewBotIds = reviewBotIdsRaw.split(",").map((id) => id.trim()).filter(Boolean);
 
-  return { discordToken, allowedUserIds, baseFolder, discordAiTerminalChannelId, reviewBotIds };
+  const botRole = getBotRole();
+
+  return {
+    discordToken,
+    allowedUserIds,
+    baseFolder,
+    discordAiTerminalChannelId,
+    reviewBotIds,
+    botRole,
+    isDefaultResponder: isDefaultResponder(botRole),
+  };
 }

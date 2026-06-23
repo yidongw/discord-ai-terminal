@@ -20,6 +20,7 @@ import {
   parseAgentInvocations,
   hasAnyMention,
   hasReviewBotMention,
+  shouldHandleAddressedMessage,
   parseAgentFromThreadName,
   titleFromThreadName,
   starterMessageText,
@@ -73,7 +74,10 @@ export class DiscordBot {
     private allowedUserIds: string[],
     private baseFolder: string,
     private discordAiTerminalChannelId?: string,
-    private reviewBotIds: string[] = []
+    private reviewBotIds: string[] = [],
+    // When false, this instance only replies to messages that @-mention it; the
+    // default-responder instance handles everything that addresses no bot.
+    private isDefaultResponder: boolean = true
   ) {
     this.client = new Client({
       intents: [
@@ -85,6 +89,28 @@ export class DiscordBot {
     });
     this.commands = new CommandHandler(sessionManager, allowedUserIds, baseFolder);
     this.setupEvents();
+  }
+
+  // ── Multi-instance routing ─────────────────────────────────────────────────
+
+  // Decide whether this instance should act on a user's message. When the user
+  // @-mentions a specific bot, only that bot responds and the others ignore it;
+  // when no bot is addressed, only the configured default responder acts.
+  private shouldHandleUserMessage(msg: Message): boolean {
+    const addressed = new Set<string>();
+    // Native @-mentions of bot users (Discord resolves these to real user ids).
+    for (const [, user] of msg.mentions.users) {
+      if ((user as any).bot) addressed.add(user.id);
+    }
+    // A reply targets a specific author; replying to a bot's message addresses it.
+    const repliedUser = msg.mentions.repliedUser as { id: string; bot: boolean } | null;
+    if (msg.reference && repliedUser?.bot) addressed.add(repliedUser.id);
+
+    return shouldHandleAddressedMessage({
+      selfId: this.client.user?.id,
+      isDefaultResponder: this.isDefaultResponder,
+      addressedBotIds: [...addressed],
+    });
   }
 
   // ── Worker thread helpers ──────────────────────────────────────────────────
@@ -346,6 +372,11 @@ export class DiscordBot {
       }
 
       if (!this.allowedUserIds.includes(msg.author.id)) return;
+
+      // With multiple bot instances listening (e.g. worker + manager), only one
+      // should act: the addressed bot, or — if none is addressed — the default
+      // responder. The non-addressed instance stays silent.
+      if (!this.shouldHandleUserMessage(msg)) return;
 
       if (isThread) {
         await this.handleThreadMessage(msg);
