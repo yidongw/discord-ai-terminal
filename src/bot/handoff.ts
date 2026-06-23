@@ -10,6 +10,7 @@ export interface HandoffIdleContext {
   usageLimitWaiting: boolean;
   pendingUsageLimitResume: boolean;
   pendingTurnLimitResume: boolean;
+  pendingServerRateLimitResume: boolean;
   hasEnabledScheduledTasks: boolean;
 }
 
@@ -19,7 +20,9 @@ export function shouldSendHandoffDone(ctx: HandoffIdleContext): boolean {
   if (ctx.queueLength > 0) return false;
   if (ctx.hasPendingPostRunPrompt) return false;
   if (ctx.usageLimitWaiting) return false;
-  if (ctx.pendingUsageLimitResume || ctx.pendingTurnLimitResume) return false;
+  if (ctx.pendingUsageLimitResume || ctx.pendingTurnLimitResume || ctx.pendingServerRateLimitResume) {
+    return false;
+  }
   if (ctx.hasEnabledScheduledTasks) return false;
   return true;
 }

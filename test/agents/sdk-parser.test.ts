@@ -83,6 +83,41 @@ describe('parseSdkLine', () => {
     }
   });
 
+  it('maps rejected rate_limit_event without reset time to default retry', () => {
+    const now = Date.now();
+    const event = parseSdkLine(
+      JSON.stringify({
+        type: 'rate_limit_event',
+        rate_limit_info: { status: 'rejected' },
+      }),
+      '/test/dir'
+    );
+
+    expect(event?.kind).toBe('rate_limit');
+    if (event?.kind === 'rate_limit') {
+      expect(event.resetAt).toBeGreaterThanOrEqual(now);
+      expect(event.resetAt).toBeLessThanOrEqual(now + 61_000);
+    }
+  });
+
+  it('maps server rate limit error detail to error', () => {
+    const event = parseSdkLine(
+      JSON.stringify({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        error: 'API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited',
+      }),
+      '/test/dir'
+    );
+
+    expect(event).toEqual({
+      kind: 'error',
+      message: 'API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited',
+      subtype: 'error_during_execution',
+    });
+  });
+
   it('ignores allowed rate_limit_event (informational, not a limit hit)', () => {
     const event = parseSdkLine(
       JSON.stringify({

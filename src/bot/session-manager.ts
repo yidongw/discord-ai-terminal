@@ -11,7 +11,7 @@ import { mainRepoOf, removeWorktree, type RemoveResult } from "../utils/path-res
 import { setThreadStatus } from "../utils/thread-status.js";
 import { escapeShellString, type DiscordContext } from "../utils/shell.js";
 import { RunTailer, isPidAlive } from "./run-tailer.js";
-import { parseSessionLimitReset } from "../utils/session-limit-reset.js";
+import { parseSessionLimitReset, isServerRateLimitMessage, defaultServerRateLimitRetry } from "../utils/session-limit-reset.js";
 import {
   SESSION_LIMIT_CONTINUATION_PROMPT,
   registerSessionLimitWakeup,
@@ -124,6 +124,11 @@ interface ActiveSession {
   usageLimitResetAt?: number;
   usageLimitResetLabel?: string;
   usageLimitNoticeSent?: boolean;
+  // API/server rate limit — scheduler wakes cc after a short backoff.
+  pendingServerRateLimitResume?: boolean;
+  serverRateLimitRetryAt?: number;
+  serverRateLimitRetryLabel?: string;
+  serverRateLimitNoticeSent?: boolean;
   // Per-run turn cap (error_max_turns) — immediate --resume when no usage limit.
   pendingTurnLimitResume?: boolean;
   // Non-JSON lines from the agent's output (stderr merged in). Capped at 20 lines
@@ -269,6 +274,7 @@ export class SessionManager {
       usageLimitWaiting: this.getUsageLimitWait(threadId).waiting,
       pendingUsageLimitResume: !!session.pendingUsageLimitResume,
       pendingTurnLimitResume: !!session.pendingTurnLimitResume,
+      pendingServerRateLimitResume: !!session.pendingServerRateLimitResume,
       hasEnabledScheduledTasks: this.db.listScheduledTasks(threadId).some((t) => t.enabled),
     });
   }
@@ -669,6 +675,10 @@ export class SessionManager {
           // have context when an error event arrives with no detail of its own.
           session.nonJsonOutput.push(line);
           if (session.nonJsonOutput.length > 20) session.nonJsonOutput.shift();
+          if (this.noteServerRateLimit(session, line)) {
+            this.enqueueServerRateLimitNotice(session);
+            this.stopProcess(session);
+          }
         }
       },
       onOffset: (offset) => {
@@ -735,8 +745,10 @@ export class SessionManager {
       }
     }
 
-    if (session.pendingUsageLimitResume && session.usageLimitResetAt && session.agentKey === "cc") {
-      this.scheduleUsageLimitResume(threadId, session);
+    if (session.pendingServerRateLimitResume && session.serverRateLimitRetryAt && session.agentKey === "cc") {
+      this.scheduleDeferredResume(threadId, session, session.serverRateLimitRetryAt, "server-rate-limit");
+    } else if (session.pendingUsageLimitResume && session.usageLimitResetAt && session.agentKey === "cc") {
+      this.scheduleDeferredResume(threadId, session, session.usageLimitResetAt, "session-limit");
     } else if (session.pendingTurnLimitResume && session.agentKey === "cc") {
       try {
         const ctx = session.discordContext ?? {
@@ -958,30 +970,77 @@ export class SessionManager {
     this.startTailer(run.threadId, session, agent, run.stdoutOffset, () => isPidAlive(run.pid));
   }
 
-  // Arm a one-shot scheduled task that re-invokes cc when the subscription usage
-  // window resets. Replaces any prior session-limit wakeup for this thread.
-  private scheduleUsageLimitResume(threadId: string, session: ActiveSession): void {
+  // Arm a one-shot scheduled task that re-invokes cc when a deferred resume is due.
+  private scheduleDeferredResume(
+    threadId: string,
+    session: ActiveSession,
+    resetAt: number,
+    logTag: string
+  ): void {
     const task = registerSessionLimitWakeup(this.db, {
       threadId,
       channelId: session.channelId,
       workDir: session.workDir,
       userId: session.discordContext?.userId ?? "",
-      resetAt: session.usageLimitResetAt!,
+      resetAt,
     });
     console.log(
-      `[session-limit] scheduled resume for ${threadId} at ${new Date(task.nextRunAt).toISOString()}`
+      `[${logTag}] scheduled resume for ${threadId} at ${new Date(task.nextRunAt).toISOString()}`
     );
   }
 
   // Detect "You've hit your session limit · resets …" in streamed text/errors.
   private noteUsageLimitReset(session: ActiveSession, text: string): void {
-    if (session.agentKey !== "cc" || session.pendingUsageLimitResume) return;
+    if (session.agentKey !== "cc" || session.pendingUsageLimitResume || session.pendingServerRateLimitResume) {
+      return;
+    }
     const parsed = parseSessionLimitReset(text);
     if (!parsed) return;
     session.pendingUsageLimitResume = true;
     session.pendingTurnLimitResume = false;
     session.usageLimitResetAt = parsed.resetAt;
     session.usageLimitResetLabel = parsed.resetLabel;
+  }
+
+  /** Detect server/API rate-limit errors in streamed text or stderr. Returns true when armed. */
+  private noteServerRateLimit(session: ActiveSession, text: string): boolean {
+    if (
+      session.agentKey !== "cc" ||
+      session.pendingServerRateLimitResume ||
+      session.pendingUsageLimitResume
+    ) {
+      return false;
+    }
+    if (!isServerRateLimitMessage(text)) return false;
+    const retry = defaultServerRateLimitRetry();
+    session.pendingServerRateLimitResume = true;
+    session.pendingTurnLimitResume = false;
+    session.serverRateLimitRetryAt = retry.resetAt;
+    session.serverRateLimitRetryLabel = retry.resetLabel;
+    return true;
+  }
+
+  private enqueueServerRateLimitNotice(session: ActiveSession): void {
+    if (
+      !session.pendingServerRateLimitResume ||
+      !session.serverRateLimitRetryLabel ||
+      session.serverRateLimitNoticeSent
+    ) {
+      return;
+    }
+    session.serverRateLimitNoticeSent = true;
+    const label = session.serverRateLimitRetryLabel;
+    session.outbox.enqueue(() =>
+      session.thread.send({
+        embeds: [
+          embed(
+            "⏸️ Rate limited",
+            `Server is temporarily limiting requests — will resume at **${label}** and continue where you left off.`,
+            0xffd700
+          ),
+        ],
+      })
+    );
   }
 
   private enqueueUsageLimitNotice(session: ActiveSession): void {
@@ -1042,16 +1101,16 @@ export class SessionManager {
 
     if (event.kind === "rate_limit") {
       if (session.agentKey !== "cc") return;
-      if (!session.pendingUsageLimitResume) {
-        session.pendingUsageLimitResume = true;
+      if (!session.pendingServerRateLimitResume && !session.pendingUsageLimitResume) {
+        session.pendingServerRateLimitResume = true;
         session.pendingTurnLimitResume = false;
-        session.usageLimitResetAt = event.resetAt;
-        session.usageLimitResetLabel = event.resetLabel;
-        this.enqueueUsageLimitNotice(session);
+        session.serverRateLimitRetryAt = event.resetAt;
+        session.serverRateLimitRetryLabel = event.resetLabel;
+        this.enqueueServerRateLimitNotice(session);
         this.stopProcess(session);
-      } else {
-        session.usageLimitResetAt = event.resetAt;
-        session.usageLimitResetLabel = event.resetLabel;
+      } else if (session.pendingServerRateLimitResume) {
+        session.serverRateLimitRetryAt = event.resetAt;
+        session.serverRateLimitRetryLabel = event.resetLabel;
       }
       return;
     }
@@ -1160,9 +1219,22 @@ export class SessionManager {
     }
 
     if (event.kind === "error") {
-      this.noteUsageLimitReset(session, event.message);
+      const detail = session.nonJsonOutput.length
+        ? `${event.message}\n\n${session.nonJsonOutput.join("\n")}`
+        : event.message;
+      this.noteUsageLimitReset(session, detail);
       if (session.pendingUsageLimitResume) {
         this.enqueueUsageLimitNotice(session);
+        this.stopProcess(session);
+        return;
+      }
+      if (this.noteServerRateLimit(session, detail)) {
+        this.enqueueServerRateLimitNotice(session);
+        this.stopProcess(session);
+        return;
+      }
+      if (session.pendingServerRateLimitResume) {
+        this.enqueueServerRateLimitNotice(session);
         this.stopProcess(session);
         return;
       }
@@ -1171,11 +1243,11 @@ export class SessionManager {
       if (event.subtype === "error_during_execution" && session.wasResume) {
         msg = "Session failed to resume — it was likely interrupted mid-execution (e.g. bot restart). Use /clear to start a fresh conversation.";
       }
-      const detail = session.nonJsonOutput.length
+      const failureDetail = session.nonJsonOutput.length
         ? `${msg}\n\n${session.nonJsonOutput.join("\n")}`
         : msg;
       outbox.enqueue(() =>
-        thread.send({ embeds: [embed("❌ Failed", detail, 0xff0000)] })
+        thread.send({ embeds: [embed("❌ Failed", failureDetail, 0xff0000)] })
       );
       this.stopProcess(session);
       return;
@@ -1189,6 +1261,9 @@ export class SessionManager {
         this.noteUsageLimitReset(session, raw.content);
         if (session.pendingUsageLimitResume) {
           this.enqueueUsageLimitNotice(session);
+          this.stopProcess(session);
+        } else if (this.noteServerRateLimit(session, raw.content)) {
+          this.enqueueServerRateLimitNotice(session);
           this.stopProcess(session);
         }
         outbox.pushText(raw.content);

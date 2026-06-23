@@ -24,6 +24,7 @@ describe("shouldSendHandoffDone", () => {
     usageLimitWaiting: false,
     pendingUsageLimitResume: false,
     pendingTurnLimitResume: false,
+    pendingServerRateLimitResume: false,
     hasEnabledScheduledTasks: false,
   };
 

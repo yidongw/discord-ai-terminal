@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   isUsageLimitMessage,
+  isServerRateLimitMessage,
   parseSessionLimitReset,
   parseRateLimitReset,
+  defaultServerRateLimitRetry,
+  SERVER_RATE_LIMIT_RETRY_MS,
 } from "../../src/utils/session-limit-reset.js";
 
 describe("session-limit-reset", () => {
@@ -10,6 +13,24 @@ describe("session-limit-reset", () => {
     expect(isUsageLimitMessage("You've hit your session limit · resets 3:45pm")).toBe(true);
     expect(isUsageLimitMessage("You've hit your weekly limit · resets Mon 12:00am")).toBe(true);
     expect(isUsageLimitMessage("error_max_turns")).toBe(false);
+  });
+
+  it("detects server rate limit messages but not usage limits", () => {
+    expect(
+      isServerRateLimitMessage(
+        "API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited"
+      )
+    ).toBe(true);
+    expect(isServerRateLimitMessage("Rate limited")).toBe(true);
+    expect(isServerRateLimitMessage("You've hit your session limit · resets 3:45pm")).toBe(false);
+    expect(isServerRateLimitMessage("error_max_turns")).toBe(false);
+  });
+
+  it("defaults server rate limit retry to one minute", () => {
+    const now = Date.parse("2026-06-11T14:00:00");
+    const retry = defaultServerRateLimitRetry(now);
+    expect(retry.resetAt).toBe(now + SERVER_RATE_LIMIT_RETRY_MS);
+    expect(retry.resetLabel).toBeTruthy();
   });
 
   it("parses same-day reset time", () => {
