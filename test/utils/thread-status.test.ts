@@ -4,7 +4,23 @@ import {
   stripStatusEmoji,
   applyStatusEmoji,
   setThreadStatus,
+  isClosedThreadName,
 } from "../../src/utils/thread-status.js";
+
+describe("isClosedThreadName", () => {
+  it("is true only when the name carries the closed (🗑️) emoji", () => {
+    expect(isClosedThreadName(`${STATUS_EMOJI.closed} #121 • foo`)).toBe(true);
+    expect(isClosedThreadName(`${STATUS_EMOJI.working} cc • foo`)).toBe(false);
+    expect(isClosedThreadName(`${STATUS_EMOJI.locked} cc • foo`)).toBe(false);
+    expect(isClosedThreadName("cc • foo")).toBe(false);
+  });
+
+  it("is false for empty/missing names", () => {
+    expect(isClosedThreadName("")).toBe(false);
+    expect(isClosedThreadName(null)).toBe(false);
+    expect(isClosedThreadName(undefined)).toBe(false);
+  });
+});
 
 describe("stripStatusEmoji", () => {
   it("returns the name unchanged when there is no status emoji", () => {

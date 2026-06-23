@@ -35,6 +35,15 @@ const THREAD_NAME_LIMIT = 100;
  */
 export const renamingClosedThreads = new Set<string>();
 
+/**
+ * True when a thread name already carries the "closed" (🗑️) status emoji, i.e.
+ * the thread has already been closed and cleaned up. Used to make close-cleanup
+ * idempotent so re-close events don't re-run it.
+ */
+export function isClosedThreadName(name: string | null | undefined): boolean {
+  return !!name && name.startsWith(STATUS_EMOJI.closed);
+}
+
 /** Remove any leading status emoji (and the space after it) from a thread name. */
 export function stripStatusEmoji(name: string): string {
   for (const e of ALL_EMOJI) {

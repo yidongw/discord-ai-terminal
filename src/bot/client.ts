@@ -29,7 +29,7 @@ import {
 import { listAgentKeys, getAgent } from "../agents/index.js";
 import { resolveThreadWorkDir, mainRepoOf } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
-import { setThreadStatus, renamingClosedThreads } from "../utils/thread-status.js";
+import { setThreadStatus, renamingClosedThreads, isClosedThreadName } from "../utils/thread-status.js";
 import {
   ensureAttachmentDir,
   getTempPath,
@@ -419,6 +419,23 @@ export class DiscordBot {
   // Worker threads are always cleaned up fully (no keepSession) — the bot instance
   // is gone when the thread closes.
   private cleanupThread(threadId: string, thread: ThreadChannel | null, reason: string): void {
+    // Idempotency guard: a thread already marked closed (🗑️) has been cleaned up.
+    // Re-close events must not re-run cleanup — posting a message to an archived
+    // thread auto-unarchives it, the user/Discord re-archives it, threadUpdate
+    // "closed" fires again, and we'd loop: duplicate "Worktree kept"/cleanup
+    // messages and a flip-flopping status emoji. The 🗑️ prefix is a persistent
+    // marker (survives restarts), so skip re-closing an already-closed thread.
+    // Deletion (reason "deleted") always cleans up fully regardless.
+    if (reason === "closed" && isClosedThreadName(thread?.name)) {
+      // A 🗑️-named thread can still be unarchived (e.g. Discord reopens it when
+      // we post to it). Don't touch the worktree again, but make sure it ends up
+      // archived — setThreadStatus no-ops here since the emoji already matches.
+      if (thread && thread.archived === false && typeof thread.setArchived === "function") {
+        void thread.setArchived(true).catch(() => {});
+      }
+      return;
+    }
+
     const session = this.sessionManager.getDb().getThreadSession(threadId);
 
     // Worker thread: kill any running worker and force-remove the bot worktree.
