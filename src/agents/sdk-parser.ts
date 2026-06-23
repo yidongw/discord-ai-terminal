@@ -1,5 +1,8 @@
 import type { AgentEvent, AgentParseContext } from "./index.js";
-import { parseRateLimitReset } from "../utils/session-limit-reset.js";
+import {
+  defaultServerRateLimitRetry,
+  parseRateLimitReset,
+} from "../utils/session-limit-reset.js";
 
 // Shared parser for agents that use the Claude SDK stream-json format (cc, cs)
 export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseContext): AgentEvent | null {
@@ -42,7 +45,8 @@ export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseCont
     if (info?.status !== "rejected") return null;
     const parsed = parseRateLimitReset(info);
     if (parsed) return { kind: "rate_limit", resetAt: parsed.resetAt, resetLabel: parsed.resetLabel };
-    return null;
+    const fallback = defaultServerRateLimitRetry();
+    return { kind: "rate_limit", resetAt: fallback.resetAt, resetLabel: fallback.resetLabel };
   }
 
   if (msg.type === "result") {

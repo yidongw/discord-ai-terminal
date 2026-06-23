@@ -1,6 +1,13 @@
 const USAGE_LIMIT_RE =
   /you(?:'ve| have) hit your (?:session|weekly|opus) limit/i;
 
+// Anthropic server-side throttling (not subscription usage limits).
+const SERVER_RATE_LIMIT_RE =
+  /(?:server is temporarily limiting requests|rate\s*limited)/i;
+
+/** Default wait before retrying after a server rate limit with no reset time. */
+export const SERVER_RATE_LIMIT_RETRY_MS = 60_000;
+
 // "resets 3:45pm", "resets 2:50am (Asia/Bangkok)", or "resets Mon 12:00am"
 const RESET_RE =
   /resets?\s+(?:(Mon(?:day)?|Tue(?:s(?:day)?)?|Wed(?:nesday)?|Thu(?:rs(?:day)?)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s+)?(\d{1,2}:\d{2}\s*(?:am|pm))(?:\s*\([^)]+\))?/i;
@@ -17,6 +24,18 @@ export interface SessionLimitReset {
 /** True when text looks like a Claude subscription usage-limit message. */
 export function isUsageLimitMessage(text: string): boolean {
   return USAGE_LIMIT_RE.test(text);
+}
+
+/** True for API/server throttling errors (excludes subscription usage limits). */
+export function isServerRateLimitMessage(text: string): boolean {
+  if (!SERVER_RATE_LIMIT_RE.test(text)) return false;
+  return !isUsageLimitMessage(text);
+}
+
+/** Retry time when the server gives no explicit reset timestamp. */
+export function defaultServerRateLimitRetry(now = Date.now()): SessionLimitReset {
+  const resetAt = now + SERVER_RATE_LIMIT_RETRY_MS;
+  return { resetAt, resetLabel: new Date(resetAt).toLocaleString() };
 }
 
 /**
