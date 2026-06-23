@@ -61,12 +61,15 @@ export function createGhWrapper(
     "CMD=\"${1:-}\"",
     "SUBCMD=\"${2:-}\"",
     "",
-    // Pre-flight: log the command and check policy. Fail-open on curl error or
-    // server timeout so gh still works if the bot process is temporarily down.
-    `PREFLIGHT=$(curl -sf --max-time 3 -X POST "http://127.0.0.1:${controlPort}/preflight" \\`,
+    // Pre-flight: log the command and check policy. Fail-hard if the control
+    // server is unreachable so gh failures are visible instead of masked.
+    `if ! PREFLIGHT=$(curl -sf --max-time 3 -X POST "http://127.0.0.1:${controlPort}/preflight" \\`,
     `  -H "Authorization: Bearer ${token}" \\`,
     '  -H "Content-Type: application/json" \\',
-    `  -d "{\\"threadId\\":\\"${threadId}\\",\\"cmd\\":\\"$CMD\\",\\"subcmd\\":\\"$SUBCMD\\"}" 2>/dev/null || echo '{"allow":true}')`,
+    `  -d "{\\"threadId\\":\\"${threadId}\\",\\"cmd\\":\\"$CMD\\",\\"subcmd\\":\\"$SUBCMD\\"}"); then`,
+    `  echo "gh: control server at 127.0.0.1:${controlPort} not responding" >&2`,
+    "  exit 1",
+    "fi",
     'if echo "$PREFLIGHT" | grep -q \'"allow":false\'; then',
     '  REASON=$(echo "$PREFLIGHT" | grep -oE \'"reason":"[^"]*"\' | sed \'s/"reason":"//;s/"$//\')',
     '  echo "gh: blocked by policy${REASON:+: $REASON}" >&2',
@@ -86,7 +89,9 @@ export function createGhWrapper(
     `        -H "Authorization: Bearer ${token}" \\`,
     '        -H "Content-Type: application/json" \\',
     `        -d "{\\"threadId\\":\\"${threadId}\\",\\"repo\\":\\"$repo\\",\\"prNumber\\":$pr_number}" \\`,
-    "        >/dev/null 2>&1 || true",
+    // Don't fail the command — the PR was already created — but make a failed
+    // link visible instead of silently dropping it.
+    `        >/dev/null 2>&1 || echo "gh: warning: created PR #$pr_number but could not link it to the thread (control server at 127.0.0.1:${controlPort} unreachable)" >&2`,
     "    fi",
     "  fi",
     '  rm -f "$tmpfile"',
