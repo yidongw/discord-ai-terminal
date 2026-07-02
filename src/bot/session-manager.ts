@@ -165,7 +165,10 @@ export class SessionManager {
 
   constructor() {
     this.db = new DatabaseManager();
-    this.db.cleanupOldThreadSessions();
+    // Thread sessions are kept indefinitely. We never purge by age: a thread's
+    // worktree and its Claude session transcript can outlive any TTL, and
+    // dropping the row silently orphans the thread (new messages get ignored
+    // because the session mapping — including the resumable session id — is gone).
     this.runsDir = path.join(process.cwd(), "runs");
     try { fs.mkdirSync(this.runsDir, { recursive: true }); } catch {}
     this.cleanupOrphanLogs();

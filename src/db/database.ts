@@ -432,11 +432,6 @@ export class DatabaseManager {
     this.db.prepare(`DELETE FROM thread_sessions WHERE thread_id = ?`).run(threadId);
   }
 
-  cleanupOldThreadSessions(olderThanMs = 7 * 24 * 60 * 60 * 1000): void {
-    const cutoff = Date.now() - olderThanMs;
-    this.db.prepare(`DELETE FROM thread_sessions WHERE created_at < ?`).run(cutoff);
-  }
-
   // ── Channel settings ─────────────────────────────────────────────────────
 
   getMode(channelId: string): PermissionMode {
