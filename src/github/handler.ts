@@ -546,7 +546,7 @@ export class GitHubHandler {
     }
   }
 
-  async handlePreviewUrl(repo: string, prNumber: number, previewUrl: string): Promise<void> {
+  async handlePreviewUrl(repo: string, prNumber: number, previewUrl: string, mesUrl: string | null = null): Promise<void> {
     const repoName = repo.split("/")[1] ?? repo;
     const db = this.sessionManager.getDb();
 
@@ -575,7 +575,10 @@ export class GitHubHandler {
           if (prevThread.archived) {
             await prevThread.edit({ archived: false }).catch(() => {});
           }
-          await prevThread.send(`🔗 Preview URL ready: ${previewUrl}`);
+          const msg = mesUrl
+            ? `🔗 Preview ready:\n**ERP:** ${previewUrl}\n**MES:** ${mesUrl}`
+            : `🔗 Preview URL ready: ${previewUrl}`;
+          await prevThread.send(msg);
           console.log(`[github] PR #${prNumber}: posted preview URL to thread ${threadId}`);
         } else {
           console.error(`[github] PR #${prNumber}: thread ${threadId} not fetchable or not a thread — preview URL NOT delivered`);
