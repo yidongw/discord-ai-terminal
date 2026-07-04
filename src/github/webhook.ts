@@ -117,13 +117,13 @@ async function handlePreviewReady(handler: GitHubHandler, req: Request, body: st
     return new Response("Bad Request", { status: 400 });
   }
 
-  const { repo, prNumber, previewUrl } = payload;
+  const { repo, prNumber, previewUrl, mesUrl } = payload;
   if (!repo || !prNumber || !previewUrl) {
     return new Response("Missing repo, prNumber, or previewUrl", { status: 400 });
   }
 
-  console.log(`[webhook] /preview-ready: repo=${repo} prNumber=${prNumber} previewUrl=${previewUrl}`);
-  await handler.handlePreviewUrl(repo, Number(prNumber), previewUrl);
+  console.log(`[webhook] /preview-ready: repo=${repo} prNumber=${prNumber} previewUrl=${previewUrl}${mesUrl ? ` mesUrl=${mesUrl}` : ""}`);
+  await handler.handlePreviewUrl(repo, Number(prNumber), previewUrl, mesUrl ?? null);
   return new Response("OK");
 }
 
