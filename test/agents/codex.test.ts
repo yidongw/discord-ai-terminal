@@ -136,4 +136,31 @@ describe('codexAgent', () => {
       content: 'Here it is:\n\n![crab](/Users/me/.codex/generated_images/thread-123/ig_crab.png)',
     });
   });
+
+  it('surfaces turn.failed as an error event with the failure message', () => {
+    const event = codexAgent.parseLine(
+      JSON.stringify({
+        type: 'turn.failed',
+        error: { message: "You've hit your usage limit. Try again at 12:46 AM." },
+      }),
+      '/test/dir'
+    );
+
+    expect(event).toEqual({
+      kind: 'error',
+      message: "You've hit your usage limit. Try again at 12:46 AM.",
+    });
+  });
+
+  it('surfaces turn.failed with a fallback message when error is missing', () => {
+    const event = codexAgent.parseLine(
+      JSON.stringify({ type: 'turn.failed' }),
+      '/test/dir'
+    );
+
+    expect(event).toEqual({
+      kind: 'error',
+      message: 'Turn failed',
+    });
+  });
 });
