@@ -102,6 +102,11 @@ export const codexAgent: AgentRunner = {
       return { kind: "done", turns: null, cost: null, tokens: tok };
     }
 
+    if (msg.type === "turn.failed") {
+      const message = msg.error?.message ?? "Turn failed";
+      return { kind: "error", message };
+    }
+
     return null;
   },
 
