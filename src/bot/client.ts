@@ -439,15 +439,13 @@ export class DiscordBot {
     const session = this.sessionManager.getDb().getThreadSession(threadId);
 
     // Worker thread: kill any running worker and force-remove the bot worktree.
+    // Session row is kept — only /clear may delete it.
     if (session && this.isWorkerThread(session)) {
       this.killWorker(threadId);
       this.removeBotWorktree(session.workDir);
-      this.sessionManager.getDb().deleteThreadSession(threadId);
       if (reason === "closed" && thread) void setThreadStatus(thread, "closed", { archived: true });
       return;
     }
-
-    const keepSession = reason === "closed";
 
     if (session?.isWorktree) {
       const decision = evaluateThreadWorktreeClose(session.workDir, session.branch);
@@ -478,12 +476,12 @@ export class DiscordBot {
       console.log(
         `[cleanup] thread ${threadId} ${reason}: branch ${session.branch} merged on origin — force closing`
       );
-      const result = this.sessionManager.cleanupThreadWorktree(threadId, true, keepSession);
+      const result = this.sessionManager.cleanupThreadWorktree(threadId, true);
       this.finishThreadCleanup(threadId, thread, reason, result);
       return;
     }
 
-    const result = this.sessionManager.cleanupThreadWorktree(threadId, false, keepSession);
+    const result = this.sessionManager.cleanupThreadWorktree(threadId, false);
     this.finishThreadCleanup(threadId, thread, reason, result);
   }
 
