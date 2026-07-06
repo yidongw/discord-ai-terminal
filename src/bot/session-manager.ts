@@ -371,11 +371,11 @@ export class SessionManager {
     this.messageQueues.delete(threadId);
   }
 
-  // Remove a thread's isolated worktree + branch and forget the session.
-  // Callers must run policy guards before invoking this. Returns null when the
-  // thread had no worktree. Pass keepSession=true to preserve the DB session
-  // (e.g. auto-archive) so the thread can be resumed later.
-  cleanupThreadWorktree(threadId: string, force = false, keepSession = false): RemoveResult | null {
+  // Remove a thread's isolated worktree + branch. The session row is always
+  // kept so the thread→session_id mapping survives and the conversation can be
+  // resumed later. Only an explicit /clear deletes the session row.
+  // Returns null when the thread had no worktree.
+  cleanupThreadWorktree(threadId: string, force = false): RemoveResult | null {
     const session = this.db.getThreadSession(threadId);
     if (!session || !session.isWorktree) return null;
 
@@ -393,9 +393,6 @@ export class SessionManager {
 
     const result = removeWorktree(repoPath, session.workDir, session.branch, force);
     if (result.removed) {
-      if (!keepSession) {
-        this.db.deleteThreadSession(threadId);
-      }
       this.db.deleteScheduledTasksForThread(threadId);
     }
     return result;
