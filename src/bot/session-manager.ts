@@ -699,8 +699,11 @@ export class SessionManager {
     // code, so an intentional /stop or timeout won't trip this.
     const code = session.exitCode;
     if (code !== undefined && code !== null && code !== 0 && !session.done && !session.stopping) {
+      const exitDetail = session.nonJsonOutput.length
+        ? `Exit code: ${code}\n\n${session.nonJsonOutput.join("\n")}`.slice(0, 3900)
+        : `Exit code: ${code}`;
       session.outbox.enqueue(() =>
-        session.thread.send({ embeds: [embed("❌ Process Failed", `Exit code: ${code}`, 0xff0000)] })
+        session.thread.send({ embeds: [embed("❌ Process Failed", exitDetail, 0xff0000)] })
       );
     }
 
@@ -1171,9 +1174,10 @@ export class SessionManager {
       if (event.subtype === "error_during_execution" && session.wasResume) {
         msg = "Session failed to resume — it was likely interrupted mid-execution (e.g. bot restart). Use /clear to start a fresh conversation.";
       }
-      const detail = session.nonJsonOutput.length
+      const detailFull = session.nonJsonOutput.length
         ? `${msg}\n\n${session.nonJsonOutput.join("\n")}`
         : msg;
+      const detail = detailFull.slice(0, 3900);
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("❌ Failed", detail, 0xff0000)] })
       );
