@@ -20,6 +20,9 @@ export interface RunTailerOptions {
   pollIntervalMs?: number;
   // Log-byte inactivity threshold before finalizing a still-alive process.
   stallTimeoutMs?: number;
+  // Called when the stall timeout fires (process alive but no output). Fires
+  // before onFinalize so the caller can post a Discord notice.
+  onStall?: () => void;
   // Is the agent process still running? Fresh runs check the ChildProcess; a
   // re-attached run checks the bare PID. When this returns false AND the file is
   // fully consumed, the run is finalized.
@@ -120,6 +123,7 @@ export class RunTailer {
     const stallMs = this.opts.stallTimeoutMs ?? LOG_STALL_TIMEOUT_MS;
     if (this.opts.isAlive() && this.atEof() && Date.now() - this.lastLogGrowthAt >= stallMs) {
       console.warn(`[tailer] log stall on ${this.opts.logPath} — finalizing hung run`);
+      this.opts.onStall?.();
       void this.finalize();
     }
   }
