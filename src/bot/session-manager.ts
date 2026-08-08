@@ -10,7 +10,7 @@ import { DatabaseManager, toolIsHidden, type ActiveRun } from "../db/database.js
 import { mainRepoOf, removeWorktree, type RemoveResult } from "../utils/path-resolver.js";
 import { setThreadStatus } from "../utils/thread-status.js";
 import { escapeShellString, type DiscordContext } from "../utils/shell.js";
-import { RunTailer, isPidAlive } from "./run-tailer.js";
+import { RunTailer, isPidAlive, LOG_STALL_TIMEOUT_MS } from "./run-tailer.js";
 import { parseSessionLimitReset } from "../utils/session-limit-reset.js";
 import {
   SESSION_LIMIT_CONTINUATION_PROMPT,
@@ -673,6 +673,18 @@ export class SessionManager {
       },
       onOffset: (offset) => {
         try { this.db.updateActiveRunOffset(session.runId, offset); } catch {}
+      },
+      onStall: () => {
+        const stallMin = Math.round(LOG_STALL_TIMEOUT_MS / 60_000);
+        session.outbox.enqueue(() =>
+          session.thread.send({
+            embeds: [embed(
+              "⏱️ No response",
+              `${agent.label} produced no output for ${stallMin} minutes and was stopped. Send your message again to retry, or use \`/clear\` to start a fresh session.`,
+              0xffa500
+            )],
+          })
+        );
       },
       onFinalize: () => this.finalizeRun(threadId, session),
     });
