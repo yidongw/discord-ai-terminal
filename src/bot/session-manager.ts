@@ -1183,9 +1183,12 @@ export class SessionManager {
       if (event.subtype === "error_during_execution" && session.wasResume) {
         msg = "Session failed to resume — it was likely interrupted mid-execution (e.g. bot restart). Use /clear to start a fresh conversation.";
       }
-      const detail = session.nonJsonOutput.length
+      const rawDetail = session.nonJsonOutput.length
         ? `${msg}\n\n${session.nonJsonOutput.join("\n")}`
         : msg;
+      // Discord embed descriptions cap at 4096 chars; nonJsonOutput lines can be
+      // large JSON objects that push the total well past the limit.
+      const detail = rawDetail.length > 4000 ? rawDetail.slice(0, 4000) + "…" : rawDetail;
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("❌ Failed", detail, 0xff0000)] })
       );

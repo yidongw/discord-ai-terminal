@@ -313,7 +313,7 @@ export class DiscordBot {
             modelOverride: this.resolveWorkerModel(agentKey, channelId, {
               threadModelOverride: threadSession?.modelOverride,
             }),
-            discordContext: { channelId, channelName: "", userId: "", messageId: "" },
+            discordContext: { channelId: threadId, channelName: "", userId: "", messageId: "" },
           });
         }
       );
@@ -589,7 +589,7 @@ export class DiscordBot {
     const attachments = await this.downloadMsgAttachments(msg);
     const fullPrompt = buildPromptWithAttachments(msg.content, attachments);
     const discordContext = {
-      channelId: session.channelId,
+      channelId: thread.id,
       channelName: thread.name,
       userId: msg.author.id,
       messageId: msg.id,
@@ -681,7 +681,10 @@ export class DiscordBot {
         modelOverride,
       });
       this.sessionManager.getDb().updateLastSeenMessageId(thread.id, triggerMsg.id);
-      this.spawnWorker(thread.id, wtPath, { prompt, agentKey, modelOverride, discordContext });
+      // MCP server uses discordContext.channelId as the thread ID for session lookups,
+      // so it must be the thread ID — not the parent channel ID.
+      const workerDiscordContext = { ...discordContext, channelId: thread.id };
+      this.spawnWorker(thread.id, wtPath, { prompt, agentKey, modelOverride, discordContext: workerDiscordContext });
       return;
     }
 
