@@ -333,7 +333,12 @@ export class DiscordBot {
       );
     });
 
-    this.client.on("interactionCreate", (i) => this.handleInteraction(i));
+    this.client.on("interactionCreate", (i) =>
+      this.handleInteraction(i).catch((err) => {
+        if ((err as any)?.code === 10062) return; // stale interaction token after restart — ignore
+        console.error("[interaction] unhandled error:", err);
+      })
+    );
 
     this.client.on("messageCreate", async (msg) => {
       const isThread =
@@ -1365,11 +1370,17 @@ export class DiscordBot {
 
     const pending = this.pendingAgentSelectInteractions.get(msgId);
     if (!pending) {
-      await interaction.update({ content: "⚠️ Context expired.", components: [] });
+      await interaction.update({ content: "⚠️ Context expired.", components: [] }).catch(() => {});
       return;
     }
     this.pendingAgentSelectInteractions.delete(msgId);
-    await interaction.update({ content: `✅ Starting **@${agentKey}**…`, components: [] });
+    try {
+      await interaction.update({ content: `✅ Starting **@${agentKey}**…`, components: [] });
+    } catch {
+      // Interaction token expired before we could acknowledge — restore state and bail
+      this.pendingAgentSelectInteractions.set(msgId, pending);
+      return;
+    }
 
     const { msg, channel, prompt } = pending;
     const attachments = await this.downloadMsgAttachments(msg);
