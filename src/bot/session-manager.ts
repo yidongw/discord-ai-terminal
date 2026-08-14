@@ -388,7 +388,15 @@ export class SessionManager {
 
     const repoPath = mainRepoOf(session.workDir);
     if (!repoPath) {
-      return { removed: false, reason: "could not locate the parent repo" };
+      if (!force) return { removed: false, reason: "could not locate the parent repo" };
+      // No git metadata — just delete the directory directly.
+      try {
+        fs.rmSync(session.workDir, { recursive: true, force: true });
+      } catch (e) {
+        return { removed: false, reason: String(e) };
+      }
+      this.db.deleteScheduledTasksForThread(threadId);
+      return { removed: true };
     }
 
     const result = removeWorktree(repoPath, session.workDir, session.branch, force);
