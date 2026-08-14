@@ -771,13 +771,16 @@ export class CommandHandler {
   }
 
   private async handleWorktreeForceClose(interaction: ButtonInteraction): Promise<void> {
+    // Defer immediately so Discord doesn't time out while the synchronous git
+    // worktree remove runs (which can take several seconds).
+    await interaction.deferUpdate();
     const result = this.sessionManager.cleanupThreadWorktree(interaction.channelId, true);
     if (result?.removed) {
       void setThreadStatus(interaction.channel, "closed", { archived: true });
-      await interaction.update({ content: "🧹 Worktree forcibly removed.", components: [] });
+      await interaction.editReply({ content: "🧹 Worktree forcibly removed.", components: [] });
     } else {
       const reason = result?.reason ? `: ${result.reason}` : "";
-      await interaction.update({ content: `⚠️ Could not remove worktree${reason}.`, components: [] });
+      await interaction.editReply({ content: `⚠️ Could not remove worktree${reason}.`, components: [] });
     }
   }
 
