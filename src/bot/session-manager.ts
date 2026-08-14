@@ -667,8 +667,14 @@ export class SessionManager {
         } else {
           // Non-JSON line (e.g. stderr from the agent). Keep the last 20 so we
           // have context when an error event arrives with no detail of its own.
-          session.nonJsonOutput.push(line);
-          if (session.nonJsonOutput.length > 20) session.nonJsonOutput.shift();
+          // Skip valid-JSON lines — those are unrecognised SDK events (hooks,
+          // task notifications, etc.), not stderr, and would pollute error output.
+          let isJson = false;
+          try { JSON.parse(line); isJson = true; } catch {}
+          if (!isJson) {
+            session.nonJsonOutput.push(line);
+            if (session.nonJsonOutput.length > 20) session.nonJsonOutput.shift();
+          }
         }
       },
       onOffset: (offset) => {
