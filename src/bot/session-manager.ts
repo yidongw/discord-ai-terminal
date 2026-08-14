@@ -182,6 +182,17 @@ export class SessionManager {
 
   getDb() { return this.db; }
 
+  // Wait for a PID to exit, polling every 100 ms up to `timeoutMs`. Used to
+  // let a killed claude process finish writing its session state before we
+  // launch a --resume against the same session ID.
+  private async waitForPidDeath(pid: number, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!isPidAlive(pid)) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
   setCompletionHandler(handler: CompletionHandler): void {
     this.completionHandler = handler;
   }
@@ -479,6 +490,7 @@ export class SessionManager {
     const agent = getAgent(agentKey);
     if (!agent) throw new Error(`Unknown agent: ${agentKey}`);
 
+    const dyingSession = this.active.get(threadId);
     this.killProcess(threadId);
 
     const existing = this.db.getThreadSession(threadId);
@@ -509,6 +521,15 @@ export class SessionManager {
     // Claude session ID to `codex exec resume` (or vice versa) causes an
     // immediate silent failure with no "done" event, which suppresses the
     // completion action and leaves no trace on the PR.
+    //
+    // If we're about to --resume and there was a previous run, wait for its
+    // process to fully exit before spawning. Claude writes its session state on
+    // shutdown; a SIGKILL mid-write corrupts the file and causes an immediate
+    // error_during_execution on the next resume.
+    const wouldResume = !opts?.freshSession && existing?.agent === agentKey && !!existing.sessionId;
+    if (wouldResume && dyingSession) {
+      await this.waitForPidDeath(dyingSession.pid, SIGKILL_GRACE_MS + 2000);
+    }
     const resumeSessionId =
       opts?.freshSession ? undefined : existing?.agent === agentKey ? existing.sessionId : undefined;
     const command = agent.buildCommand(workDir, prompt, {
