@@ -776,7 +776,8 @@ export class CommandHandler {
       void setThreadStatus(interaction.channel, "closed", { archived: true });
       await interaction.update({ content: "🧹 Worktree forcibly removed.", components: [] });
     } else {
-      await interaction.update({ content: "⚠️ Could not remove worktree.", components: [] });
+      const reason = result?.reason ? `: ${result.reason}` : "";
+      await interaction.update({ content: `⚠️ Could not remove worktree${reason}.`, components: [] });
     }
   }
 

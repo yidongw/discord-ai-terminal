@@ -239,7 +239,16 @@ export function removeWorktree(
   if (force) removeArgs.push("--force");
   const rm = spawnSync("git", removeArgs, { encoding: "utf8" });
   if (rm.status !== 0) {
-    return { removed: false, reason: rm.stderr.trim() || "git worktree remove failed" };
+    if (!force) {
+      return { removed: false, reason: rm.stderr.trim() || "git worktree remove failed" };
+    }
+    // git worktree remove --force still refuses when untracked files exist.
+    // Fall back to deleting the directory directly, then prune the git metadata.
+    try {
+      fs.rmSync(wtPath, { recursive: true, force: true });
+    } catch (e) {
+      return { removed: false, reason: String(e) };
+    }
   }
 
   if (branch) {
