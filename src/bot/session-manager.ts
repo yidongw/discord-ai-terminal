@@ -132,6 +132,12 @@ interface ActiveSession {
   // True when this run used --resume (session already existed). Lets the error
   // handler give a more useful message when the resume itself fails.
   wasResume: boolean;
+  // Original user prompt for this run — kept so we can auto-retry with a fresh
+  // session when a resume fails due to mid-execution interruption.
+  prompt: string;
+  // Set when an interrupted-resume error fires: finalizeRun will retry the same
+  // prompt with freshSession:true instead of leaving the thread in a failed state.
+  pendingFreshResume?: boolean;
 }
 
 export class SessionManager {
@@ -175,6 +181,17 @@ export class SessionManager {
   }
 
   getDb() { return this.db; }
+
+  // Wait for a PID to exit, polling every 100 ms up to `timeoutMs`. Used to
+  // let a killed claude process finish writing its session state before we
+  // launch a --resume against the same session ID.
+  private async waitForPidDeath(pid: number, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!isPidAlive(pid)) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
 
   setCompletionHandler(handler: CompletionHandler): void {
     this.completionHandler = handler;
@@ -481,6 +498,7 @@ export class SessionManager {
     const agent = getAgent(agentKey);
     if (!agent) throw new Error(`Unknown agent: ${agentKey}`);
 
+    const dyingSession = this.active.get(threadId);
     this.killProcess(threadId);
 
     const existing = this.db.getThreadSession(threadId);
@@ -511,6 +529,15 @@ export class SessionManager {
     // Claude session ID to `codex exec resume` (or vice versa) causes an
     // immediate silent failure with no "done" event, which suppresses the
     // completion action and leaves no trace on the PR.
+    //
+    // If we're about to --resume and there was a previous run, wait for its
+    // process to fully exit before spawning. Claude writes its session state on
+    // shutdown; a SIGKILL mid-write corrupts the file and causes an immediate
+    // error_during_execution on the next resume.
+    const wouldResume = !opts?.freshSession && existing?.agent === agentKey && !!existing.sessionId;
+    if (wouldResume && dyingSession) {
+      await this.waitForPidDeath(dyingSession.pid, SIGKILL_GRACE_MS + 2000);
+    }
     const resumeSessionId =
       opts?.freshSession ? undefined : existing?.agent === agentKey ? existing.sessionId : undefined;
     const command = agent.buildCommand(workDir, prompt, {
@@ -609,6 +636,7 @@ export class SessionManager {
       discordContext,
       nonJsonOutput: [],
       wasResume: !!resumeSessionId,
+      prompt,
     };
     this.active.set(threadId, session);
 
@@ -675,8 +703,14 @@ export class SessionManager {
         } else {
           // Non-JSON line (e.g. stderr from the agent). Keep the last 20 so we
           // have context when an error event arrives with no detail of its own.
-          session.nonJsonOutput.push(line);
-          if (session.nonJsonOutput.length > 20) session.nonJsonOutput.shift();
+          // Skip valid-JSON lines — those are unrecognised SDK events (hooks,
+          // task notifications, etc.), not stderr, and would pollute error output.
+          let isJson = false;
+          try { JSON.parse(line); isJson = true; } catch {}
+          if (!isJson) {
+            session.nonJsonOutput.push(line);
+            if (session.nonJsonOutput.length > 20) session.nonJsonOutput.shift();
+          }
         }
       },
       onOffset: (offset) => {
@@ -755,7 +789,28 @@ export class SessionManager {
       }
     }
 
-    if (session.pendingUsageLimitResume && session.usageLimitResetAt && session.agentKey === "cc") {
+    if (session.pendingFreshResume) {
+      try {
+        await this.runAgent(
+          threadId,
+          session.channelId,
+          session.thread,
+          session.agentKey,
+          session.workDir,
+          session.prompt,
+          session.discordContext,
+          { freshSession: true }
+        );
+      } catch (err) {
+        console.error(`[fresh-resume] auto-retry failed for ${threadId}:`, err);
+        session.outbox.enqueue(() =>
+          session.thread.send({
+            embeds: [embed("❌ Retry failed", String((err as Error).message ?? err), 0xff0000)],
+          })
+        );
+        await session.outbox.drain();
+      }
+    } else if (session.pendingUsageLimitResume && session.usageLimitResetAt && session.agentKey === "cc") {
       this.scheduleUsageLimitResume(threadId, session);
     } else if (session.pendingTurnLimitResume && session.agentKey === "cc") {
       try {
@@ -965,6 +1020,7 @@ export class SessionManager {
       },
       nonJsonOutput: [],
       wasResume: true,
+      prompt: "", // not available for re-attached runs; pendingFreshResume won't fire here
     };
     this.active.set(run.threadId, session);
     this.getTyping(run.threadId, thread).start();
@@ -1186,14 +1242,29 @@ export class SessionManager {
         this.stopProcess(session);
         return;
       }
-      session.done = true;
-      let msg = event.message;
       if (event.subtype === "error_during_execution" && session.wasResume) {
-        msg = "Session failed to resume — it was likely interrupted mid-execution (e.g. bot restart). Use /clear to start a fresh conversation.";
+        // The previous run was killed mid-execution (stall timeout, bot restart,
+        // etc.), leaving the session in an unresumable state. Rather than failing,
+        // clear the stored session ID and replay the same prompt so the user never
+        // has to manually /clear.
+        this.db.updateSessionId(threadId, null);
+        session.pendingFreshResume = true;
+        outbox.enqueue(() =>
+          thread.send({
+            embeds: [embed(
+              "⚠️ Session reset",
+              "Previous session was interrupted mid-execution and could not be resumed. Starting a fresh session with your last message…",
+              0xffa500
+            )],
+          })
+        );
+        this.stopProcess(session);
+        return;
       }
+      session.done = true;
       const detail = session.nonJsonOutput.length
-        ? `${msg}\n\n${session.nonJsonOutput.join("\n")}`
-        : msg;
+        ? `${event.message}\n\n${session.nonJsonOutput.join("\n")}`
+        : event.message;
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("❌ Failed", detail, 0xff0000)] })
       );
