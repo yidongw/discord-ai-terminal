@@ -422,7 +422,7 @@ export class DatabaseManager {
       .run(messageId, threadId);
   }
 
-  updateSessionId(threadId: string, sessionId: string): void {
+  updateSessionId(threadId: string, sessionId: string | null): void {
     this.db
       .prepare(`UPDATE thread_sessions SET session_id = ? WHERE thread_id = ?`)
       .run(sessionId, threadId);

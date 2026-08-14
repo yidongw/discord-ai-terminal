@@ -132,6 +132,12 @@ interface ActiveSession {
   // True when this run used --resume (session already existed). Lets the error
   // handler give a more useful message when the resume itself fails.
   wasResume: boolean;
+  // Original user prompt for this run — kept so we can auto-retry with a fresh
+  // session when a resume fails due to mid-execution interruption.
+  prompt: string;
+  // Set when an interrupted-resume error fires: finalizeRun will retry the same
+  // prompt with freshSession:true instead of leaving the thread in a failed state.
+  pendingFreshResume?: boolean;
 }
 
 export class SessionManager {
@@ -601,6 +607,7 @@ export class SessionManager {
       discordContext,
       nonJsonOutput: [],
       wasResume: !!resumeSessionId,
+      prompt,
     };
     this.active.set(threadId, session);
 
@@ -753,7 +760,28 @@ export class SessionManager {
       }
     }
 
-    if (session.pendingUsageLimitResume && session.usageLimitResetAt && session.agentKey === "cc") {
+    if (session.pendingFreshResume) {
+      try {
+        await this.runAgent(
+          threadId,
+          session.channelId,
+          session.thread,
+          session.agentKey,
+          session.workDir,
+          session.prompt,
+          session.discordContext,
+          { freshSession: true }
+        );
+      } catch (err) {
+        console.error(`[fresh-resume] auto-retry failed for ${threadId}:`, err);
+        session.outbox.enqueue(() =>
+          session.thread.send({
+            embeds: [embed("❌ Retry failed", String((err as Error).message ?? err), 0xff0000)],
+          })
+        );
+        await session.outbox.drain();
+      }
+    } else if (session.pendingUsageLimitResume && session.usageLimitResetAt && session.agentKey === "cc") {
       this.scheduleUsageLimitResume(threadId, session);
     } else if (session.pendingTurnLimitResume && session.agentKey === "cc") {
       try {
@@ -963,6 +991,7 @@ export class SessionManager {
       },
       nonJsonOutput: [],
       wasResume: true,
+      prompt: "", // not available for re-attached runs; pendingFreshResume won't fire here
     };
     this.active.set(run.threadId, session);
     this.getTyping(run.threadId, thread).start();
@@ -1184,14 +1213,29 @@ export class SessionManager {
         this.stopProcess(session);
         return;
       }
-      session.done = true;
-      let msg = event.message;
       if (event.subtype === "error_during_execution" && session.wasResume) {
-        msg = "Session failed to resume — it was likely interrupted mid-execution (e.g. bot restart). Use /clear to start a fresh conversation.";
+        // The previous run was killed mid-execution (stall timeout, bot restart,
+        // etc.), leaving the session in an unresumable state. Rather than failing,
+        // clear the stored session ID and replay the same prompt so the user never
+        // has to manually /clear.
+        this.db.updateSessionId(threadId, null);
+        session.pendingFreshResume = true;
+        outbox.enqueue(() =>
+          thread.send({
+            embeds: [embed(
+              "⚠️ Session reset",
+              "Previous session was interrupted mid-execution and could not be resumed. Starting a fresh session with your last message…",
+              0xffa500
+            )],
+          })
+        );
+        this.stopProcess(session);
+        return;
       }
+      session.done = true;
       const detail = session.nonJsonOutput.length
-        ? `${msg}\n\n${session.nonJsonOutput.join("\n")}`
-        : msg;
+        ? `${event.message}\n\n${session.nonJsonOutput.join("\n")}`
+        : event.message;
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("❌ Failed", detail, 0xff0000)] })
       );
