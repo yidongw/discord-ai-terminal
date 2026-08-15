@@ -126,6 +126,19 @@ describe("worktreePassesCloseCheck", () => {
     });
     expect(worktreePassesCloseCheck("/repo", "/wt")).toBe(true);
   });
+
+  it("passes core.fileMode=false so mode-only diffs do not block close", () => {
+    // Simulate git returning empty when core.fileMode=false is set
+    // (mode-only changes like husky permission flips are invisible to git).
+    spawnSync.mockImplementation((_cmd, args: string[]) => {
+      if (args.includes("status")) {
+        if (args.includes("core.fileMode=false")) return gitResult("");
+        return gitResult(" M .husky/_/husky.sh"); // mode-only, would appear without the flag
+      }
+      return gitResult("");
+    });
+    expect(worktreePassesCloseCheck("/repo", "/wt")).toBe(true);
+  });
 });
 
 describe("evaluateThreadWorktreeClose", () => {
@@ -180,8 +193,6 @@ describe("evaluateThreadWorktreeClose", () => {
         if (args.includes("fetch")) return gitResult("");
         if (args.includes("--git-common-dir")) return gitResult("/repo/.git");
         if (args.includes("status")) return gitResult("");
-        if (args.includes("log")) return gitResult("");
-        if (args.includes("symbolic-ref")) return gitResult("origin/main");
         if (args[args.length - 1] === "HEAD") return gitResult("local-only");
         if (args[args.length - 1] === "origin/discord/foo") return gitResult("on-origin");
       }
@@ -227,8 +238,6 @@ describe("evaluateThreadWorktreeClose", () => {
         if (args.includes("--abbrev-ref")) return gitResult("discord/foo");
         if (args.includes("fetch")) return gitResult("");
         if (args.includes("--git-common-dir")) return gitResult("/repo/.git");
-        if (args.includes("log")) return gitResult("");
-        if (args.includes("symbolic-ref")) return gitResult("origin/main");
         if (args[args.length - 1] === "HEAD") return gitResult("deadbeef");
         if (args[args.length - 1] === "origin/discord/foo") return gitResult("deadbeef");
       }

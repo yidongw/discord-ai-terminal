@@ -197,11 +197,12 @@ export function mainRepoOf(wtPath: string): string | null {
   return gitDir ? path.dirname(gitDir) : null;
 }
 
-// Inspect a worktree for tracked uncommitted changes that cleanup must not discard.
+// Inspect a worktree for tracked uncommitted content changes that cleanup must not discard.
+// core.fileMode=false excludes mode-only diffs (e.g. husky permission flips).
 export function worktreeStatus(repoPath: string, wtPath: string): WorktreeStatus {
   const status = spawnSync(
     "git",
-    ["-C", wtPath, "status", "--porcelain", "--untracked-files=no"],
+    ["-C", wtPath, "-c", "core.fileMode=false", "status", "--porcelain", "--untracked-files=no"],
     { encoding: "utf8" }
   );
   const dirty = status.status === 0 ? status.stdout.trim().length > 0 : true;
@@ -216,6 +217,21 @@ export function worktreePassesCloseCheck(repoPath: string, wtPath: string): bool
 export function worktreeCloseBlockReason(repoPath: string, wtPath: string): string | null {
   if (worktreePassesCloseCheck(repoPath, wtPath)) return null;
   return "uncommitted changes";
+}
+
+/** Returns the list of uncommitted tracked files (content changes only, no mode flips). */
+export function worktreeUncommittedFiles(wtPath: string): string[] {
+  const status = spawnSync(
+    "git",
+    ["-C", wtPath, "-c", "core.fileMode=false", "status", "--porcelain", "--untracked-files=no"],
+    { encoding: "utf8" }
+  );
+  if (status.status !== 0 || !status.stdout.trim()) return [];
+  return status.stdout
+    .trim()
+    .split("\n")
+    .map((line) => line.slice(3).trim())
+    .filter(Boolean);
 }
 
 export interface RemoveResult {

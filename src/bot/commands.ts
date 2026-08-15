@@ -21,7 +21,7 @@ import {
   getChannelModelForAgent,
 } from "../utils/models.js";
 import { getAgent, listAgentKeys } from "../agents/index.js";
-import { mainRepoOf, worktreeCloseBlockReason } from "../utils/path-resolver.js";
+import { mainRepoOf, worktreeCloseBlockReason, worktreeUncommittedFiles } from "../utils/path-resolver.js";
 
 export class CommandHandler {
   constructor(
@@ -263,12 +263,14 @@ export class CommandHandler {
         if (repoPath) {
           const reason = worktreeCloseBlockReason(repoPath, session.workDir);
           if (reason) {
+            const files = worktreeUncommittedFiles(session.workDir);
+            const fileList = files.length ? `\n\n${files.map((f) => `\`${f}\``).join("\n")}` : "";
             void setThreadStatus(i.channel, "locked");
             await i.reply({
               embeds: [
                 embed(
                   "🛑 Kept",
-                  `Not removed — ${reason}. Re-run with \`force: true\` to discard it anyway.`,
+                  `Not removed — ${reason}:${fileList}\n\nUse \`/cleanup force:True\` to discard anyway.`,
                   0xffa500
                 ),
               ],
@@ -300,7 +302,7 @@ export class CommandHandler {
         embeds: [
           embed(
             "🛑 Kept",
-            `Not removed — ${result.reason}. Re-run with \`force: true\` to discard it anyway.`,
+            `Not removed — ${result.reason}. Use \`/cleanup force:True\` to discard anyway.`,
             0xffa500
           ),
         ],
