@@ -234,6 +234,17 @@ export function worktreeUncommittedFiles(wtPath: string): string[] {
     .filter(Boolean);
 }
 
+/** Returns one-line summaries of commits on HEAD that are not on origin/branch. */
+export function worktreeUnpushedCommits(wtPath: string, branch: string): string[] {
+  const result = spawnSync(
+    "git",
+    ["-C", wtPath, "log", "--oneline", `origin/${branch}..HEAD`],
+    { encoding: "utf8" }
+  );
+  if (result.status !== 0 || !result.stdout.trim()) return [];
+  return result.stdout.trim().split("\n").filter(Boolean);
+}
+
 export interface RemoveResult {
   removed: boolean;
   reason?: string;
