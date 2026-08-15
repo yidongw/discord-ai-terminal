@@ -183,7 +183,16 @@ export class BackgroundJobManager {
             .setColor(0x9b59b6),
         ],
       });
+    } catch (err) {
+      console.error(`[bgjob] wake notification failed for ${job.jobId}, will retry:`, err);
+      return;
+    }
 
+    // Notification delivered — drop the job row now so a failed runAgent launch
+    // doesn't cause the embed to be re-sent on the next poll tick.
+    this.cleanup(job);
+
+    try {
       await this.sessionManager.runAgent(
         job.threadId,
         session.channelId,
@@ -193,10 +202,8 @@ export class BackgroundJobManager {
         prompt,
         { channelId: job.threadId, channelName: thread.name ?? "thread", userId: "", messageId: "" }
       );
-      // Launched successfully — drop the job (its run now owns the thread).
-      this.cleanup(job);
     } catch (err) {
-      console.error(`[bgjob] wake failed for ${job.jobId}, will retry:`, err);
+      console.error(`[bgjob] wake agent launch failed for ${job.jobId}:`, err);
     }
   }
 
