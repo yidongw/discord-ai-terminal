@@ -27,7 +27,7 @@ import {
   firstLine,
 } from "./parser.js";
 import { listAgentKeys, getAgent } from "../agents/index.js";
-import { resolveThreadWorkDir, mainRepoOf } from "../utils/path-resolver.js";
+import { resolveThreadWorkDir, mainRepoOf, worktreeUncommittedFiles } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
 import { setThreadStatus, renamingClosedThreads, isClosedThreadName } from "../utils/thread-status.js";
 import {
@@ -467,10 +467,14 @@ export class DiscordBot {
               .setLabel("Cancel")
               .setStyle(ButtonStyle.Secondary)
           );
+          const files = decision.reason === "uncommitted changes"
+            ? worktreeUncommittedFiles(session.workDir)
+            : [];
+          const fileList = files.length ? `\n${files.map((f) => `\`${f}\``).join("\n")}` : "";
           thread
             .send({
               content:
-                `🌲 Worktree kept — ${decision.reason}. Use **Force Close** to remove anyway.`,
+                `🌲 Worktree kept — ${decision.reason}.${fileList}\n\nUse **Force Close** to remove anyway.`,
               components: [row],
             })
             .catch(() => {});
