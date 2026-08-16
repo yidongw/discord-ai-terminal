@@ -27,7 +27,7 @@ import {
   firstLine,
 } from "./parser.js";
 import { listAgentKeys, getAgent } from "../agents/index.js";
-import { resolveThreadWorkDir, mainRepoOf, worktreeUncommittedFiles } from "../utils/path-resolver.js";
+import { resolveThreadWorkDir, mainRepoOf, worktreeUncommittedFiles, worktreeUnpushedCommits } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
 import { setThreadStatus, renamingClosedThreads, isClosedThreadName } from "../utils/thread-status.js";
 import {
@@ -467,14 +467,18 @@ export class DiscordBot {
               .setLabel("Cancel")
               .setStyle(ButtonStyle.Secondary)
           );
-          const files = decision.reason === "uncommitted changes"
-            ? worktreeUncommittedFiles(session.workDir)
-            : [];
-          const fileList = files.length ? `\n${files.map((f) => `\`${f}\``).join("\n")}` : "";
+          let detail = "";
+          if (decision.reason === "uncommitted changes") {
+            const files = worktreeUncommittedFiles(session.workDir);
+            if (files.length) detail = `\n${files.map((f) => `\`${f}\``).join("\n")}`;
+          } else if (decision.reason === "branch does not match origin" && session.branch) {
+            const commits = worktreeUnpushedCommits(session.workDir, session.branch);
+            if (commits.length) detail = `\n${commits.map((c) => `\`${c}\``).join("\n")}`;
+          }
           thread
             .send({
               content:
-                `🌲 Worktree kept — ${decision.reason}.${fileList}\n\nUse **Force Close** to remove anyway.`,
+                `🌲 Worktree kept — ${decision.reason}.${detail}\n\nUse **Force Close** to remove anyway.`,
               components: [row],
             })
             .catch(() => {});
