@@ -4,6 +4,7 @@ import {
   mainRepoOf,
   worktreeCloseBlockReason,
   worktreePassesCloseCheck,
+  defaultBranch,
 } from "./path-resolver.js";
 
 const GIT_TIMEOUT_MS = 5000;
@@ -85,10 +86,11 @@ export const THREAD_WORKTREE_CLOSE_REASONS = {
 } as const;
 
 /**
- * Single guard for thread close/delete. Runs three checks in order:
+ * Single guard for thread close/delete. Runs checks in order:
  * 1. uncommitted changes
- * 2. branch matches origin
- * 3. PR merged
+ * 2. content already in main (squash-merge / cherry-pick)
+ * 3. branch matches origin
+ * 4. PR merged
  *
  * Any failed check blocks with a reason; all pass → silent force remove.
  */
@@ -111,15 +113,25 @@ export function evaluateThreadWorktreeClose(
     return { action: "block", reason: "could not locate the parent repo" };
   }
 
-  const { ok, out: remoteUrl } = git(workDir, ["remote", "get-url", "origin"]);
-  const repo = ok && remoteUrl ? parseGithubRepoFromRemote(remoteUrl) : null;
-  const prMerged = repo ? isBranchPrMerged(workDir, branch, repo) : false;
-
   // Check 1: uncommitted changes
   const blockReason = worktreeCloseBlockReason(repoPath, workDir);
   if (blockReason) return { action: "block", reason: blockReason };
 
-  // Check 2: branch matches origin
+  // Check 2: content already in main — handles squash-merge where SHA diverges
+  const base = defaultBranch(repoPath);
+  spawnSync("git", ["-C", workDir, "fetch", "origin", base], {
+    encoding: "utf8",
+    timeout: GIT_TIMEOUT_MS,
+  });
+  const contentDiff = git(workDir, ["diff", `origin/${base}..HEAD`]);
+  if (contentDiff.ok && !contentDiff.out) {
+    return { action: "forceRemove" };
+  }
+
+  const { ok, out: remoteUrl } = git(workDir, ["remote", "get-url", "origin"]);
+  const repo = ok && remoteUrl ? parseGithubRepoFromRemote(remoteUrl) : null;
+
+  // Check 3: branch matches origin
   if (!repo) {
     return { action: "block", reason: THREAD_WORKTREE_CLOSE_REASONS.noOrigin };
   }
@@ -127,7 +139,8 @@ export function evaluateThreadWorktreeClose(
     return { action: "block", reason: THREAD_WORKTREE_CLOSE_REASONS.branchMismatch };
   }
 
-  // Check 3: PR merged
+  // Check 4: PR merged
+  const prMerged = isBranchPrMerged(workDir, branch, repo);
   if (!prMerged) {
     return { action: "block", reason: THREAD_WORKTREE_CLOSE_REASONS.prNotMerged };
   }
