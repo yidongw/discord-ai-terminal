@@ -158,6 +158,8 @@ describe("evaluateThreadWorktreeClose", () => {
         if (args.includes("status")) return gitResult("");
         if (args.includes("log")) return gitResult("");
         if (args.includes("symbolic-ref")) return gitResult("origin/main");
+        // Empty diff = content already in main (content-in-main check auto-closes).
+        if (args.includes("diff")) return gitResult("");
         if (args[args.length - 1] === "HEAD") return gitResult("deadbeef");
         if (args[args.length - 1] === "origin/discord/foo") return gitResult("deadbeef");
       }
@@ -173,8 +175,28 @@ describe("evaluateThreadWorktreeClose", () => {
     });
   });
 
-  it("force-removes when all three checks pass", () => {
+  it("force-removes when content is already in main (squash-merge scenario)", () => {
     mockCleanMergedWorktree();
+    expect(evaluateThreadWorktreeClose("/wt", "discord/foo")).toEqual({ action: "forceRemove" });
+  });
+
+  it("force-removes when branch matches origin and PR is merged", () => {
+    spawnSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git") {
+        if (args.includes("remote")) return gitResult("git@github.com:org/repo.git");
+        if (args.includes("--abbrev-ref")) return gitResult("discord/foo");
+        if (args.includes("fetch")) return gitResult("");
+        if (args.includes("--git-common-dir")) return gitResult("/repo/.git");
+        if (args.includes("status")) return gitResult("");
+        if (args.includes("symbolic-ref")) return gitResult("origin/main");
+        // Non-empty diff = content not yet in main; falls through to PR-merged check.
+        if (args.includes("diff")) return gitResult("+ some new line");
+        if (args[args.length - 1] === "HEAD") return gitResult("deadbeef");
+        if (args[args.length - 1] === "origin/discord/foo") return gitResult("deadbeef");
+      }
+      if (cmd === "gh") return gitResult('[{"number":7}]');
+      return gitResult("");
+    });
     expect(evaluateThreadWorktreeClose("/wt", "discord/foo")).toEqual({ action: "forceRemove" });
   });
 
@@ -193,6 +215,9 @@ describe("evaluateThreadWorktreeClose", () => {
         if (args.includes("fetch")) return gitResult("");
         if (args.includes("--git-common-dir")) return gitResult("/repo/.git");
         if (args.includes("status")) return gitResult("");
+        if (args.includes("symbolic-ref")) return gitResult("origin/main");
+        // Non-empty diff = content not in main; falls through to branch-sync check.
+        if (args.includes("diff")) return gitResult("+ local work not yet in main");
         if (args[args.length - 1] === "HEAD") return gitResult("local-only");
         if (args[args.length - 1] === "origin/discord/foo") return gitResult("on-origin");
       }
@@ -207,7 +232,6 @@ describe("evaluateThreadWorktreeClose", () => {
   });
 
   it("blocks when PR is not merged", () => {
-    mockCleanMergedWorktree();
     spawnSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "git") {
         if (args.includes("remote")) return gitResult("git@github.com:org/repo.git");
@@ -215,8 +239,9 @@ describe("evaluateThreadWorktreeClose", () => {
         if (args.includes("fetch")) return gitResult("");
         if (args.includes("--git-common-dir")) return gitResult("/repo/.git");
         if (args.includes("status")) return gitResult("");
-        if (args.includes("log")) return gitResult("");
         if (args.includes("symbolic-ref")) return gitResult("origin/main");
+        // Non-empty diff = content not yet in main; falls through to PR-merged check.
+        if (args.includes("diff")) return gitResult("+ some new line");
         if (args[args.length - 1] === "HEAD") return gitResult("deadbeef");
         if (args[args.length - 1] === "origin/discord/foo") return gitResult("deadbeef");
       }
