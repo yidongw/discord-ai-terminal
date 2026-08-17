@@ -27,7 +27,7 @@ import {
   firstLine,
 } from "./parser.js";
 import { listAgentKeys, getAgent } from "../agents/index.js";
-import { resolveThreadWorkDir, mainRepoOf, worktreeUncommittedFiles, worktreeUnpushedCommits } from "../utils/path-resolver.js";
+import { resolveThreadWorkDir, mainRepoOf, worktreeUncommittedFiles, worktreeUnpushedCommits, worktreeDiffStat, defaultBranch } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
 import { setThreadStatus, renamingClosedThreads, isClosedThreadName } from "../utils/thread-status.js";
 import {
@@ -474,6 +474,12 @@ export class DiscordBot {
           } else if (decision.reason === "branch does not match origin" && session.branch) {
             const commits = worktreeUnpushedCommits(session.workDir, session.branch);
             if (commits.length) detail = `\n${commits.map((c) => `\`${c}\``).join("\n")}`;
+            const repoPath = mainRepoOf(session.workDir);
+            if (repoPath) {
+              const base = defaultBranch(repoPath);
+              const stat = worktreeDiffStat(session.workDir, `origin/${base}`);
+              if (stat) detail += `\n\`\`\`diff\n${stat}\n\`\`\``;
+            }
           }
           thread
             .send({

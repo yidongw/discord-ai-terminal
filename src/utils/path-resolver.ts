@@ -245,6 +245,15 @@ export function worktreeUnpushedCommits(wtPath: string, branch: string): string[
   return result.stdout.trim().split("\n").filter(Boolean);
 }
 
+/** Returns the diff --stat summary of what HEAD has that `base` (e.g. origin/main) does not. */
+export function worktreeDiffStat(wtPath: string, base: string): string {
+  const result = spawnSync("git", ["-C", wtPath, "diff", "--stat", `${base}..HEAD`], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0 || !result.stdout.trim()) return "";
+  return result.stdout.trim();
+}
+
 export interface RemoveResult {
   removed: boolean;
   reason?: string;
