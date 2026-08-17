@@ -56,6 +56,9 @@ export class RunTailer {
   private finalizing = false;
   private stopped = false;
   private lastLogGrowthAt: number;
+  // Set when the stall threshold is crossed; cleared when output resumes.
+  // Prevents repeat onStall() calls while the process is silently running.
+  private stalledNotified = false;
 
   constructor(private opts: RunTailerOptions) {
     this.readOffset = opts.startOffset;
@@ -122,9 +125,17 @@ export class RunTailer {
     }
     const stallMs = this.opts.stallTimeoutMs ?? LOG_STALL_TIMEOUT_MS;
     if (this.opts.isAlive() && this.atEof() && Date.now() - this.lastLogGrowthAt >= stallMs) {
-      console.warn(`[tailer] log stall on ${this.opts.logPath} — finalizing hung run`);
-      this.opts.onStall?.();
-      void this.finalize();
+      if (!this.stalledNotified) {
+        console.warn(`[tailer] log stall on ${this.opts.logPath} — notifying, keeping process alive`);
+        this.stalledNotified = true;
+        this.opts.onStall?.();
+      }
+      // Do NOT finalize — the process is still running (e.g. waiting on a long
+      // bash command). Killing it mid-tool-call corrupts the session state and
+      // causes error_during_execution on the next resume. The process will
+      // finalize naturally when it exits.
+    } else if (this.stalledNotified) {
+      this.stalledNotified = false;
     }
   }
 

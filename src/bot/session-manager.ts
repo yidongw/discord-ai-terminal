@@ -56,10 +56,11 @@ export type CompletionHandler = (action: CompletionAction, text: string) => Prom
 export type SessionFinalizeCallback = (threadId: string, workDir: string, branch: string) => Promise<void>;
 
 const MAX_EMBED = 4000;
-// Grace period after SIGTERM before we escalate to SIGKILL. This keeps a
-// runaway agent that ignores SIGTERM from streaming "already produced" output
-// forever after a /stop.
-const SIGKILL_GRACE_MS = 3000;
+// Grace period after SIGTERM before we escalate to SIGKILL. Must be long enough
+// for Claude Code to finish writing its session state file after SIGTERM — too
+// short and the write is truncated, causing error_during_execution on the next
+// --resume. 15 s is generous; most writes complete in well under a second.
+const SIGKILL_GRACE_MS = 15_000;
 // Discord's typing indicator lasts ~10s; refresh a little sooner so it stays
 // visible continuously while a run is active or its outbox is still draining.
 const TYPING_REFRESH_MS = 8000;
@@ -721,8 +722,8 @@ export class SessionManager {
         session.outbox.enqueue(() =>
           session.thread.send({
             embeds: [embed(
-              "⏱️ No response",
-              `${agent.label} produced no output for ${stallMin} minutes and was stopped. Send your message again to retry, or use \`/clear\` to start a fresh session.`,
+              "⏱️ Still running…",
+              `${agent.label} has produced no output for ${stallMin} minutes but is still running (likely waiting on a long tool call). Use \`/stop\` to cancel.`,
               0xffa500
             )],
           })
