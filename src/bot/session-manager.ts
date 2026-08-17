@@ -1244,16 +1244,14 @@ export class SessionManager {
       }
       if (event.subtype === "error_during_execution" && session.wasResume) {
         // The previous run was killed mid-execution (stall timeout, bot restart,
-        // etc.), leaving the session in an unresumable state. Rather than failing,
-        // clear the stored session ID and replay the same prompt so the user never
-        // has to manually /clear.
-        this.db.updateSessionId(threadId, null);
-        session.pendingFreshResume = true;
+        // etc.), leaving the session in an unresumable state. Keep the session ID
+        // so the user can decide — they must /clear explicitly to start fresh.
+        session.done = true;
         outbox.enqueue(() =>
           thread.send({
             embeds: [embed(
-              "⚠️ Session reset",
-              "Previous session was interrupted mid-execution and could not be resumed. Starting a fresh session with your last message…",
+              "⚠️ Session interrupted",
+              "The previous session was interrupted mid-execution and could not be resumed. Your session has been preserved — use `/clear` to start a fresh session.",
               0xffa500
             )],
           })
