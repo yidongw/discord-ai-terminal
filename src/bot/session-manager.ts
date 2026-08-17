@@ -87,6 +87,9 @@ interface ActiveSession {
   finalized: boolean;
   thread: any;
   toolCalls: Map<string, { message: any }>;
+  // Last tool_start seen on this run. Updated on tool_start, cleared on
+  // tool_done. When the process is killed this tells us what was in flight.
+  lastToolInFlight?: { name: string; input: string };
   // Tool-use ids we deliberately hid (Bash/Read/Edit by default). Their
   // tool_done / tool_result events are dropped without enqueuing anything, so a
   // hidden tool's result can't seal the running "N hidden" summary embed.
@@ -136,9 +139,10 @@ interface ActiveSession {
   // Original user prompt for this run — kept so we can auto-retry with a fresh
   // session when a resume fails due to mid-execution interruption.
   prompt: string;
-  // Set when an interrupted-resume error fires: finalizeRun will retry the same
-  // prompt with freshSession:true instead of leaving the thread in a failed state.
-  pendingFreshResume?: boolean;
+  // Set when error_during_execution fires on a first attempt. finalizeRun will
+  // retry --resume with whatever session ID the init event wrote to the DB
+  // (Claude Code may have created a new valid session ID before failing).
+  pendingResumeRetry?: boolean;
 }
 
 export class SessionManager {
@@ -160,6 +164,9 @@ export class SessionManager {
   // User messages queued while an agent was running (FIFO). Multiple messages
   // may be queued; each is dispatched in order once the thread becomes idle.
   private messageQueues = new Map<string, QueuedMessage[]>();
+  // Tracks how many automatic --resume retries have been attempted per thread
+  // after error_during_execution. Cleared on a successful run; capped at 1.
+  private resumeRetryCount = new Map<string, number>();
   // Where detached runs write their append-only output logs (one per run). The
   // bot tails these and re-attaches to them after a restart.
   private runsDir: string;
@@ -356,7 +363,7 @@ export class SessionManager {
   // drains the outbox and removes the session once delivery finishes.
   killProcess(threadId: string): void {
     const session = this.active.get(threadId);
-    if (session) this.stopProcess(session);
+    if (session) this.stopProcess(session, "killProcess");
     // Drop any persisted run row for this thread that we have NOT re-attached
     // (e.g. a dead run from before a restart). For an in-memory session the
     // tailer's finalize also deletes it; deleting here too is idempotent.
@@ -427,9 +434,14 @@ export class SessionManager {
   // Graceful stop: signal the run's process group to stop. The tailer notices
   // the process is gone, drains whatever it already wrote, and finalizes (which
   // deletes the active_runs row, removes the log, and releases the thread).
-  private stopProcess(session: ActiveSession): void {
+  private stopProcess(session: ActiveSession, reason = "unknown"): void {
     if (session.stopping) return;
     session.stopping = true;
+    const inFlight = session.lastToolInFlight;
+    console.log(
+      `[stop] run=${session.runId} pid=${session.pid} reason=${reason}` +
+      (inFlight ? ` mid-tool=${inFlight.name}(${inFlight.input.slice(0, 80)})` : " (between tool calls)")
+    );
     this.signalGroup(session.pid, "SIGTERM");
     session.killTimer = setTimeout(() => {
       this.signalGroup(session.pid, "SIGKILL");
@@ -746,7 +758,7 @@ export class SessionManager {
     // Stall finalization can run while the process is still alive.
     if (isPidAlive(session.pid) && !session.stopping) {
       console.log(`[finalize] run ${session.runId} still alive at finalize — stopping pid ${session.pid}`);
-      this.stopProcess(session);
+      this.stopProcess(session, "finalize-alive");
     }
 
     // Only for fresh runs (exitCode known): surface a crash the agent didn't
@@ -790,7 +802,10 @@ export class SessionManager {
       }
     }
 
-    if (session.pendingFreshResume) {
+    if (session.pendingResumeRetry) {
+      // Retry --resume with whatever session ID the init event wrote to the DB.
+      // Claude Code often creates a new valid session ID before emitting
+      // error_during_execution, so this retry frequently succeeds silently.
       try {
         await this.runAgent(
           threadId,
@@ -800,13 +815,13 @@ export class SessionManager {
           session.workDir,
           session.prompt,
           session.discordContext,
-          { freshSession: true }
+          // No freshSession — use the session ID already in the DB
         );
       } catch (err) {
-        console.error(`[fresh-resume] auto-retry failed for ${threadId}:`, err);
+        console.error(`[resume-retry] retry failed for ${threadId}:`, err);
         session.outbox.enqueue(() =>
           session.thread.send({
-            embeds: [embed("❌ Retry failed", String((err as Error).message ?? err), 0xff0000)],
+            embeds: [embed("❌ Resume retry failed", "Use `/clear` to start a fresh session.", 0xff0000)],
           })
         );
         await session.outbox.drain();
@@ -1088,6 +1103,10 @@ export class SessionManager {
     const { outbox, toolCalls, thread } = session;
 
     if (event.kind === "init") {
+      const prevSessionId = this.db.getThreadSession(threadId)?.sessionId;
+      if (prevSessionId && prevSessionId !== event.sessionId) {
+        console.log(`[session] ${threadId}: session ID changed on resume: ${prevSessionId} → ${event.sessionId}`);
+      }
       this.db.updateSessionId(threadId, event.sessionId);
       const displayModel = session.requestedModel || event.model;
       outbox.enqueue(() =>
@@ -1125,7 +1144,7 @@ export class SessionManager {
         session.usageLimitResetAt = event.resetAt;
         session.usageLimitResetLabel = event.resetLabel;
         this.enqueueUsageLimitNotice(session);
-        this.stopProcess(session);
+        this.stopProcess(session, "rate-limit");
       } else {
         session.usageLimitResetAt = event.resetAt;
         session.usageLimitResetLabel = event.resetLabel;
@@ -1134,6 +1153,7 @@ export class SessionManager {
     }
 
     if (event.kind === "tool_start") {
+      session.lastToolInFlight = { name: event.name ?? "unknown", input: event.label ?? "" };
       // Hidden tools don't get their own embed; instead they bump the running
       // "N hidden" summary. Remember the id so the matching tool_done is dropped
       // (it must not seal the summary).
@@ -1157,6 +1177,7 @@ export class SessionManager {
     }
 
     if (event.kind === "tool_done") {
+      session.lastToolInFlight = undefined;
       // Hidden tool → no embed to update, and we must not enqueue anything that
       // would seal the running summary.
       if (session.hiddenToolIds.has(event.id)) return;
@@ -1173,6 +1194,7 @@ export class SessionManager {
     }
 
     if (event.kind === "done") {
+      this.resumeRetryCount.delete(threadId);
       session.done = true;
       const parts: string[] = [];
       if (event.turns !== null) parts.push(`${event.turns} turns`);
@@ -1203,7 +1225,7 @@ export class SessionManager {
         return thread.send({ embeds: [embed("✅ Done", statsLine, 0x00ff00)] });
       });
       // The completion action (if any) runs at finalize, from the full log text.
-      this.stopProcess(session);
+      this.stopProcess(session, "done");
       return;
     }
 
@@ -1232,7 +1254,7 @@ export class SessionManager {
           thread.send({ embeds: [embed("❌ Failed", "error_max_turns", 0xff0000)] })
         );
       }
-      this.stopProcess(session);
+      this.stopProcess(session, "session-limit");
       return;
     }
 
@@ -1240,24 +1262,30 @@ export class SessionManager {
       this.noteUsageLimitReset(session, event.message);
       if (session.pendingUsageLimitResume) {
         this.enqueueUsageLimitNotice(session);
-        this.stopProcess(session);
+        this.stopProcess(session, "usage-limit");
         return;
       }
       if (event.subtype === "error_during_execution" && session.wasResume) {
-        // The previous run was killed mid-execution (stall timeout, bot restart,
-        // etc.), leaving the session in an unresumable state. Keep the session ID
-        // so the user can decide — they must /clear explicitly to start fresh.
-        session.done = true;
-        outbox.enqueue(() =>
-          thread.send({
-            embeds: [embed(
-              "⚠️ Session interrupted",
-              "The previous session was interrupted mid-execution and could not be resumed. Your session has been preserved — use `/clear` to start a fresh session.",
-              0xffa500
-            )],
-          })
-        );
-        this.stopProcess(session);
+        const currentSessionId = this.db.getThreadSession(threadId)?.sessionId;
+        console.log(`[session] ${threadId}: error_during_execution — resumed with ${session.prompt.slice(0, 60)}…, DB session now: ${currentSessionId}`);
+        const retries = this.resumeRetryCount.get(threadId) ?? 0;
+        if (retries < 1) {
+          this.resumeRetryCount.set(threadId, retries + 1);
+          session.pendingResumeRetry = true;
+        } else {
+          this.resumeRetryCount.delete(threadId);
+          session.done = true;
+          outbox.enqueue(() =>
+            thread.send({
+              embeds: [embed(
+                "⚠️ Session interrupted",
+                "The previous session was interrupted mid-execution and could not be resumed. Use `/clear` to start a fresh session.",
+                0xffa500
+              )],
+            })
+          );
+        }
+        this.stopProcess(session, "error-during-execution");
         return;
       }
       session.done = true;
@@ -1267,7 +1295,7 @@ export class SessionManager {
       outbox.enqueue(() =>
         thread.send({ embeds: [embed("❌ Failed", detail, 0xff0000)] })
       );
-      this.stopProcess(session);
+      this.stopProcess(session, "error");
       return;
     }
 
@@ -1279,7 +1307,7 @@ export class SessionManager {
         this.noteUsageLimitReset(session, raw.content);
         if (session.pendingUsageLimitResume) {
           this.enqueueUsageLimitNotice(session);
-          this.stopProcess(session);
+          this.stopProcess(session, "rate-limit-assistant");
         }
         outbox.pushText(raw.content);
       }
