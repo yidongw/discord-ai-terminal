@@ -57,6 +57,11 @@ export class DiscordBot {
   private githubHandler?: GitHubHandler;
   // Keyed by original user message ID. Stores context for queue/interrupt/cancel
   // button choices shown when a message arrives while an agent is running.
+  // Message IDs we have already dispatched. Discord replays messageCreate events
+  // on shard reconnect, which would kill an active session and re-run the prompt.
+  // Deduplication by ID prevents that. Evicts oldest when the set exceeds 2000
+  // entries (well beyond any reconnect replay window).
+  private processedMessageIds = new Set<string>();
   private pendingInteractions = new Map<string, PendingInteraction>();
   // Keyed by original user message ID. Stores the raw prompt when buttons were shown to pick an agent.
   private pendingAgentSelectInteractions = new Map<string, { msg: Message; channel: TextChannel; prompt: string }>();
@@ -341,6 +346,12 @@ export class DiscordBot {
     );
 
     this.client.on("messageCreate", async (msg) => {
+      if (this.processedMessageIds.has(msg.id)) return;
+      this.processedMessageIds.add(msg.id);
+      if (this.processedMessageIds.size > 2000) {
+        this.processedMessageIds.delete(this.processedMessageIds.values().next().value!);
+      }
+
       const isThread =
         msg.channel.type === ChannelType.PublicThread ||
         msg.channel.type === ChannelType.PrivateThread;
