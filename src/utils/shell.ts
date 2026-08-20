@@ -94,10 +94,8 @@ export function buildClaudeCommand(
   if (mode === "plan") {
     commandParts.push("--permission-mode", "plan");
     commandParts.push("--permission-prompt-tool", "mcp__discord-permissions__approve_tool");
-    commandParts.push("--allowedTools", "mcp__discord-permissions");
   } else if (mode === "approve") {
     commandParts.push("--permission-prompt-tool", "mcp__discord-permissions__approve_tool");
-    commandParts.push("--allowedTools", "mcp__discord-permissions");
   } else {
     // auto mode - skip all permissions, but still expose the ask_user_question MCP tool
     commandParts.push("--dangerously-skip-permissions");
