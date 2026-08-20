@@ -1715,14 +1715,14 @@ function splitText(text: string, max: number): string[] {
 async function sendImageAttachment(thread: any, filePath: string): Promise<void> {
   try {
     if (fs.existsSync(filePath)) {
-      const ext = path.extname(filePath).slice(1).toLowerCase().replace("jpeg", "jpg") || "png";
       const buffer = fs.readFileSync(filePath);
-      await thread.send({ files: [new AttachmentBuilder(buffer, { name: `image.${ext}` })] });
+      const name = path.basename(filePath) || "file";
+      await thread.send({ files: [new AttachmentBuilder(buffer, { name })] });
     } else {
-      console.warn(`[image] File not found, skipping: ${filePath}`);
+      console.warn(`[attachment] File not found, skipping: ${filePath}`);
     }
   } catch (err) {
-    console.error(`[image] Failed to send image ${filePath}:`, err);
+    console.error(`[attachment] Failed to send file ${filePath}:`, err);
   }
 }
 

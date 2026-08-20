@@ -120,7 +120,6 @@ function normalizeLocalImagePath(rawPath?: string): string | undefined {
     filePath = decodeURI(filePath);
   } catch {}
   if (!path.isAbsolute(filePath)) return undefined;
-  if (!isImageType(undefined, filePath)) return undefined;
   return filePath;
 }
 
