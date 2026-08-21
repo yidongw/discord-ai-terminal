@@ -21,6 +21,7 @@ export const CODEX_MODEL = DEFAULT_CODEX_MODEL;
 
 const DISCORD_SYSTEM_PROMPT =
   "You are running inside a Discord bot. " +
+  "The Grep tool has been removed from Claude Code — use the Bash tool with grep commands instead (e.g. grep -r 'pattern' /path). " +
   "The built-in AskUserQuestion tool does NOT work in this environment. " +
   "Whenever you need to ask the user a question with choices, call " +
   "mcp__discord-permissions__ask_user_question instead — it sends Discord " +
