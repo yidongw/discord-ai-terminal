@@ -180,8 +180,40 @@ export function resolveThreadWorkDir(
     }
   }
 
+  copyDevEnvFiles(repoPath, wtPath);
+
   console.log(`[path-resolver] thread ${threadId} → worktree ${wtPath} (branch ${branch}, base ${base})`);
   return { workDir: wtPath, repo: channelName, worktree: true, branch };
+}
+
+// Gitignored root env files (.env, .env.local, .env.dev, …) live only in the
+// primary checkout — `git worktree add` never copies untracked files, so a new
+// worktree gets only the tracked .env.example. Copy the dev-tier ones in so
+// tooling that expects a root .env (e.g. carbon's scripts/setup-env-files.ts)
+// works inside the worktree. Staging/prod tiers are deliberately skipped so
+// they can never propagate into an agent worktree.
+export function copyDevEnvFiles(repoPath: string, wtPath: string): void {
+  const SKIP = new Set([".env.example", ".env.staging", ".env.prod", ".env.production"]);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(repoPath);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (name !== ".env" && !name.startsWith(".env.")) continue;
+    if (SKIP.has(name)) continue;
+    const src = path.join(repoPath, name);
+    const dest = path.join(wtPath, name);
+    try {
+      if (!fs.statSync(src).isFile()) continue;
+      if (fs.existsSync(dest)) continue; // don't clobber a tracked/existing file
+      fs.copyFileSync(src, dest);
+      console.log(`[path-resolver] copied ${name} into worktree`);
+    } catch (err) {
+      console.error(`[path-resolver] failed to copy ${name} into worktree:`, err);
+    }
+  }
 }
 
 // Given a worktree path, find the main repo checkout it belongs to (via the
