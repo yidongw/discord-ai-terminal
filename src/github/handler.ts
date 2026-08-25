@@ -63,28 +63,46 @@ export class GitHubHandler {
     return !!session && session.channelId === this.discordAiTerminalChannelId;
   }
 
+  // When multiple bot instances share one repo's webhook (e.g. a main bot and a
+  // dev bot), GitHub delivers every PR event to all of them. Without this gate,
+  // each instance's "no maker thread → post to repo channel" fallback would
+  // announce PRs opened by the other instance's account. OWN_PR_AUTHORS lists the
+  // GitHub logins this instance owns; when set, the repo-channel fallback only
+  // fires for PRs authored by one of them. Unset/empty = announce all (legacy).
+  private ownsPrAuthor(prAuthor?: string | null): boolean {
+    const raw = process.env.OWN_PR_AUTHORS?.trim();
+    if (!raw) return true;
+    const owners = raw
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (owners.length === 0) return true;
+    if (!prAuthor) return false;
+    return owners.includes(prAuthor.toLowerCase());
+  }
+
   // Called when pull_request.{opened,reopened,ready_for_review} fires. Links the PR
   // to the maker thread, renames it with the PR number, and pins the PR URL.
-  async handlePrOpened(repo: string, prNumber: number, headRef: string = ""): Promise<void> {
+  async handlePrOpened(repo: string, prNumber: number, headRef: string = "", prAuthor?: string | null): Promise<void> {
     // Clear the closed flag so a reopened PR will notify again on next close/merge.
     const db = this.sessionManager.getDb();
     const repoName = repo.split("/")[1] ?? repo;
     db.clearClosedNotified(String(prNumber), repo);
     db.clearClosedNotified(String(prNumber), repoName);
-    await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
+    await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef, undefined, prAuthor);
   }
 
   // Called when pull_request.synchronize fires (new commits pushed to the PR branch).
   // Ensures the PR is linked (idempotent) then notifies the maker thread.
-  async handlePrSynchronized(repo: string, prNumber: number, headRef: string, headSha: string): Promise<void> {
-    const makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
+  async handlePrSynchronized(repo: string, prNumber: number, headRef: string, headSha: string, prAuthor?: string | null): Promise<void> {
+    const makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef, undefined, prAuthor);
     const repoName = repo.split("/")[1] ?? repo;
     const shortSha = headSha ? ` — \`${headSha.slice(0, 7)}\`` : "";
     const prUrl = `https://github.com/${repo}/pull/${prNumber}`;
     const msg = formatPrNewCommitsMessage(prNumber, shortSha, prUrl);
 
     if (!makerThreadId) {
-      const channel = await this.findRepoTextChannel(repoName);
+      const channel = this.ownsPrAuthor(prAuthor) ? await this.findRepoTextChannel(repoName) : null;
       if (channel) {
         await channel.send(msg).catch((err) =>
           console.error(`[github] PR #${prNumber}: failed to notify new commits in channel:`, err)
@@ -110,7 +128,7 @@ export class GitHubHandler {
 
   // Called when pull_request.closed fires. Notifies the maker thread whether the
   // PR was merged or closed without merging.
-  async handlePrClosed(repo: string, prNumber: number, merged: boolean, mergedBy: string | null, prTitle: string, headRef: string = ""): Promise<void> {
+  async handlePrClosed(repo: string, prNumber: number, merged: boolean, mergedBy: string | null, prTitle: string, headRef: string = "", prAuthor?: string | null): Promise<void> {
     const db = this.sessionManager.getDb();
     const repoName = repo.split("/")[1] ?? repo;
 
@@ -126,7 +144,7 @@ export class GitHubHandler {
 
     if (!makerThreadId) {
       // PR may not have been linked yet (bot missed opened/synchronize events) — try now
-      makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef);
+      makerThreadId = await this.ensurePrLinkedToMakerThread(repo, prNumber, headRef, undefined, prAuthor);
     } else if (headRef && !makerThreadMatchesBranch(db, makerThreadId, headRef)) {
       // Wrapper-linked entries are authoritative — the gh wrapper recorded which
       // thread ran `gh pr create` regardless of branch name. Only treat a
@@ -162,7 +180,7 @@ export class GitHubHandler {
       }
     }
 
-    if (!target) {
+    if (!target && this.ownsPrAuthor(prAuthor)) {
       target = await this.findRepoTextChannel(repoName);
       targetLabel = target ? `channel #${repoName}` : "";
     }
@@ -205,7 +223,8 @@ export class GitHubHandler {
     repo: string,
     prNumber: number,
     headRef: string = "",
-    knownMakerThreadId?: string
+    knownMakerThreadId?: string,
+    prAuthor?: string | null
   ): Promise<string | null> {
     const db = this.sessionManager.getDb();
     const repoName = repo.split("/")[1] ?? repo;
@@ -252,6 +271,16 @@ export class GitHubHandler {
       if (recheck) {
         // Wrapper landed during the wait — link is already in DB; just return it.
         return recheck;
+      }
+      // In a shared-webhook setup, don't announce PRs authored by another
+      // instance's account (see ownsPrAuthor). Author is only known on the
+      // webhook opened/sync/closed paths; other callers pass undefined and are
+      // gated only when OWN_PR_AUTHORS demands a match.
+      if (!this.ownsPrAuthor(prAuthor)) {
+        console.log(
+          `[github] PR #${prNumber}: author ${prAuthor ?? "unknown"} not in OWN_PR_AUTHORS — skipping repo-channel notification`
+        );
+        return null;
       }
       console.log(
         `[github] PR #${prNumber}: no definitive maker thread for ${repoName}` +
