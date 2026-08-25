@@ -186,27 +186,25 @@ export function resolveThreadWorkDir(
   return { workDir: wtPath, repo: channelName, worktree: true, branch };
 }
 
-// Gitignored root env files (.env, .env.local, .env.dev, …) live only in the
+// Gitignored root env files (.env, .env.local, .env.dev) live only in the
 // primary checkout — `git worktree add` never copies untracked files, so a new
 // worktree gets only the tracked .env.example. Copy the dev-tier ones in so
 // tooling that expects a root .env (e.g. carbon's scripts/setup-env-files.ts)
-// works inside the worktree. Staging/prod tiers are deliberately skipped so
-// they can never propagate into an agent worktree.
+// works inside the worktree.
+//
+// This is a strict ALLOWLIST, never a blocklist: only the exact filenames below
+// are ever copied. Staging/prod env files — and any future variant like
+// `.env.staging.local` or `.env.production` — are never copied, because they are
+// simply not on the list. Do not replace this with a "copy .env* except X"
+// filter: that would leak any secret tier whose name we failed to anticipate.
+const WORKTREE_ENV_ALLOWLIST = [".env", ".env.local", ".env.dev"] as const;
+
 export function copyDevEnvFiles(repoPath: string, wtPath: string): void {
-  const SKIP = new Set([".env.example", ".env.staging", ".env.prod", ".env.production"]);
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(repoPath);
-  } catch {
-    return;
-  }
-  for (const name of entries) {
-    if (name !== ".env" && !name.startsWith(".env.")) continue;
-    if (SKIP.has(name)) continue;
+  for (const name of WORKTREE_ENV_ALLOWLIST) {
     const src = path.join(repoPath, name);
     const dest = path.join(wtPath, name);
     try {
-      if (!fs.statSync(src).isFile()) continue;
+      if (!fs.existsSync(src) || !fs.statSync(src).isFile()) continue;
       if (fs.existsSync(dest)) continue; // don't clobber a tracked/existing file
       fs.copyFileSync(src, dest);
       console.log(`[path-resolver] copied ${name} into worktree`);
