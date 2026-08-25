@@ -104,6 +104,15 @@ export function buildClaudeCommand(
   // Disable the built-in AskUserQuestion tool so Claude uses mcp__discord-permissions__ask_user_question
   commandParts.push("--disallowedTools", "AskUserQuestion");
 
+  // Deny reading specific file patterns (e.g. staging/prod env files for restricted bot instances).
+  // Set DENY_FILE_READ=.env.staging,.env.prod in the bot's environment to activate.
+  const denyFileRead = process.env.DENY_FILE_READ;
+  if (denyFileRead) {
+    for (const pattern of denyFileRead.split(",").map((s) => s.trim()).filter(Boolean)) {
+      commandParts.push("--disallowedTools", `Read(${pattern})`);
+    }
+  }
+
   if (sessionId) {
     commandParts.splice(3, 0, "--resume", sessionId);
   }
