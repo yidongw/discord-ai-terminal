@@ -37,24 +37,46 @@ export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseCont
   }
 
   if (msg.type === "rate_limit_event") {
-    // Informational when status is "allowed" — only act on an actual rejection.
     const info = msg.rate_limit_info;
-    if (info?.status !== "rejected") return null;
-    const parsed = parseRateLimitReset(info);
-    if (parsed) return { kind: "rate_limit", resetAt: parsed.resetAt, resetLabel: parsed.resetLabel };
+    if (info?.status === "rejected") {
+      const parsed = parseRateLimitReset(info);
+      if (parsed) return { kind: "rate_limit", resetAt: parsed.resetAt, resetLabel: parsed.resetLabel };
+      return null;
+    }
+    if (info?.status === "allowed") {
+      const rateLimitType = typeof info.rateLimitType === "string" ? info.rateLimitType : null;
+      const resetsAt = typeof info.resetsAt === "number" ? info.resetsAt : null;
+      if (rateLimitType || resetsAt) {
+        return { kind: "usage_info", rateLimitType, resetsAt };
+      }
+    }
     return null;
   }
 
   if (msg.type === "result") {
     const cost = msg.total_cost_usd ?? null;
     const turns = msg.num_turns ?? null;
-    const usage = msg.usage ?? null;
-    const tokens = usage
-      ? [
-          usage.inputTokens != null ? `↑${usage.inputTokens}` : null,
-          usage.outputTokens != null ? `↓${usage.outputTokens}` : null,
-          usage.cacheReadTokens ? `cache ${usage.cacheReadTokens}` : null,
-        ].filter(Boolean).join(" ") || null
+
+    // modelUsage has camelCase keys + contextWindow per model; prefer over msg.usage (snake_case)
+    const modelUsageValues: any[] = msg.modelUsage ? Object.values(msg.modelUsage) : [];
+    const mu = modelUsageValues.length > 0 ? modelUsageValues[0] : null;
+    const rawUsage = msg.usage ?? null;
+
+    const inputTokens: number | null = mu?.inputTokens ?? rawUsage?.input_tokens ?? null;
+    const outputTokens: number | null = mu?.outputTokens ?? rawUsage?.output_tokens ?? null;
+    const cacheReadTokens: number | null = mu?.cacheReadInputTokens ?? rawUsage?.cache_read_input_tokens ?? null;
+    const cacheCreateTokens: number | null = mu?.cacheCreationInputTokens ?? rawUsage?.cache_creation_input_tokens ?? null;
+    const contextWindow: number | null = mu?.contextWindow ?? null;
+
+    const tokens = [
+      inputTokens != null ? `↑${inputTokens}` : null,
+      outputTokens != null ? `↓${outputTokens}` : null,
+      cacheReadTokens ? `cache ${cacheReadTokens}` : null,
+    ].filter(Boolean).join(" ") || null;
+
+    const contextUsed = (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheCreateTokens ?? 0);
+    const ctxPct = contextWindow && contextUsed > 0
+      ? Math.round(contextUsed / contextWindow * 100)
       : null;
 
     if (msg.subtype === "success") {
@@ -66,7 +88,7 @@ export function parseSdkLine(line: string, workDir: string, ctx?: AgentParseCont
           : "unknown error";
         return { kind: "error", message };
       }
-      return { kind: "done", turns, cost, tokens };
+      return { kind: "done", turns, cost, tokens, inputTokens, ctxPct };
     }
     if (msg.subtype === "error_max_turns") return { kind: "session_limit", turns };
     const detail = msg.error ?? msg.result;

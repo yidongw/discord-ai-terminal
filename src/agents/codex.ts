@@ -99,7 +99,7 @@ export const codexAgent: AgentRunner = {
         u.output_tokens != null ? `↓${u.output_tokens}` : null,
         u.cached_input_tokens ? `cache ${u.cached_input_tokens}` : null,
       ].filter(Boolean).join(" ") || null;
-      return { kind: "done", turns: null, cost: null, tokens: tok };
+      return { kind: "done", turns: null, cost: null, tokens: tok, inputTokens: u.input_tokens ?? null, ctxPct: null };
     }
 
     if (msg.type === "turn.failed") {
