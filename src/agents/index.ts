@@ -20,9 +20,10 @@ export type AgentEvent =
   | { kind: "text";       content: string }
   | { kind: "tool_start"; id: string; label: string; name?: string }
   | { kind: "tool_done";  id: string; preview: string; isError: boolean }
-  | { kind: "done";       turns: number | null; cost: number | null; tokens: string | null }
+  | { kind: "done";       turns: number | null; cost: number | null; tokens: string | null; inputTokens: number | null; ctxPct: number | null }
   | { kind: "session_limit"; turns: number | null }
   | { kind: "rate_limit";  resetAt: number; resetLabel: string }
+  | { kind: "usage_info";  rateLimitType: string | null; resetsAt: number | null }
   | { kind: "error";      message: string; subtype?: string }
   | { kind: "image_file"; filePath: string }
   | { kind: "image_data"; data: string; mediaType: string; callId?: string };

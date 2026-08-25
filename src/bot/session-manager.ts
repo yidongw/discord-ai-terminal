@@ -28,6 +28,7 @@ import {
 } from "../utils/attachments.js";
 import { getChannelModelForAgent } from "../utils/models.js";
 import { handoffDoneContent, handoffDoneEmbedDescription, resolveHandoffBotId, shouldSendHandoffDone, summarizeForHandoff } from "./handoff.js";
+import { fetchClaudeUsage, formatTimeLeft, type ClaudeUsage } from "../utils/usage-fetch.js";
 
 // A side-effect to run when a run finishes (e.g. post a PR summary comment).
 // Persisted in active_runs as JSON so it survives a bot restart, and dispatched
@@ -123,6 +124,12 @@ interface ActiveSession {
   // Discord context from the run that started this session — reused when cc auto-
   // resumes after hitting a limit.
   discordContext?: DiscordContext;
+  // Greeting message — stored so we can edit it once real usage % is fetched.
+  greetingMessage?: any;
+  greetingInfo?: { cwd: string; model: string };
+  // Real usage fetched from API before greeting was sent (deferred edit).
+  pendingUsage?: ClaudeUsage;
+  usageInfoShown?: boolean;
   // Subscription usage limit ("resets 3:45pm") — scheduler wakes cc at reset time.
   pendingUsageLimitResume?: boolean;
   usageLimitResetAt?: number;
@@ -1109,9 +1116,31 @@ export class SessionManager {
       }
       this.db.updateSessionId(threadId, event.sessionId);
       const displayModel = session.requestedModel || event.model;
-      outbox.enqueue(() =>
-        thread.send({ embeds: [embed("🚀 Session started", `**Dir:** \`${event.cwd}\`\n**Model:** ${displayModel}`, 0x00ff00)] })
-      );
+      const cwd = event.cwd;
+      session.greetingInfo = { cwd, model: displayModel };
+      // Fire real usage fetch in background; update greeting when it resolves.
+      fetchClaudeUsage().then((usage) => {
+        if (session.usageInfoShown || (!usage.fiveHour && !usage.sevenDay)) return;
+        session.usageInfoShown = true;
+        if (session.greetingMessage && session.greetingInfo) {
+          session.greetingMessage.edit({
+            embeds: [embed("🚀 Session started", greetingEmbedDesc(cwd, displayModel, usage), 0x00ff00)],
+          }).catch(() => {});
+        } else {
+          session.pendingUsage = usage;
+        }
+      }).catch(() => {});
+      outbox.enqueue(async () => {
+        const msg = await thread.send({ embeds: [embed("🚀 Session started", greetingEmbedDesc(cwd, displayModel), 0x00ff00)] });
+        session.greetingMessage = msg;
+        if (!session.usageInfoShown && session.pendingUsage) {
+          session.usageInfoShown = true;
+          const usage = session.pendingUsage;
+          try {
+            await msg.edit({ embeds: [embed("🚀 Session started", greetingEmbedDesc(cwd, displayModel, usage), 0x00ff00)] });
+          } catch { /* ignore */ }
+        }
+      });
       return;
     }
 
@@ -1149,6 +1178,13 @@ export class SessionManager {
         session.usageLimitResetAt = event.resetAt;
         session.usageLimitResetLabel = event.resetLabel;
       }
+      return;
+    }
+
+    if (event.kind === "usage_info") {
+      // Real usage data comes from fetchClaudeUsage() launched in init handler.
+      // usage_info (time-elapsed proxy) is kept only as a last-ditch fallback if
+      // the real fetch never fired (e.g. agentKey !== "cc").
       return;
     }
 
@@ -1200,6 +1236,7 @@ export class SessionManager {
       if (event.turns !== null) parts.push(`${event.turns} turns`);
       if (event.cost !== null) parts.push(event.cost < 0.01 ? `${(event.cost * 100).toFixed(2)}¢` : `$${event.cost.toFixed(2)}`);
       if (event.tokens) parts.push(event.tokens);
+      if (event.ctxPct !== null) parts.push(`${event.ctxPct}% ctx`);
       const statsLine = parts.length ? `*${parts.join(" · ")}*` : "Complete.";
       const threadSession = this.db.getThreadSession(threadId);
       const handoffBot = threadSession?.handoffBot;
@@ -1672,6 +1709,21 @@ function previewQueuedText(text: string, max = 200): string {
 
 function embed(title: string, description: string, color: number) {
   return new EmbedBuilder().setTitle(title).setDescription(description).setColor(color);
+}
+
+function greetingEmbedDesc(cwd: string, model: string, usage?: ClaudeUsage): string {
+  const base = `**Dir:** \`${cwd}\`\n**Model:** ${model}`;
+  if (!usage) return base;
+  const parts: string[] = [];
+  if (usage.fiveHour !== null) {
+    const left = usage.fiveHourReset ? ` · ${formatTimeLeft(usage.fiveHourReset)} left` : "";
+    parts.push(`5h ${usage.fiveHour}%${left}`);
+  }
+  if (usage.sevenDay !== null) {
+    const left = usage.sevenDayReset ? ` · ${formatTimeLeft(usage.sevenDayReset)} left` : "";
+    parts.push(`7d ${usage.sevenDay}%${left}`);
+  }
+  return parts.length ? `${base}\n**Usage:** ${parts.join("  |  ")}` : base;
 }
 
 // The collapsed summary embed for a run of hidden tool calls, e.g.
