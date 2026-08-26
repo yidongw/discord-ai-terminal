@@ -363,6 +363,10 @@ export class DiscordBot {
 
       if (!this.allowedUserIds.includes(msg.author.id)) return;
 
+      // Skip messages that mention users, roles, @everyone, or @here — these are
+      // typically notifications directed at others, not commands for the bot.
+      if (msg.mentions.users.size > 0 || msg.mentions.roles.size > 0 || msg.mentions.everyone) return;
+
       if (isThread) {
         await this.handleThreadMessage(msg);
       } else {
