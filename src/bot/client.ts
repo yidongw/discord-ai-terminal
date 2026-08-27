@@ -649,7 +649,14 @@ export class DiscordBot {
   private async fetchThreadUserMessages(thread: ThreadChannel): Promise<Message[]> {
     const fetched = await thread.messages.fetch({ limit: 100 });
     return [...fetched.values()]
-      .filter((m) => !m.author.bot && this.allowedUserIds.includes(m.author.id))
+      .filter(
+        (m) =>
+          !m.author.bot &&
+          this.allowedUserIds.includes(m.author.id) &&
+          m.mentions.users.size === 0 &&
+          m.mentions.roles.size === 0 &&
+          !m.mentions.everyone,
+      )
       .sort((a, b) => (a.id < b.id ? -1 : 1));
   }
 
@@ -1628,7 +1635,14 @@ export class DiscordBot {
     });
 
     const ordered = [...fetched.values()]
-      .filter((m) => !m.author.bot && this.allowedUserIds.includes(m.author.id))
+      .filter(
+        (m) =>
+          !m.author.bot &&
+          this.allowedUserIds.includes(m.author.id) &&
+          m.mentions.users.size === 0 &&
+          m.mentions.roles.size === 0 &&
+          !m.mentions.everyone,
+      )
       .sort((a, b) => (a.id < b.id ? -1 : 1));
 
     if (ordered.length === 0) return;
