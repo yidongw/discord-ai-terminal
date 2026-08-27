@@ -1628,7 +1628,14 @@ export class DiscordBot {
     });
 
     const ordered = [...fetched.values()]
-      .filter((m) => !m.author.bot && this.allowedUserIds.includes(m.author.id))
+      .filter(
+        (m) =>
+          !m.author.bot &&
+          this.allowedUserIds.includes(m.author.id) &&
+          m.mentions.users.size === 0 &&
+          m.mentions.roles.size === 0 &&
+          !m.mentions.everyone,
+      )
       .sort((a, b) => (a.id < b.id ? -1 : 1));
 
     if (ordered.length === 0) return;
