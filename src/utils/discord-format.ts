@@ -3,6 +3,18 @@
  * Discord embeds don't support tables or preserve ASCII art well, so we convert them to code blocks.
  */
 
+/** Discord embed description limit is 4096; stay under for safety margin. */
+export const MAX_EMBED_DESCRIPTION = 4000;
+
+/** Discord embed title limit is 256. */
+export const MAX_EMBED_TITLE = 256;
+
+/** Truncate text so EmbedBuilder.setDescription/setTitle won't throw validation errors. */
+export function truncateForEmbed(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, Math.max(0, max - 1)) + "…";
+}
+
 /**
  * Detects if a line is part of a Markdown table.
  * Tables have | at the start and end of lines.

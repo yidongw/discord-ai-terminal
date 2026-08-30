@@ -4,7 +4,12 @@ import * as os from "os";
 import * as path from "path";
 import { createGhWrapper } from "../github/gh-wrapper.js";
 import { AttachmentBuilder, EmbedBuilder, type Client } from "discord.js";
-import { formatForDiscord } from "../utils/discord-format.js";
+import {
+  formatForDiscord,
+  MAX_EMBED_DESCRIPTION,
+  MAX_EMBED_TITLE,
+  truncateForEmbed,
+} from "../utils/discord-format.js";
 import { getAgent, type AgentEvent, type AgentRunner } from "../agents/index.js";
 import { DatabaseManager, toolIsHidden, type ActiveRun } from "../db/database.js";
 import { mainRepoOf, removeWorktree, type RemoveResult } from "../utils/path-resolver.js";
@@ -56,7 +61,7 @@ export type CompletionHandler = (action: CompletionAction, text: string) => Prom
 // PRs created during the session when the GitHub webhook was missed.
 export type SessionFinalizeCallback = (threadId: string, workDir: string, branch: string) => Promise<void>;
 
-const MAX_EMBED = 4000;
+const MAX_EMBED = MAX_EMBED_DESCRIPTION;
 // Grace period after SIGTERM before we escalate to SIGKILL. Must be long enough
 // for Claude Code to finish writing its session state file after SIGTERM — too
 // short and the write is truncated, causing error_during_execution on the next
@@ -1708,7 +1713,10 @@ function previewQueuedText(text: string, max = 200): string {
 }
 
 function embed(title: string, description: string, color: number) {
-  return new EmbedBuilder().setTitle(title).setDescription(description).setColor(color);
+  return new EmbedBuilder()
+    .setTitle(truncateForEmbed(title, MAX_EMBED_TITLE))
+    .setDescription(truncateForEmbed(description, MAX_EMBED))
+    .setColor(color);
 }
 
 function greetingEmbedDesc(cwd: string, model: string, usage?: ClaudeUsage): string {
