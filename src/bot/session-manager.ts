@@ -155,6 +155,9 @@ interface ActiveSession {
   // retry --resume with whatever session ID the init event wrote to the DB
   // (Claude Code may have created a new valid session ID before failing).
   pendingResumeRetry?: boolean;
+  // Set when an OAuth auth failure is detected. finalizeRun schedules a 60s
+  // delayed retry to give the credential refresh cron time to sync fresh tokens.
+  pendingOAuthRetry?: boolean;
 }
 
 export class SessionManager {
@@ -866,6 +869,35 @@ export class SessionManager {
         );
         await session.outbox.drain();
       }
+    } else if (session.pendingOAuthRetry && session.agentKey === "cc") {
+      // Thread is released immediately; retry fires after 60 s once the credential
+      // refresh cron has had a chance to sync fresh tokens from xinjuan's Keychain.
+      const retryThreadId = threadId;
+      const retrySession = session;
+      setTimeout(async () => {
+        if (this.active.has(retryThreadId)) return; // user started a new run, skip
+        try {
+          await this.runAgent(
+            retryThreadId,
+            retrySession.channelId,
+            retrySession.thread,
+            retrySession.agentKey,
+            retrySession.workDir,
+            retrySession.prompt,
+            retrySession.discordContext,
+            { freshSession: true }
+          );
+        } catch (err) {
+          console.error(`[oauth-retry] retry failed for ${retryThreadId}:`, err);
+          retrySession.thread.send({
+            embeds: [embed(
+              "❌ Auth retry failed",
+              "Credentials could not be refreshed. Ask an admin to run the credential refresh script.",
+              0xff0000
+            )],
+          }).catch(() => {});
+        }
+      }, 60_000);
     } else {
       // Only dispatch if this is still the active session — an interrupt may have
       // already started a newer run, in which case we must not steal the thread.
@@ -1328,6 +1360,22 @@ export class SessionManager {
           );
         }
         this.stopProcess(session, "error-during-execution");
+        return;
+      }
+      if (!session.pendingOAuthRetry && /OAuth session expired|Failed to authenticate/i.test(event.message)) {
+        session.pendingOAuthRetry = true;
+        session.done = true;
+        console.log(`[session] ${threadId}: OAuth auth failure — scheduling retry in 60s`);
+        outbox.enqueue(() =>
+          thread.send({
+            embeds: [embed(
+              "🔑 Credentials expired",
+              "OAuth session expired. Retrying in 60 s after credential refresh…",
+              0xffa500
+            )],
+          })
+        );
+        this.stopProcess(session, "oauth-error");
         return;
       }
       session.done = true;
