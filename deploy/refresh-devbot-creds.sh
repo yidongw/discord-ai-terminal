@@ -117,14 +117,26 @@ def write_local(oauth):
     os.chmod(LOCAL, 0o600)
 
 def write_devbot(oauth):
+    # Write the payload to a temp file we own, then sudo-install it. The payload
+    # must NEVER be piped through sudo's stdin: `sudo -S` only consumes stdin when
+    # its auth timestamp is uncached, so a cached sudo would leave the password
+    # (and payload) on stdin for `tee` to write verbatim into the file, corrupting
+    # it with a leading "<password>\n". Only the password goes to sudo's stdin here;
+    # cp/chown/chmod don't read stdin, so a cached sudo simply discards it.
     payload = json.dumps({"claudeAiOauth": oauth}, indent=2) + "\n"
-    tmp = DEST + ".tmp"
-    r = subprocess.run(["sudo", "-S", "tee", tmp], input=(PW + payload).encode(), capture_output=True)
-    if r.returncode != 0:
-        raise RuntimeError("devbot tee failed: " + r.stderr.decode())
-    subprocess.run(["sudo", "-S", "/usr/sbin/chown", "devbot:staff", tmp], input=PW.encode(), capture_output=True)
-    subprocess.run(["sudo", "-S", "chmod", "600", tmp], input=PW.encode(), capture_output=True)
-    subprocess.run(["sudo", "-S", "mv", "-f", tmp, DEST], input=PW.encode(), capture_output=True)
+    import tempfile
+    fd, src = tempfile.mkstemp(prefix="devbot-creds-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+        os.chmod(src, 0o644)
+        r = subprocess.run(["sudo", "-S", "cp", "-f", src, DEST], input=PW.encode(), capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError("devbot cp failed: " + r.stderr.decode())
+        subprocess.run(["sudo", "-S", "/usr/sbin/chown", "devbot:staff", DEST], input=PW.encode(), capture_output=True)
+        subprocess.run(["sudo", "-S", "chmod", "600", DEST], input=PW.encode(), capture_output=True)
+    finally:
+        os.unlink(src)
 
 kc = read_keychain()
 db = read_devbot()
