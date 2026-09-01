@@ -45,6 +45,7 @@ vi.mock("../../src/bot/run-tailer.js", () => ({
 }));
 
 import { SessionManager } from "../../src/bot/session-manager.js";
+import { isPidAlive } from "../../src/bot/run-tailer.js";
 
 describe("SessionManager run timeout", () => {
   beforeEach(() => {
@@ -105,5 +106,28 @@ describe("SessionManager run timeout", () => {
 
     vi.advanceTimersByTime(8000 * 3);
     expect((thread.sendTyping as ReturnType<typeof vi.fn>).mock.calls.length).toBe(typingCallsBefore);
+  });
+
+  it("ignores stale active-run rows whose pid is no longer alive", () => {
+    const manager = new SessionManager();
+    const db = manager.getDb() as any;
+    db.hasActiveRun.mockReturnValue(true);
+    db.listActiveRuns.mockReturnValue([
+      {
+        runId: "run-1",
+        threadId: "thread-1",
+        channelId: "channel-1",
+        agent: "cc",
+        workDir: "/tmp/work",
+        pid: 4242,
+        logPath: "/tmp/run.jsonl",
+        stdoutOffset: 0,
+        startedAt: Date.now(),
+      },
+    ]);
+    vi.mocked(isPidAlive).mockReturnValue(false);
+
+    expect(manager.hasActiveProcess("thread-1")).toBe(false);
+    expect(db.deleteActiveRun).toHaveBeenCalledWith("run-1");
   });
 });

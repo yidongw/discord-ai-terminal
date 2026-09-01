@@ -409,7 +409,19 @@ export class SessionManager {
   // or scheduler tick can't double-spawn onto a thread that already has a live
   // detached run.
   hasActiveProcess(threadId: string) {
-    return this.active.has(threadId) || this.db.hasActiveRun(threadId);
+    if (this.active.has(threadId)) return true;
+
+    let live = false;
+    for (const run of this.db.listActiveRuns()) {
+      if (run.threadId !== threadId) continue;
+      if (isPidAlive(run.pid)) {
+        live = true;
+        continue;
+      }
+      console.warn(`[session] dropping stale active run ${run.runId} for ${threadId} (pid ${run.pid} is dead)`);
+      this.db.deleteActiveRun(run.runId);
+    }
+    return live;
   }
 
   // Delete leftover .jsonl logs whose run already finalized (but whose unlink
