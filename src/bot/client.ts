@@ -39,6 +39,7 @@ import {
   cleanupOldAttachments,
   type DownloadedAttachment,
 } from "../utils/attachments.js";
+import { resolvePendingInteractionContext, type PendingInteractionRecord } from "./pending-interaction.js";
 import type { MCPPermissionServer } from "../mcp/server.js";
 import type { GitHubHandler } from "../github/handler.js";
 import type { ThreadSession } from "../db/database.js";
@@ -48,7 +49,7 @@ import { evaluateThreadWorktreeClose } from "../utils/merged-worktree-close.js";
 import { handoffBotNameFromAuthor } from "./handoff.js";
 import type { ParsedInvocation } from "./parser.js";
 
-interface PendingInteraction extends QueuedMessage {}
+interface PendingInteraction extends PendingInteractionRecord, QueuedMessage {}
 
 export class DiscordBot {
   public client: Client;
@@ -1439,7 +1440,7 @@ export class DiscordBot {
 
   private async handleMsgSendNow(interaction: ButtonInteraction): Promise<void> {
     const msgId = interaction.customId.replace("msg_send_now_", "");
-    const pending = this.pendingInteractions.get(msgId);
+    const pending = await this.resolvePendingInteraction(interaction, msgId);
     if (!pending) {
       await interaction.update({
         embeds: [new EmbedBuilder().setDescription("⚠️ Message context expired.").setColor(0x99aab5)],
@@ -1479,7 +1480,7 @@ export class DiscordBot {
 
   private async handleMsgQueue(interaction: ButtonInteraction): Promise<void> {
     const msgId = interaction.customId.replace("msg_queue_", "");
-    const pending = this.pendingInteractions.get(msgId);
+    const pending = await this.resolvePendingInteraction(interaction, msgId);
     if (!pending) {
       await interaction.update({
         embeds: [new EmbedBuilder().setDescription("⚠️ Message context expired.").setColor(0x99aab5)],
@@ -1508,7 +1509,7 @@ export class DiscordBot {
 
   private async handleMsgUseOnResume(interaction: ButtonInteraction): Promise<void> {
     const msgId = interaction.customId.replace("msg_use_on_resume_", "");
-    const pending = this.pendingInteractions.get(msgId);
+    const pending = await this.resolvePendingInteraction(interaction, msgId);
     if (!pending) {
       await interaction.update({
         embeds: [new EmbedBuilder().setDescription("⚠️ Message context expired.").setColor(0x99aab5)],
@@ -1550,7 +1551,7 @@ export class DiscordBot {
 
   private async handleMsgInterrupt(interaction: ButtonInteraction): Promise<void> {
     const msgId = interaction.customId.replace("msg_interrupt_", "");
-    const pending = this.pendingInteractions.get(msgId);
+    const pending = await this.resolvePendingInteraction(interaction, msgId);
     if (!pending) {
       await interaction.update({
         embeds: [new EmbedBuilder().setDescription("⚠️ Message context expired.").setColor(0x99aab5)],
@@ -1595,6 +1596,31 @@ export class DiscordBot {
       embeds: [new EmbedBuilder().setDescription("❌ Cancelled.").setColor(0x99aab5)],
       components: [],
     });
+  }
+
+  private async resolvePendingInteraction(
+    interaction: ButtonInteraction,
+    msgId: string
+  ): Promise<PendingInteraction | null> {
+    const existing = this.pendingInteractions.get(msgId);
+    if (existing) return existing;
+
+    const thread = interaction.channel;
+    if (!thread?.isThread?.()) return null;
+    const session = this.sessionManager.getDb().getThreadSession(thread.id);
+    const recovered = await resolvePendingInteractionContext({
+      msgId,
+      thread,
+      session: session ? { agent: session.agent, workDir: session.workDir, channelId: session.channelId } : null,
+      existing: undefined,
+      downloadMsgAttachments: (msg) => this.downloadMsgAttachments(msg),
+      fetchReplyContext: (msg) => this.fetchReplyContext(msg),
+    });
+    if (!recovered) return null;
+
+    this.pendingInteractions.set(msgId, recovered);
+    console.log(`[interaction] recovered context for ${msgId} in thread ${thread.id}`);
+    return recovered;
   }
 
   /**
