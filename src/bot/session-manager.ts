@@ -75,6 +75,71 @@ const TYPING_REFRESH_MS = 8000;
 // we deliberately leave running) are re-attached cleanly on the next boot.
 const SHUTDOWN_DRAIN_MS = 4000;
 
+// --- Credential self-heal (OAuth) ------------------------------------------
+// Some deployments (e.g. a locked-down "devbot" user that shares a Claude
+// account) cannot read the Keychain and instead receive OAuth tokens via a
+// file that an external, higher-privilege job refreshes. When Claude Code's own
+// refresh fails it clears that file, so a blind retry just re-reads the dead
+// file. To self-heal we (1) touch a trigger file that the external refresh job
+// watches, then (2) poll our credentials file until a genuinely fresh token
+// appears before retrying — instead of waiting a fixed interval and hoping.
+//
+// CREDS_REFRESH_TRIGGER_FILE — path the external refresher watches (WatchPaths).
+//   Unset ⇒ self-heal is disabled and we fall back to the legacy fixed delay.
+// CLAUDE_CONFIG_DIR — Claude Code's config dir (defaults to ~/.claude).
+const CREDS_TRIGGER_FILE = process.env.CREDS_REFRESH_TRIGGER_FILE;
+const CREDS_FILE = path.join(
+  process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"),
+  ".credentials.json"
+);
+// Treat tokens expiring within this window as not-yet-fresh.
+const CREDS_FRESH_BUFFER_MS = 60_000;
+// How long to wait for the external refresher to produce a fresh token.
+const CREDS_HEAL_TIMEOUT_MS = 90_000;
+const CREDS_HEAL_POLL_MS = 2000;
+// Legacy fallback delay when no trigger file is configured.
+const OAUTH_RETRY_LEGACY_DELAY_MS = 60_000;
+
+function readCredsToken(): { token: string; expiresAt: number } | null {
+  try {
+    const oauth = JSON.parse(fs.readFileSync(CREDS_FILE, "utf8"))?.claudeAiOauth ?? {};
+    if (!oauth.accessToken) return null;
+    return { token: oauth.accessToken as string, expiresAt: (oauth.expiresAt as number) ?? 0 };
+  } catch {
+    return null;
+  }
+}
+
+function credsAreFresh(): boolean {
+  const c = readCredsToken();
+  return !!c && c.expiresAt > Date.now() + CREDS_FRESH_BUFFER_MS;
+}
+
+// Ask the external refresher to sync a fresh token now by touching the trigger
+// file (its WatchPaths fires on the change). No-op when unconfigured.
+function requestCredentialRefresh(): void {
+  if (!CREDS_TRIGGER_FILE) return;
+  try {
+    fs.writeFileSync(CREDS_TRIGGER_FILE, `${Date.now()}\n`);
+  } catch (err) {
+    console.error(`[oauth-heal] failed to touch trigger ${CREDS_TRIGGER_FILE}:`, err);
+  }
+}
+
+// Poll the credentials file until a fresh token appears (ideally one that
+// differs from the failing token), or the timeout elapses.
+async function waitForFreshCreds(timeoutMs: number, prevToken: string | null): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const c = readCredsToken();
+    if (c && c.expiresAt > Date.now() + CREDS_FRESH_BUFFER_MS && c.token !== prevToken) {
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, CREDS_HEAL_POLL_MS));
+  }
+  return credsAreFresh();
+}
+
 interface ActiveSession {
   // Identity of the detached run this session is streaming. The run survives a
   // bot restart; `runId`/`pid`/`logPath` are what we persist and re-attach to.
@@ -870,12 +935,34 @@ export class SessionManager {
         await session.outbox.drain();
       }
     } else if (session.pendingOAuthRetry && session.agentKey === "cc") {
-      // Thread is released immediately; retry fires after 60 s once the credential
-      // refresh cron has had a chance to sync fresh tokens from xinjuan's Keychain.
+      // Thread is released immediately. Actively self-heal the credentials: ask
+      // the external refresher to sync a fresh token now, then retry as soon as
+      // one lands (rather than waiting a fixed interval and hoping the cron ran).
       const retryThreadId = threadId;
       const retrySession = session;
-      setTimeout(async () => {
+      const prevToken = readCredsToken()?.token ?? null;
+      void (async () => {
+        let healed: boolean;
+        if (CREDS_TRIGGER_FILE) {
+          requestCredentialRefresh();
+          healed = await waitForFreshCreds(CREDS_HEAL_TIMEOUT_MS, prevToken);
+        } else {
+          // No trigger configured: preserve the legacy "wait and hope" behaviour.
+          await new Promise((r) => setTimeout(r, OAUTH_RETRY_LEGACY_DELAY_MS));
+          healed = credsAreFresh();
+        }
         if (this.active.has(retryThreadId)) return; // user started a new run, skip
+        if (!healed) {
+          console.error(`[oauth-heal] no fresh credentials for ${retryThreadId} after ${CREDS_HEAL_TIMEOUT_MS}ms`);
+          retrySession.thread.send({
+            embeds: [embed(
+              "❌ Auth retry failed",
+              "Credentials could not be refreshed automatically. Ask an admin to check the credential refresh service.",
+              0xff0000
+            )],
+          }).catch(() => {});
+          return;
+        }
         try {
           await this.runAgent(
             retryThreadId,
@@ -897,7 +984,7 @@ export class SessionManager {
             )],
           }).catch(() => {});
         }
-      }, 60_000);
+      })();
     } else {
       // Only dispatch if this is still the active session — an interrupt may have
       // already started a newer run, in which case we must not steal the thread.
@@ -1370,7 +1457,7 @@ export class SessionManager {
           thread.send({
             embeds: [embed(
               "🔑 Credentials expired",
-              "OAuth session expired. Retrying in 60 s after credential refresh…",
+              "OAuth session expired. Refreshing credentials and retrying automatically…",
               0xffa500
             )],
           })
