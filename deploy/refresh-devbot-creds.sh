@@ -122,9 +122,9 @@ def write_devbot(oauth):
     r = subprocess.run(["sudo", "-S", "tee", tmp], input=(PW + payload).encode(), capture_output=True)
     if r.returncode != 0:
         raise RuntimeError("devbot tee failed: " + r.stderr.decode())
-    subprocess.run(["sudo", "-S", "/usr/sbin/chown", "devbot:staff", tmp], input=PW, capture_output=True)
-    subprocess.run(["sudo", "-S", "chmod", "600", tmp], input=PW, capture_output=True)
-    subprocess.run(["sudo", "-S", "mv", "-f", tmp, DEST], input=PW, capture_output=True)
+    subprocess.run(["sudo", "-S", "/usr/sbin/chown", "devbot:staff", tmp], input=PW.encode(), capture_output=True)
+    subprocess.run(["sudo", "-S", "chmod", "600", tmp], input=PW.encode(), capture_output=True)
+    subprocess.run(["sudo", "-S", "mv", "-f", tmp, DEST], input=PW.encode(), capture_output=True)
 
 kc = read_keychain()
 db = read_devbot()
