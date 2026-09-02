@@ -33,6 +33,8 @@
 	<dict>
 		<key>PATH</key>
 		<string>/opt/homebrew/bin:/Users/xinjuan/.bun/bin:/Users/xinjuan/.local/bin:/Users/xinjuan/.local/share/fnm/node-versions/v24.12.0/installation/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>CREDS_REFRESH_TRIGGER_FILE</key>
+		<string>/Users/Shared/devbot-creds-refresh.trigger</string>
 	</dict>
 
 	<key>StandardOutPath</key>
