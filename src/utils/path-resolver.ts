@@ -68,8 +68,53 @@ export function resolveBranchWorkDir(
     return null;
   }
 
+  cloneNodeModules(repoPath, wtPath);
   console.log(`[path-resolver] CI fix thread ${threadId} → worktree ${wtPath} (branch ${branch})`);
   return wtPath;
+}
+
+function safeReaddir(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+// node_modules dirs worth cloning: the repo root plus one workspace level deep
+// (e.g. apps/mes/node_modules), relative to repoPath.
+function nodeModulesDirs(repoPath: string): string[] {
+  const rels = ["node_modules"];
+  for (const d of safeReaddir(repoPath)) {
+    if (d === "node_modules" || d.startsWith(".")) continue;
+    const child = path.join(repoPath, d);
+    for (const sub of safeReaddir(child)) {
+      if (sub === "node_modules" || sub.startsWith(".")) continue;
+      rels.push(path.join(d, sub, "node_modules"));
+    }
+  }
+  return rels.filter((rel) => fs.existsSync(path.join(repoPath, rel)));
+}
+
+// Clone the source repo's node_modules into a fresh worktree via APFS
+// copy-on-write clones (cp -c): near-zero extra disk, and the worktree is
+// immediately runnable — a later install only patches lockfile drift instead
+// of materializing a full multi-GB copy.
+export function cloneNodeModules(repoPath: string, wtPath: string): void {
+  if (process.platform !== "darwin") return;
+  for (const rel of nodeModulesDirs(repoPath)) {
+    const src = path.join(repoPath, rel);
+    const dest = path.join(wtPath, rel);
+    if (fs.existsSync(dest) || !fs.existsSync(path.dirname(dest))) continue;
+    const result = spawnSync("cp", ["-Rc", src, dest], { encoding: "utf8" });
+    if (result.status !== 0) {
+      // cp -c can't clone across filesystems; drop the partial copy and let
+      // the agent install normally.
+      fs.rmSync(dest, { recursive: true, force: true });
+      console.warn(`[path-resolver] node_modules clone failed for ${dest}: ${result.stderr}`);
+      return;
+    }
+  }
 }
 
 // The repo's default branch. Prefer origin/HEAD (e.g. "dev" for carbon), fall
@@ -180,6 +225,7 @@ export function resolveThreadWorkDir(
     }
   }
 
+  cloneNodeModules(repoPath, wtPath);
   console.log(`[path-resolver] thread ${threadId} → worktree ${wtPath} (branch ${branch}, base ${base})`);
   return { workDir: wtPath, repo: channelName, worktree: true, branch };
 }
