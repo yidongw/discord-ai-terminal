@@ -232,6 +232,33 @@ describe("RunTailer", () => {
     expect(finalized).toBe(true);
     tailer.stop();
   });
+
+  it("re-fires onStall every stallTimeoutMs while the log stays silent", async () => {
+    fs.writeFileSync(logPath, "stuck\n");
+
+    let stallCount = 0;
+    let alive = true;
+    const tailer = new RunTailer({
+      logPath,
+      startOffset: 0,
+      pollIntervalMs: 10,
+      stallTimeoutMs: 80,
+      isAlive: () => alive,
+      onLine: () => {},
+      onOffset: () => {},
+      onStall: () => { stallCount++; },
+      onFinalize: () => {},
+    });
+    tailer.start();
+    await wait(100);
+    expect(stallCount).toBe(1);
+
+    await wait(90);
+    expect(stallCount).toBe(2);
+
+    alive = false;
+    tailer.stop();
+  });
 });
 
 describe("isPidAlive", () => {
