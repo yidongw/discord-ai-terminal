@@ -892,12 +892,19 @@ export class SessionManager {
           retrySession.thread.send({
             embeds: [embed(
               "❌ Auth retry failed",
-              "Credentials could not be refreshed automatically. Ask an admin to check the credential refresh service.",
+              "Credentials could not be refreshed automatically. Ask an admin to check the credential refresh service (`com.refresh-devbot-creds`).",
               0xff0000
             )],
           }).catch(() => {});
           return;
         }
+        retrySession.thread.send({
+          embeds: [embed(
+            "✅ Credentials refreshed",
+            "Fresh token synced — retrying your request now…",
+            0x00ff00
+          )],
+        }).catch(() => {});
         try {
           await this.runAgent(
             retryThreadId,
@@ -1394,7 +1401,7 @@ export class SessionManager {
           thread.send({
             embeds: [embed(
               "🔑 Credentials expired",
-              "OAuth session expired. Refreshing credentials and retrying automatically (usually within a few seconds)…",
+              "OAuth session expired. Triggering credential sync and retrying automatically (usually within a few seconds)…",
               0xffa500
             )],
           })
