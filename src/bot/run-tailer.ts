@@ -21,7 +21,7 @@ export interface RunTailerOptions {
   // Log-byte inactivity threshold before finalizing a still-alive process.
   stallTimeoutMs?: number;
   // Called when the stall timeout fires (process alive but no output). Fires
-  // before onFinalize so the caller can post a Discord notice.
+  // on first stall and again every stallTimeoutMs while output stays silent.
   onStall?: () => void;
   // Is the agent process still running? Fresh runs check the ChildProcess; a
   // re-attached run checks the bare PID. When this returns false AND the file is
@@ -56,9 +56,10 @@ export class RunTailer {
   private finalizing = false;
   private stopped = false;
   private lastLogGrowthAt: number;
-  // Set when the stall threshold is crossed; cleared when output resumes.
-  // Prevents repeat onStall() calls while the process is silently running.
-  private stalledNotified = false;
+  // When onStall last ran. 0 = not in a stall episode. Reset when output resumes.
+  // While stalled, onStall re-fires every stallTimeoutMs so the caller can
+  // re-check state (e.g. tool finished but log never grew).
+  private lastStallHandledAt = 0;
 
   constructor(private opts: RunTailerOptions) {
     this.readOffset = opts.startOffset;
@@ -124,18 +125,22 @@ export class RunTailer {
       return;
     }
     const stallMs = this.opts.stallTimeoutMs ?? LOG_STALL_TIMEOUT_MS;
-    if (this.opts.isAlive() && this.atEof() && Date.now() - this.lastLogGrowthAt >= stallMs) {
-      if (!this.stalledNotified) {
+    const silentMs = Date.now() - this.lastLogGrowthAt;
+    if (this.opts.isAlive() && this.atEof() && silentMs >= stallMs) {
+      const sinceLastHandle = this.lastStallHandledAt === 0
+        ? silentMs
+        : Date.now() - this.lastStallHandledAt;
+      if (sinceLastHandle >= stallMs) {
         console.warn(`[tailer] log stall on ${this.opts.logPath} — notifying, keeping process alive`);
-        this.stalledNotified = true;
+        this.lastStallHandledAt = Date.now();
         this.opts.onStall?.();
       }
       // Do NOT finalize — the process is still running (e.g. waiting on a long
       // bash command). Killing it mid-tool-call corrupts the session state and
       // causes error_during_execution on the next resume. The process will
       // finalize naturally when it exits.
-    } else if (this.stalledNotified) {
-      this.stalledNotified = false;
+    } else if (this.lastStallHandledAt !== 0) {
+      this.lastStallHandledAt = 0;
     }
   }
 

@@ -24,12 +24,13 @@ function fail(name: string, detail: string) {
   console.error(`  ✗ ${name}: ${detail}`);
 }
 
-async function testStallFinalizesHungRun() {
+async function testStallNotifiesWithoutFinalizing() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verify-stall-"));
   const logPath = path.join(dir, "run.jsonl");
   fs.writeFileSync(logPath, '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n');
 
   let finalized = false;
+  let stallNotified = false;
   let alive = true;
   const tailer = new RunTailer({
     logPath,
@@ -39,22 +40,32 @@ async function testStallFinalizesHungRun() {
     isAlive: () => alive,
     onLine: () => {},
     onOffset: () => {},
+    onStall: () => { stallNotified = true; },
     onFinalize: () => { finalized = true; },
   });
 
   tailer.start();
   await wait(50);
   if (finalized) {
-    fail("stall finalizes hung run", "finalized too early");
+    fail("stall notifies without finalizing", "finalized too early");
     return;
   }
   await wait(120);
-  if (!finalized) {
-    fail("stall finalizes hung run", "never finalized");
+  if (!stallNotified) {
+    fail("stall notifies without finalizing", "onStall never fired");
     return;
   }
-  ok("stall finalizes hung run while process still alive");
+  if (finalized) {
+    fail("stall notifies without finalizing", "finalized while process still alive");
+    return;
+  }
+  ok("stall notifies without finalizing while process still alive");
   alive = false;
+  await wait(50);
+  if (!finalized) {
+    fail("stall notifies without finalizing", "never finalized after process exit");
+    return;
+  }
   tailer.stop();
   fs.rmSync(dir, { recursive: true, force: true });
 }
@@ -98,7 +109,7 @@ async function main() {
   console.log("verify-typing-zombie-fix\n");
   console.log(`LOG_STALL_TIMEOUT_MS = ${LOG_STALL_TIMEOUT_MS} (${LOG_STALL_TIMEOUT_MS / 60000} min)\n`);
 
-  await testStallFinalizesHungRun();
+  await testStallNotifiesWithoutFinalizing();
   await testTypingStopsOnAbandon();
   await testBotRepoWorktreeDetection();
 

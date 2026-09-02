@@ -1,6 +1,6 @@
 /**
  * Integration-style tests for the zombie typing indicator fix:
- * - log stall finalizes hung runs while the process is still alive
+ * - log stall notifies without finalizing while a long tool call runs
  * - abandonThread clears typing when a worker takes over
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -39,7 +39,7 @@ describe("typing zombie fix integration", () => {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     });
 
-    it("finalizes a run that delivered output then stopped writing", async () => {
+    it("notifies on stall but keeps the process alive until it exits", async () => {
       // Reproduces the first session: two assistant lines, then silence.
       fs.writeFileSync(
         logPath,
@@ -48,6 +48,7 @@ describe("typing zombie fix integration", () => {
 
       const lines: string[] = [];
       let finalized = false;
+      let stallNotified = false;
       let alive = true;
       const tailer = new RunTailer({
         logPath,
@@ -57,6 +58,7 @@ describe("typing zombie fix integration", () => {
         isAlive: () => alive,
         onLine: (l) => lines.push(l),
         onOffset: () => {},
+        onStall: () => { stallNotified = true; },
         onFinalize: () => { finalized = true; },
       });
 
@@ -66,9 +68,12 @@ describe("typing zombie fix integration", () => {
       expect(finalized).toBe(false);
 
       await wait(80);
-      expect(finalized).toBe(true);
+      expect(stallNotified).toBe(true);
+      expect(finalized).toBe(false);
 
       alive = false;
+      await wait(40);
+      expect(finalized).toBe(true);
       tailer.stop();
     });
   });

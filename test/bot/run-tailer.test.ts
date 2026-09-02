@@ -200,10 +200,11 @@ describe("RunTailer", () => {
     expect(finalized).toBe(true);
   });
 
-  it("finalizes when the process stays alive but the log stops growing", async () => {
+  it("notifies on stall but does not finalize while the process stays alive", async () => {
     fs.writeFileSync(logPath, "stuck\n");
 
     let finalized = false;
+    let stallNotified = false;
     let alive = true;
     const tailer = new RunTailer({
       logPath,
@@ -213,15 +214,47 @@ describe("RunTailer", () => {
       isAlive: () => alive,
       onLine: () => {},
       onOffset: () => {},
+      onStall: () => { stallNotified = true; },
       onFinalize: () => { finalized = true; },
     });
     tailer.start();
     await wait(40);
     expect(finalized).toBe(false);
+    expect(stallNotified).toBe(false);
 
     await wait(100);
-    expect(finalized).toBe(true);
+    expect(stallNotified).toBe(true);
+    expect(finalized).toBe(false);
     expect(alive).toBe(true);
+
+    alive = false;
+    await wait(40);
+    expect(finalized).toBe(true);
+    tailer.stop();
+  });
+
+  it("re-fires onStall every stallTimeoutMs while the log stays silent", async () => {
+    fs.writeFileSync(logPath, "stuck\n");
+
+    let stallCount = 0;
+    let alive = true;
+    const tailer = new RunTailer({
+      logPath,
+      startOffset: 0,
+      pollIntervalMs: 10,
+      stallTimeoutMs: 80,
+      isAlive: () => alive,
+      onLine: () => {},
+      onOffset: () => {},
+      onStall: () => { stallCount++; },
+      onFinalize: () => {},
+    });
+    tailer.start();
+    await wait(100);
+    expect(stallCount).toBe(1);
+
+    await wait(90);
+    expect(stallCount).toBe(2);
 
     alive = false;
     tailer.stop();
