@@ -22,6 +22,7 @@ import {
   registerSessionLimitWakeup,
   sessionLimitTaskId,
 } from "./session-limit-wakeup.js";
+import { MAX_STALL_WAKEUPS, STALL_CONTINUATION_PROMPT } from "./stall-wakeup.js";
 import {
   extractGeneratedImagePath,
   extractLocalImageReferences,
@@ -165,6 +166,8 @@ interface ActiveSession {
   // Set when an OAuth auth failure is detected. finalizeRun touches the external
   // credential refresher trigger and retries as soon as a fresh token lands.
   pendingOAuthRetry?: boolean;
+  // Set when the log stalls with no tool in flight — finalizeRun resumes the agent.
+  pendingStallWakeup?: boolean;
 }
 
 export class SessionManager {
@@ -189,6 +192,8 @@ export class SessionManager {
   // Tracks how many automatic --resume retries have been attempted per thread
   // after error_during_execution. Cleared on a successful run; capped at 1.
   private resumeRetryCount = new Map<string, number>();
+  // Stall wakeups per thread for the current user turn. Cleared on done.
+  private stallWakeupCount = new Map<string, number>();
   // Where detached runs write their append-only output logs (one per run). The
   // bot tails these and re-attaches to them after a restart.
   private runsDir: string;
@@ -319,6 +324,7 @@ export class SessionManager {
       usageLimitWaiting: this.getUsageLimitWait(threadId).waiting,
       pendingUsageLimitResume: !!session.pendingUsageLimitResume,
       pendingTurnLimitResume: !!session.pendingTurnLimitResume,
+      pendingStallWakeup: !!session.pendingStallWakeup,
       hasEnabledScheduledTasks: this.db.listScheduledTasks(threadId).some((t) => t.enabled),
     });
   }
@@ -751,22 +757,58 @@ export class SessionManager {
       onOffset: (offset) => {
         try { this.db.updateActiveRunOffset(session.runId, offset); } catch {}
       },
-      onStall: () => {
-        const stallMin = Math.round(LOG_STALL_TIMEOUT_MS / 60_000);
-        session.outbox.enqueue(() =>
-          session.thread.send({
-            embeds: [embed(
-              "⏱️ Still running…",
-              `${agent.label} has produced no output for ${stallMin} minutes but is still running (likely waiting on a long tool call). Use \`/stop\` to cancel.`,
-              0xffa500
-            )],
-          })
-        );
-      },
+      onStall: () => this.handleLogStall(threadId, session, agent),
       onFinalize: () => this.finalizeRun(threadId, session),
     });
     session.tailer = tailer;
     tailer.start();
+  }
+
+  // Log-byte stall: if a tool is still running, notify only; otherwise stop and resume.
+  private handleLogStall(threadId: string, session: ActiveSession, agent: AgentRunner): void {
+    if (session.stopping || session.finalized || session.done) return;
+
+    const stallMin = Math.round(LOG_STALL_TIMEOUT_MS / 60_000);
+    if (session.lastToolInFlight) {
+      session.outbox.enqueue(() =>
+        session.thread.send({
+          embeds: [embed(
+            "⏱️ Still running…",
+            `${agent.label} has produced no output for ${stallMin} minutes but is still running (likely waiting on a long tool call). Use \`/stop\` to cancel.`,
+            0xffa500
+          )],
+        })
+      );
+      return;
+    }
+
+    const retries = this.stallWakeupCount.get(threadId) ?? 0;
+    if (retries >= MAX_STALL_WAKEUPS) {
+      session.outbox.enqueue(() =>
+        session.thread.send({
+          embeds: [embed(
+            "⏱️ Stalled",
+            `${agent.label} has produced no output for ${stallMin} minutes with no tool running. Auto-resume limit reached — use \`/stop\` then send a message to continue.`,
+            0xff0000
+          )],
+        })
+      );
+      return;
+    }
+
+    this.stallWakeupCount.set(threadId, retries + 1);
+    session.pendingStallWakeup = true;
+    console.log(`[stall-wakeup] run=${session.runId} thread=${threadId} — stopping and resuming`);
+    session.outbox.enqueue(() =>
+      session.thread.send({
+        embeds: [embed(
+          "⏱️ Resuming…",
+          `${agent.label} stopped producing output for ${stallMin} minutes with no tool running. Waking the agent to continue…`,
+          0xffa500
+        )],
+      })
+    );
+    this.stopProcess(session, "stall-wakeup");
   }
 
   // Run the end-of-life logic once the agent process is gone and its output is
@@ -872,6 +914,33 @@ export class SessionManager {
         session.outbox.enqueue(() =>
           session.thread.send({
             embeds: [embed("❌ Resume failed", String((err as Error).message ?? err), 0xff0000)],
+          })
+        );
+        await session.outbox.drain();
+      }
+    } else if (session.pendingStallWakeup) {
+      session.pendingStallWakeup = false;
+      try {
+        const ctx = session.discordContext ?? {
+          channelId: threadId,
+          channelName: session.thread?.name ?? "thread",
+          userId: "",
+          messageId: "",
+        };
+        await this.runAgent(
+          threadId,
+          session.channelId,
+          session.thread,
+          session.agentKey,
+          session.workDir,
+          STALL_CONTINUATION_PROMPT,
+          ctx,
+        );
+      } catch (err) {
+        console.error(`[stall-wakeup] auto-resume failed for ${threadId}:`, err);
+        session.outbox.enqueue(() =>
+          session.thread.send({
+            embeds: [embed("❌ Stall resume failed", String((err as Error).message ?? err), 0xff0000)],
           })
         );
         await session.outbox.drain();
@@ -1297,6 +1366,7 @@ export class SessionManager {
 
     if (event.kind === "done") {
       this.resumeRetryCount.delete(threadId);
+      this.stallWakeupCount.delete(threadId);
       session.done = true;
       const parts: string[] = [];
       if (event.turns !== null) parts.push(`${event.turns} turns`);
