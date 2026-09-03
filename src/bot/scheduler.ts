@@ -1,6 +1,7 @@
 import type { Client } from "discord.js";
 import { ChannelType } from "discord.js";
 import { EmbedBuilder } from "discord.js";
+import * as fs from "fs";
 import type { SessionManager } from "./session-manager.js";
 import type { DatabaseManager, ScheduledTask } from "../db/database.js";
 
@@ -123,12 +124,19 @@ export class Scheduler {
       ],
     });
 
+    // Prefer the live session workDir over the path frozen into the task at
+    // schedule time — task.workDir goes stale when the worktree is recovered or
+    // was contaminated by another thread's path.
+    const session = this.db.getThreadSession(task.threadId);
+    const workDir =
+      session?.workDir && fs.existsSync(session.workDir) ? session.workDir : task.workDir;
+
     await this.sessionManager.runAgent(
       task.threadId,
       task.channelId,
       thread,
       task.agent,
-      task.workDir,
+      workDir,
       task.prompt,
       discordContext
     );

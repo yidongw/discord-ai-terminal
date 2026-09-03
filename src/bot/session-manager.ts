@@ -581,6 +581,14 @@ export class SessionManager {
     }
     const resumeSessionId =
       opts?.freshSession ? undefined : existing?.agent === agentKey ? existing.sessionId : undefined;
+
+    if (!fs.existsSync(workDir)) {
+      // Client/scheduler should have recovered the worktree already. If we still
+      // get here, bash's `cd` will fail with exit 1 and finalizeRun will surface
+      // the missing path in the Process Failed embed.
+      console.error(`[run] workDir missing before spawn: ${workDir}`);
+    }
+
     const command = agent.buildCommand(workDir, prompt, {
       sessionId: resumeSessionId,
       mode,
@@ -830,8 +838,15 @@ export class SessionManager {
     // code, so an intentional /stop or timeout won't trip this.
     const code = session.exitCode;
     if (code !== undefined && code !== null && code !== 0 && !session.done && !session.stopping) {
+      const hints: string[] = [`Exit code: ${code}`];
+      if (!fs.existsSync(session.workDir)) {
+        hints.push(`Working directory missing: \`${session.workDir}\``);
+      }
+      if (session.nonJsonOutput.length) {
+        hints.push(session.nonJsonOutput.slice(-10).join("\n"));
+      }
       session.outbox.enqueue(() =>
-        session.thread.send({ embeds: [embed("❌ Process Failed", `Exit code: ${code}`, 0xff0000)] })
+        session.thread.send({ embeds: [embed("❌ Process Failed", hints.join("\n\n"), 0xff0000)] })
       );
     }
 

@@ -27,7 +27,7 @@ import {
   firstLine,
 } from "./parser.js";
 import { listAgentKeys, getAgent } from "../agents/index.js";
-import { resolveThreadWorkDir, mainRepoOf, worktreeUncommittedFiles, worktreeUnpushedCommits } from "../utils/path-resolver.js";
+import { resolveThreadWorkDir, ensureThreadWorkDir, mainRepoOf, worktreeUncommittedFiles, worktreeUnpushedCommits } from "../utils/path-resolver.js";
 import { generateThreadTitle } from "../utils/title-summarizer.js";
 import { setThreadStatus, renamingClosedThreads, isClosedThreadName } from "../utils/thread-status.js";
 import {
@@ -122,6 +122,38 @@ export class DiscordBot {
       return false;
     }
     return true;
+  }
+
+  // If a worktree was removed while the thread stayed alive, recreate/reattach it
+  // and persist the usable path back to the session row. Returns the path to run in.
+  private recoverWorkDirIfMissing(
+    session: { threadId: string; workDir: string; branch?: string; isWorktree: boolean },
+    thread: ThreadChannel
+  ): string {
+    if (!session.isWorktree || fs.existsSync(session.workDir)) return session.workDir;
+
+    const channelName = thread.parent?.name;
+    if (!channelName) return session.workDir;
+
+    const resolved = ensureThreadWorkDir({
+      channelName,
+      threadId: session.threadId,
+      workDir: session.workDir,
+      branch: session.branch,
+      baseFolder: this.baseFolder,
+    });
+    if (!resolved) return session.workDir;
+
+    if (resolved.workDir !== session.workDir || resolved.branch !== session.branch) {
+      this.sessionManager.getDb().updateWorktree(
+        session.threadId,
+        resolved.workDir,
+        resolved.branch ?? null
+      );
+      session.workDir = resolved.workDir;
+      if (resolved.branch) session.branch = resolved.branch;
+    }
+    return resolved.workDir;
   }
 
   private ensureThreadSessionRecord(
@@ -1242,18 +1274,8 @@ export class DiscordBot {
     }
 
     // If the worktree was removed when the thread was archived, re-create it so
-    // the agent resumes in the same path with the same branch (or a fresh one off
-    // the default branch if the old branch was already merged and deleted).
-    if (session.isWorktree && !fs.existsSync(session.workDir)) {
-      const channelName = thread.parent?.name;
-      if (channelName) {
-        // Recover the original label slug from the stored workDir basename,
-        // e.g. "fix-auth-bug-a1b2c3" → "fix-auth-bug". resolveThreadWorkDir
-        // will re-derive the same branch/dir names from that slug + thread id.
-        const label = path.basename(session.workDir).replace(/-[a-z0-9]{6}$/i, "");
-        resolveThreadWorkDir(channelName, thread.id, label, this.baseFolder);
-      }
-    }
+    // the agent resumes in a usable path (preferring the stored branch).
+    const workDir = this.recoverWorkDirIfMissing(session, thread);
 
     await msg.react("👀").catch(() => {});
 
@@ -1277,7 +1299,7 @@ export class DiscordBot {
         session.channelId,
         thread,
         session.agent,
-        session.workDir,
+        workDir,
         fullPrompt,
         discordContext,
         modelOverride ? { modelOverride } : undefined
@@ -1695,13 +1717,7 @@ export class DiscordBot {
     }
 
     // Re-create the worktree path if it was cleaned up while the thread was archived.
-    if (session.isWorktree && !fs.existsSync(session.workDir)) {
-      const channelName = thread.parent?.name;
-      if (channelName) {
-        const label = path.basename(session.workDir).replace(/-[a-z0-9]{6}$/i, "");
-        resolveThreadWorkDir(channelName, thread.id, label, this.baseFolder);
-      }
-    }
+    const workDir = this.recoverWorkDirIfMissing(session, thread);
 
     for (const msg of ordered) {
       const attachments = await this.downloadMsgAttachments(msg);
@@ -1716,7 +1732,7 @@ export class DiscordBot {
           messageId: msg.id,
         },
         agentKey: session.agent,
-        workDir: session.workDir,
+        workDir,
         channelId: session.channelId,
         thread,
       });
@@ -1743,7 +1759,7 @@ export class DiscordBot {
           session.channelId,
           thread,
           session.agent,
-          session.workDir,
+          workDir,
           queued.prompt,
           queued.discordContext
         );

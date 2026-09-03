@@ -349,6 +349,20 @@ export class DatabaseManager {
       .run(modelOverride, threadId);
   }
 
+  // Update the worktree path (and optionally branch) after recovery recreates a
+  // missing directory. Keeps session_id / agent / etc. intact.
+  updateWorktree(threadId: string, workDir: string, branch?: string | null): void {
+    if (branch === undefined) {
+      this.db
+        .prepare(`UPDATE thread_sessions SET work_dir = ? WHERE thread_id = ?`)
+        .run(workDir, threadId);
+      return;
+    }
+    this.db
+      .prepare(`UPDATE thread_sessions SET work_dir = ?, branch = ? WHERE thread_id = ?`)
+      .run(workDir, branch, threadId);
+  }
+
   updateGoal(threadId: string, goal: string | null): void {
     this.db
       .prepare(`UPDATE thread_sessions SET goal = ? WHERE thread_id = ?`)
