@@ -73,6 +73,10 @@ export function buildClaudeCommand(
   const sessionMcpConfigPath = createSessionMcpConfig(discordContext);
   const escapedSystemPrompt = escapeShellString(DISCORD_SYSTEM_PROMPT);
 
+  // -p/--print is a boolean flag; the prompt is a positional argument. Prompts
+  // that start with "-" (e.g. markdown list replies) are otherwise parsed as
+  // unknown options and Claude exits 1 immediately. Put all flags first, then
+  // `--` + prompt so dash-leading text is always treated as the prompt.
   const commandParts = [
     `cd ${workingDir}`,
     "&&",
@@ -82,7 +86,6 @@ export function buildClaudeCommand(
     "--model",
     model,
     "-p",
-    escapedPrompt,
     "--verbose",
     "--mcp-config",
     sessionMcpConfigPath,
@@ -108,6 +111,7 @@ export function buildClaudeCommand(
     commandParts.splice(3, 0, "--resume", sessionId);
   }
 
+  commandParts.push("--", escapedPrompt);
   return commandParts.join(" ");
 }
 
@@ -172,9 +176,10 @@ export function buildClaudeCommandForGitHub(
     "--model",
     model,
     "-p",
-    escapedPrompt,
     "--verbose",
     "--dangerously-skip-permissions",
+    "--",
+    escapedPrompt,
   ];
 
   if (opts.prNumber !== undefined) {

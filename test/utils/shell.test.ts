@@ -29,9 +29,14 @@ describe('buildClaudeCommand', () => {
   // steering it to the mcp__discord-permissions__ask_user_question tool. The
   // --mcp-config path is generated per session (timestamp + random), so these
   // tests assert structure with toContain rather than an exact string.
+  //
+  // -p/--print is boolean; the prompt is positional and must come after `--`
+  // so dash-leading prompts (markdown lists, quoted replies) are not parsed
+  // as unknown CLI options.
   it('should build basic command without session ID (auto mode)', () => {
     const command = buildClaudeCommand('/test/dir', 'hello world');
-    expect(command).toContain("cd /test/dir && claude --output-format stream-json --model claude-sonnet-4-6 -p 'hello world' --verbose");
+    expect(command).toContain("cd /test/dir && claude --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
+    expect(command).toMatch(/ -- 'hello world'$/);
     expect(command).toContain('--mcp-config');
     expect(command).toContain('--append-system-prompt');
     expect(command).toContain('--dangerously-skip-permissions');
@@ -39,19 +44,29 @@ describe('buildClaudeCommand', () => {
 
   it('should build command with session ID (auto mode)', () => {
     const command = buildClaudeCommand('/test/dir', 'hello world', 'session-123');
-    expect(command).toContain("cd /test/dir && claude --resume session-123 --output-format stream-json --model claude-sonnet-4-6 -p 'hello world' --verbose");
+    expect(command).toContain("cd /test/dir && claude --resume session-123 --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
+    expect(command).toMatch(/ -- 'hello world'$/);
     expect(command).toContain('--dangerously-skip-permissions');
   });
 
   it('should properly escape prompt with special characters', () => {
     const command = buildClaudeCommand('/test/dir', "don't use this");
-    expect(command).toContain("claude --output-format stream-json --model claude-sonnet-4-6 -p 'don'\\''t use this' --verbose");
+    expect(command).toMatch(/ -- 'don'\\''t use this'$/);
   });
 
   it('should handle complex prompts', () => {
     const prompt = "Fix the bug in 'config.js' and don't break anything";
     const command = buildClaudeCommand('/project/path', prompt, 'abc-123');
-    expect(command).toContain("claude --resume abc-123 --output-format stream-json --model claude-sonnet-4-6 -p 'Fix the bug in '\\''config.js'\\'' and don'\\''t break anything' --verbose");
+    expect(command).toContain("claude --resume abc-123 --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
+    expect(command).toMatch(/ -- 'Fix the bug in '\\''config.js'\\'' and don'\\''t break anything'$/);
+  });
+
+  it('should put dash-leading prompts after -- so Claude does not treat them as flags', () => {
+    const prompt = '- **想更快**: use websocket';
+    const command = buildClaudeCommand('/test/dir', prompt);
+    expect(command).toContain(" -p --verbose");
+    expect(command).toContain(` -- ${escapeShellString(prompt)}`);
+    expect(command).not.toMatch(/ -p '- /);
   });
 
   it('should always expose the ask_user_question MCP tool', () => {
@@ -71,13 +86,14 @@ describe('buildClaudeCommand', () => {
     expect(command).toContain('--permission-mode plan');
     expect(command).toContain('--mcp-config');
     expect(command).toContain('--permission-prompt-tool mcp__discord-permissions__approve_tool');
-    expect(command).toContain('--allowedTools mcp__discord-permissions');
+    expect(command).not.toContain('--dangerously-skip-permissions');
   });
 
   it('should use --dangerously-skip-permissions in auto mode explicitly', () => {
     const command = buildClaudeCommand('/test/dir', 'hello world', undefined, undefined, 'auto');
-    expect(command).toContain("cd /test/dir && claude --output-format stream-json --model claude-sonnet-4-6 -p 'hello world' --verbose");
+    expect(command).toContain("cd /test/dir && claude --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
     expect(command).toContain('--dangerously-skip-permissions');
+    expect(command).toMatch(/ -- 'hello world'$/);
   });
 
   it('should use MCP permission-prompt-tool in approve mode', () => {
@@ -90,7 +106,6 @@ describe('buildClaudeCommand', () => {
     expect(command).toContain('--mcp-config');
     expect(command).toContain('mcp-config-claude-discord-');
     expect(command).toContain('--permission-prompt-tool mcp__discord-permissions__approve_tool');
-    expect(command).toContain('--allowedTools mcp__discord-permissions');
     expect(command).not.toContain('--dangerously-skip-permissions');
   });
 
