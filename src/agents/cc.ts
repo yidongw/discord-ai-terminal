@@ -23,6 +23,7 @@ export const ccAgent: AgentRunner = {
   parseLine(line, workDir, ctx) { return parseSdkLine(line, workDir, ctx); },
 
   titleCommand(prompt) {
-    return `claude -p ${escapeShellString(prompt)}`;
+    // -p is boolean; -- keeps dash-leading titles from being parsed as flags.
+    return `claude -p -- ${escapeShellString(prompt)}`;
   },
 };

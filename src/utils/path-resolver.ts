@@ -230,6 +230,81 @@ export function resolveThreadWorkDir(
   return { workDir: wtPath, repo: channelName, worktree: true, branch };
 }
 
+/**
+ * Ensure a thread's stored workDir exists. When the directory was cleaned up
+ * (thread archive, another thread's shared path removed, prune, etc.) recreate
+ * or reattach a worktree and return the usable path.
+ *
+ * Preference order:
+ * 1. Existing workDir — return as-is
+ * 2. Stored branch — re-add at the original path, or reuse an existing checkout
+ *    of that branch (handles path contamination where workDir pointed at
+ *    another thread's tree while branch stayed correct)
+ * 3. Label derived from the workDir basename + thread id (legacy recovery)
+ */
+export function ensureThreadWorkDir(opts: {
+  channelName: string;
+  threadId: string;
+  workDir: string;
+  branch?: string;
+  baseFolder: string;
+}): ResolvedPath | null {
+  const { channelName, threadId, workDir, branch, baseFolder } = opts;
+  if (fs.existsSync(workDir)) {
+    return { workDir, repo: channelName, worktree: true, branch };
+  }
+
+  const repoPath = repoPathFor(channelName, baseFolder);
+  if (!repoPath || !isGitRepo(repoPath)) return null;
+
+  // Prefer restoring via the stored branch — it's the durable identity of the
+  // thread's work, even when workDir was overwritten with another thread's path.
+  if (branch) {
+    const branchWtDir = branch.replace(/^discord\//, "");
+    const branchWtPath = path.join(baseFolder, "worktrees", channelName, branchWtDir);
+
+    // Another checkout of this branch already exists (common after path contamination).
+    if (fs.existsSync(branchWtPath)) {
+      console.log(
+        `[path-resolver] thread ${threadId}: workDir missing (${workDir}); reusing existing ${branchWtPath} for ${branch}`
+      );
+      return { workDir: branchWtPath, repo: channelName, worktree: true, branch };
+    }
+
+    // Re-create at the original path checked out to the stored branch.
+    fs.mkdirSync(path.dirname(workDir), { recursive: true });
+    let add = spawnSync(
+      "git",
+      ["-C", repoPath, "worktree", "add", workDir, branch],
+      { encoding: "utf8" }
+    );
+    if (add.status !== 0) {
+      // Branch may only exist on origin.
+      spawnSync("git", ["-C", repoPath, "fetch", "origin", branch], { encoding: "utf8" });
+      add = spawnSync(
+        "git",
+        ["-C", repoPath, "worktree", "add", "-b", branch, workDir, `origin/${branch}`],
+        { encoding: "utf8" }
+      );
+    }
+    if (add.status === 0) {
+      cloneNodeModules(repoPath, workDir);
+      console.log(
+        `[path-resolver] thread ${threadId}: recreated worktree ${workDir} on ${branch}`
+      );
+      return { workDir, repo: channelName, worktree: true, branch };
+    }
+    console.warn(
+      `[path-resolver] thread ${threadId}: failed to restore ${workDir} on ${branch}: ${add.stderr}`
+    );
+  }
+
+  // Fallback: derive label from basename ("fix-auth-a1b2c3" → "fix-auth") and
+  // let resolveThreadWorkDir rebuild slug-threadShortId (may be a new path).
+  const label = path.basename(workDir).replace(/-[a-z0-9]{6}$/i, "") || "thread";
+  return resolveThreadWorkDir(channelName, threadId, label, baseFolder);
+}
+
 // Given a worktree path, find the main repo checkout it belongs to (via the
 // shared .git common dir). Lets cleanup work from just the stored workDir.
 export function mainRepoOf(wtPath: string): string | null {
