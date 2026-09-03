@@ -169,4 +169,51 @@ describe("resume race condition fix", () => {
     // No polling happened.
     expect(pollCount).toBe(0);
   });
+
+  it("falls back to a fresh session when resume hits a malformed database", async () => {
+    const manager = new SessionManager();
+    const thread = makeThread();
+
+    await manager.runAgent("t3", "ch3", thread, "cc", "/work", "first prompt", makeDiscordCtx());
+
+    const db = (manager as any).db;
+    db.getThreadSession.mockReturnValue({
+      threadId: "t3",
+      channelId: "ch3",
+      agent: "cc",
+      sessionId: "broken-session-123",
+      workDir: "/work",
+      branch: null,
+      isWorktree: false,
+      modelOverride: "claude-sonnet-4-6",
+      createdAt: Date.now(),
+    });
+
+    isPidAliveMock.mockReturnValue(false);
+
+    await manager.runAgent("t3", "ch3", thread, "cc", "/work", "retry this prompt", makeDiscordCtx());
+
+    const spawnMock = vi.mocked(spawn);
+    const resumeCmd: string = spawnMock.mock.calls.at(-1)![1][1];
+    expect(resumeCmd).toContain("--resume broken-session-123");
+
+    const session = (manager as any).active.get("t3");
+    (manager as any).handleEvent(
+      "t3",
+      {
+        kind: "error",
+        subtype: "error_during_execution",
+        message: "database disk image is malformed",
+      },
+      session
+    );
+
+    expect(session.pendingFreshSessionRetry).toBe(true);
+
+    await (manager as any).finalizeRun("t3", session);
+
+    const freshCmd: string = spawnMock.mock.calls.at(-1)![1][1];
+    expect(freshCmd).not.toContain("--resume");
+    expect(freshCmd).toContain("retry this prompt");
+  });
 });

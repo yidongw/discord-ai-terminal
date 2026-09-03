@@ -163,6 +163,9 @@ interface ActiveSession {
   // retry --resume with whatever session ID the init event wrote to the DB
   // (Claude Code may have created a new valid session ID before failing).
   pendingResumeRetry?: boolean;
+  // Set when Claude's local resume database is corrupted. finalizeRun retries
+  // the same prompt with a fresh session instead of attempting --resume again.
+  pendingFreshSessionRetry?: boolean;
   // Set when an OAuth auth failure is detected. finalizeRun touches the external
   // credential refresher trigger and retries as soon as a fresh token lands.
   pendingOAuthRetry?: boolean;
@@ -881,7 +884,28 @@ export class SessionManager {
       }
     }
 
-    if (session.pendingResumeRetry) {
+    if (session.pendingFreshSessionRetry) {
+      try {
+        await this.runAgent(
+          threadId,
+          session.channelId,
+          session.thread,
+          session.agentKey,
+          session.workDir,
+          session.prompt,
+          session.discordContext,
+          { freshSession: true }
+        );
+      } catch (err) {
+        console.error(`[fresh-session-retry] retry failed for ${threadId}:`, err);
+        session.outbox.enqueue(() =>
+          session.thread.send({
+            embeds: [embed("❌ Fresh session retry failed", "Use `/clear` to reset the thread manually.", 0xff0000)],
+          })
+        );
+        await session.outbox.drain();
+      }
+    } else if (session.pendingResumeRetry) {
       // Retry --resume with whatever session ID the init event wrote to the DB.
       // Claude Code often creates a new valid session ID before emitting
       // error_during_execution, so this retry frequently succeeds silently.
@@ -1253,6 +1277,10 @@ export class SessionManager {
     );
   }
 
+  private isMalformedResumeDatabaseError(message: string): boolean {
+    return /database disk image is malformed/i.test(message);
+  }
+
   // Translates a parsed agent event into ordered outbox operations. This is
   // synchronous: it only enqueues work, it never awaits Discord, so stdout
   // parsing stays ahead and the outbox handles delivery + ordering + batching.
@@ -1456,6 +1484,22 @@ export class SessionManager {
       if (event.subtype === "error_during_execution" && session.wasResume) {
         const currentSessionId = this.db.getThreadSession(threadId)?.sessionId;
         console.log(`[session] ${threadId}: error_during_execution — resumed with ${session.prompt.slice(0, 60)}…, DB session now: ${currentSessionId}`);
+        if (this.isMalformedResumeDatabaseError(event.message)) {
+          this.resumeRetryCount.delete(threadId);
+          session.pendingFreshSessionRetry = true;
+          session.done = true;
+          outbox.enqueue(() =>
+            thread.send({
+              embeds: [embed(
+                "⚠️ Session database corrupted",
+                "Claude Code's local resume database is malformed. Starting a fresh session automatically and retrying your message.",
+                0xffa500
+              )],
+            })
+          );
+          this.stopProcess(session, "malformed-resume-db");
+          return;
+        }
         const retries = this.resumeRetryCount.get(threadId) ?? 0;
         if (retries < 1) {
           this.resumeRetryCount.set(threadId, retries + 1);
