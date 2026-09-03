@@ -1,0 +1,72 @@
+name: Rescue
+
+# 临时远程救援通道:在 Mac mini 的 self-hosted runner 上执行诊断与修复。
+# ⚠️ 恢复 SSH 之后请删除本文件。
+on:
+  # 开 PR 即在 self-hosted runner 上执行(PR 事件按合并版本读取 workflow,
+  # 因此本文件无需先进 main 就能生效)。
+  pull_request:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      cmd:
+        description: "在 Mac mini 上额外执行的命令(留空则只做诊断+重启 Tailscale)"
+        required: false
+        default: ""
+
+jobs:
+  rescue:
+    runs-on: [self-hosted, macOS, preview]
+    steps:
+      - name: 诊断
+        continue-on-error: true
+        run: |
+          echo "=== whoami / uid ==="; whoami; id -u
+          echo "=== uptime ==="; uptime
+          echo "=== 磁盘 ==="; df -h / /System/Volumes/Data | tail -3
+          echo "=== Tailscale 安装形态 ==="
+          ls -d /Applications/Tailscale.app 2>/dev/null || echo "无 Tailscale.app"
+          ls -l /usr/local/bin/tailscale 2>/dev/null || echo "无 /usr/local/bin/tailscale(可能是 App Store 版)"
+          echo "=== Tailscale 进程 ==="; pgrep -fl -i tailscale || echo "没有任何 tailscale 进程 ← 即为原因"
+          echo "=== 用户域 launchd ==="; launchctl list | grep -i tailscale || echo "(用户域无)"
+          echo "=== 系统域 daemon ==="; sudo -n launchctl print system/com.tailscale.tailscaled 2>&1 | head -5 || echo "(无免密 sudo)"
+          echo "=== tailscale status ==="
+          TS=$( [ -x /usr/local/bin/tailscale ] && echo /usr/local/bin/tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale )
+          "$TS" status 2>&1 | head -20 || true
+          echo "=== 控制平面可达性(关键) ==="
+          curl -sS -o /dev/null -w "controlplane http=%{http_code} time=%{time_total}s\n" --max-time 10 https://controlplane.tailscale.com/health 2>&1 || echo "连不上控制平面 ← 疑似网络阻断"
+          echo "=== sshd ==="; (nc -z 127.0.0.1 22 && echo "22 端口在监听") || echo "22 端口未监听"
+          echo "=== discord bot 日志尾巴(为什么不回消息) ==="
+          tail -60 ~/git/discord-ai-terminal/discord-ai-terminal.log 2>/dev/null || echo "(读不到日志)"
+
+      - name: 重启 Tailscale
+        continue-on-error: true
+        run: |
+          TS=$( [ -x /usr/local/bin/tailscale ] && echo /usr/local/bin/tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale )
+          echo "--- 杀掉再拉起 GUI app ---"
+          killall Tailscale 2>/dev/null || true
+          sleep 2
+          open -a Tailscale 2>&1 || echo "open -a 失败"
+          sleep 8
+          echo "--- 用户域 kickstart(两种 label) ---"
+          launchctl kickstart -k "gui/$(id -u)/io.tailscale.ipn.macsys" 2>&1 || true
+          launchctl kickstart -k "gui/$(id -u)/io.tailscale.ipn.macos" 2>&1 || true
+          sleep 5
+          echo "--- 如有免密 sudo,踢系统 daemon ---"
+          sudo -n launchctl kickstart -k system/com.tailscale.tailscaled 2>&1 || echo "(跳过)"
+          sleep 5
+          echo "--- 确保已连接 ---"
+          "$TS" up --reset --accept-risk=all 2>&1 | head -20 || "$TS" up 2>&1 | head -20 || true
+          sleep 5
+          echo "=== 最终状态 ==="
+          "$TS" status 2>&1 | head -20 || echo "仍未起来"
+          "$TS" ip -4 2>&1 || true
+
+      - name: 执行自定义命令
+        if: github.event_name == 'workflow_dispatch' && inputs.cmd != ''
+        continue-on-error: true
+        env:
+          CMD: ${{ inputs.cmd }}
+        run: |
+          echo "=== 执行: $CMD ==="
+          bash -lc "$CMD"
