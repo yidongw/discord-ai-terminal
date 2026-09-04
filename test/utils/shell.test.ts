@@ -35,7 +35,7 @@ describe('buildClaudeCommand', () => {
   // as unknown CLI options.
   it('should build basic command without session ID (auto mode)', () => {
     const command = buildClaudeCommand('/test/dir', 'hello world');
-    expect(command).toContain("cd /test/dir && claude --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
+    expect(command).toContain("cd /test/dir && MAX_THINKING_TOKENS=31999 claude --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
     expect(command).toMatch(/ -- 'hello world'$/);
     expect(command).toContain('--mcp-config');
     expect(command).toContain('--append-system-prompt');
@@ -44,7 +44,7 @@ describe('buildClaudeCommand', () => {
 
   it('should build command with session ID (auto mode)', () => {
     const command = buildClaudeCommand('/test/dir', 'hello world', 'session-123');
-    expect(command).toContain("cd /test/dir && claude --resume session-123 --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
+    expect(command).toContain("cd /test/dir && MAX_THINKING_TOKENS=31999 claude --resume session-123 --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
     expect(command).toMatch(/ -- 'hello world'$/);
     expect(command).toContain('--dangerously-skip-permissions');
   });
@@ -91,7 +91,7 @@ describe('buildClaudeCommand', () => {
 
   it('should use --dangerously-skip-permissions in auto mode explicitly', () => {
     const command = buildClaudeCommand('/test/dir', 'hello world', undefined, undefined, 'auto');
-    expect(command).toContain("cd /test/dir && claude --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
+    expect(command).toContain("cd /test/dir && MAX_THINKING_TOKENS=31999 claude --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
     expect(command).toContain('--dangerously-skip-permissions');
     expect(command).toMatch(/ -- 'hello world'$/);
   });
