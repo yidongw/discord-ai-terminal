@@ -55,6 +55,10 @@ export interface ThreadSession {
   modelOverride?: string;
   // Goal set for this thread via /goal command (cc only).
   goal?: string;
+  // MAX_THINKING_TOKENS override set via /thinking (cc only).
+  // undefined/NULL = inherit channel default; 0 = explicitly off (keyword-driven);
+  // >0 = fixed thinking budget injected at claude launch.
+  thinkingTokens?: number;
   // Bot to @-mention when the agent completes (/handoff).
   handoffBot?: string;
   // Discord user ID for handoff bot — required for real pings (embed text @name does not notify).
@@ -279,6 +283,12 @@ export class DatabaseManager {
     if (!cols.includes("handoff_bot_id")) {
       this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN handoff_bot_id TEXT`);
     }
+    if (!cols.includes("thinking_tokens")) {
+      this.db.exec(`ALTER TABLE thread_sessions ADD COLUMN thinking_tokens INTEGER`);
+    }
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS channel_thinking (channel_id TEXT PRIMARY KEY, tokens INTEGER NOT NULL)`
+    );
     // active_runs shipped before completion_json existed, so a DB created by that
     // build has the table but not the column. initializeTables() runs first, so
     // the table always exists here — just add the column when it's missing.
@@ -320,11 +330,13 @@ export class DatabaseManager {
       ts.handoffBot !== undefined ? ts.handoffBot : existing?.handoffBot ?? null;
     const handoffBotId =
       ts.handoffBotId !== undefined ? ts.handoffBotId : existing?.handoffBotId ?? null;
+    const thinkingTokens =
+      ts.thinkingTokens !== undefined ? ts.thinkingTokens : existing?.thinkingTokens ?? null;
     this.db
       .prepare(
         `INSERT OR REPLACE INTO thread_sessions
-         (thread_id, channel_id, agent, session_id, work_dir, branch, is_worktree, created_at, last_seen_message_id, model_override, goal, handoff_bot, handoff_bot_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (thread_id, channel_id, agent, session_id, work_dir, branch, is_worktree, created_at, last_seen_message_id, model_override, goal, handoff_bot, handoff_bot_id, thinking_tokens)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         ts.threadId,
@@ -339,7 +351,8 @@ export class DatabaseManager {
         ts.modelOverride ?? null,
         ts.goal ?? null,
         handoffBot ?? null,
-        handoffBotId ?? null
+        handoffBotId ?? null,
+        thinkingTokens
       );
   }
 
@@ -367,6 +380,30 @@ export class DatabaseManager {
     this.db
       .prepare(`UPDATE thread_sessions SET goal = ? WHERE thread_id = ?`)
       .run(goal, threadId);
+  }
+
+  updateThinkingTokens(threadId: string, tokens: number | null): void {
+    this.db
+      .prepare(`UPDATE thread_sessions SET thinking_tokens = ? WHERE thread_id = ?`)
+      .run(tokens, threadId);
+  }
+
+  /** Channel-level MAX_THINKING_TOKENS default; undefined = not set (keyword-driven). */
+  getChannelThinking(channelId: string): number | undefined {
+    const row = this.db
+      .prepare(`SELECT tokens FROM channel_thinking WHERE channel_id = ?`)
+      .get(channelId) as any;
+    return row?.tokens ?? undefined;
+  }
+
+  setChannelThinking(channelId: string, tokens: number | null): void {
+    if (tokens === null) {
+      this.db.prepare(`DELETE FROM channel_thinking WHERE channel_id = ?`).run(channelId);
+      return;
+    }
+    this.db
+      .prepare(`INSERT OR REPLACE INTO channel_thinking (channel_id, tokens) VALUES (?, ?)`)
+      .run(channelId, tokens);
   }
 
   updateHandoffBot(
@@ -418,6 +455,7 @@ export class DatabaseManager {
       lastSeenMessageId: row.last_seen_message_id ?? undefined,
       goal: row.goal ?? undefined,
       modelOverride: row.model_override ?? undefined,
+      thinkingTokens: row.thinking_tokens ?? undefined,
       handoffBot: row.handoff_bot ?? undefined,
       handoffBotId: row.handoff_bot_id ?? undefined,
     };

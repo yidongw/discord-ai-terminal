@@ -67,7 +67,8 @@ export function buildClaudeCommand(
   sessionId?: string,
   discordContext?: DiscordContext,
   mode: PermissionMode = "auto",
-  model: string = DEFAULT_CC_MODEL
+  model: string = DEFAULT_CC_MODEL,
+  thinkingTokens?: number
 ): string {
   const escapedPrompt = escapeShellString(prompt);
   const sessionMcpConfigPath = createSessionMcpConfig(discordContext);
@@ -80,12 +81,12 @@ export function buildClaudeCommand(
   const commandParts = [
     `cd ${workingDir}`,
     "&&",
-    // MAX_THINKING_TOKENS=31999 forces the ultrathink-tier thinking budget at
-    // launch for every run (scheduled tasks included), independent of whether
-    // the prompt happens to contain a thinking keyword. Kept in the same array
-    // element as "claude" so the --resume/--from-pr splice(3) below still
-    // lands right after the binary.
-    "MAX_THINKING_TOKENS=31999 claude",
+    // When a thinking budget is configured (/thinking: thread override, else
+    // channel default), inject it at launch so the run doesn't depend on the
+    // prompt containing a thinking keyword. Kept in the same array element as
+    // "claude" so the --resume/--from-pr splice(3) below still lands right
+    // after the binary. Unset/0 = keyword-driven, no env.
+    thinkingTokens ? `MAX_THINKING_TOKENS=${thinkingTokens} claude` : "claude",
     "--output-format",
     "stream-json",
     "--model",
@@ -167,7 +168,7 @@ export function buildCodexCommand(
 export function buildClaudeCommandForGitHub(
   workingDir: string,
   prompt: string,
-  opts: { prNumber?: number; model?: string }
+  opts: { prNumber?: number; model?: string; thinkingTokens?: number }
 ): string {
   const escapedPrompt = escapeShellString(prompt);
   const model = opts.model ?? DEFAULT_CC_MODEL;
@@ -175,9 +176,9 @@ export function buildClaudeCommandForGitHub(
   const commandParts = [
     `cd ${workingDir}`,
     "&&",
-    // Same ultrathink-at-launch budget as buildClaudeCommand; single element
+    // Same optional thinking budget as buildClaudeCommand; single element
     // so the --from-pr splice(3) stays right after the binary.
-    "MAX_THINKING_TOKENS=31999 claude",
+    opts.thinkingTokens ? `MAX_THINKING_TOKENS=${opts.thinkingTokens} claude` : "claude",
     "--output-format",
     "stream-json",
     "--model",

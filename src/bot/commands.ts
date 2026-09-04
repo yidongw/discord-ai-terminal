@@ -74,6 +74,23 @@ export class CommandHandler {
         ),
 
       new SlashCommandBuilder()
+        .setName("thinking")
+        .setDescription("Set Claude thinking budget — channel sets the default; in a thread overrides only that thread")
+        .addStringOption((o) =>
+          o
+            .setName("level")
+            .setDescription("MAX_THINKING_TOKENS injected at launch")
+            .setRequired(true)
+            .addChoices(
+              { name: "inherit — clear override, use channel default / prompt keywords", value: "inherit" },
+              { name: "off — no forced budget, prompt keywords only", value: "0" },
+              { name: "think — 4,000", value: "4000" },
+              { name: "megathink — 10,000", value: "10000" },
+              { name: "ultrathink — 31,999", value: "31999" }
+            )
+        ),
+
+      new SlashCommandBuilder()
         .setName("model")
         .setDescription("Set model — in a channel updates the default; in a thread overrides only that thread")
         .addSubcommand((s) =>
@@ -219,6 +236,7 @@ export class CommandHandler {
     if (commandName === "mode") return this.handleMode(interaction);
     if (commandName === "model") return this.handleModel(interaction);
     if (commandName === "goal") return this.handleGoal(interaction);
+    if (commandName === "thinking") return this.handleThinking(interaction);
     if (commandName === "handoff") return this.handleHandoff(interaction);
     if (commandName === "agents") return this.handleAgents(interaction);
     if (commandName === "tools") return this.handleTools(interaction);
@@ -413,6 +431,83 @@ export class CommandHandler {
         embed(
           "✅ Handoff Configured",
           `When **@${session.agent}** completes, I'll mention **@${botName}** with a summary and ask for next steps.`,
+          0x00ff00
+        ),
+      ],
+    });
+  }
+
+  private async handleThinking(i: ChatInputCommandInteraction): Promise<void> {
+    const db = this.sessionManager.getDb();
+    const raw = i.options.getString("level", true);
+    const label = (n: number) =>
+      n === 0 ? "off (prompt keywords only)" : `MAX_THINKING_TOKENS=${n}`;
+
+    // In a thread: override (or clear) for this thread only.
+    if (i.channel?.isThread()) {
+      const session = db.getThreadSession(i.channelId);
+      if (!session) {
+        await i.reply({
+          embeds: [
+            embed(
+              "ℹ️ No Session",
+              "Start an agent in this thread first — `/thinking` here will then apply only to this thread.",
+              0x888888
+            ),
+          ],
+        });
+        return;
+      }
+      if (raw === "inherit") {
+        db.updateThinkingTokens(i.channelId, null);
+        const channelDefault = db.getChannelThinking(this.channelKey(i));
+        await i.reply({
+          embeds: [
+            embed(
+              "✅ Thread Thinking Cleared",
+              `This thread now inherits: **${channelDefault !== undefined ? label(channelDefault) : "no channel default (prompt keywords only)"}**.`,
+              0x00ff00
+            ),
+          ],
+        });
+        return;
+      }
+      const tokens = Number(raw);
+      db.updateThinkingTokens(i.channelId, tokens);
+      await i.reply({
+        embeds: [
+          embed(
+            "✅ Thread Thinking Set",
+            `Thinking budget for this thread: **${label(tokens)}**. All future runs here (scheduled tasks included) will use it.`,
+            0x00ff00
+          ),
+        ],
+      });
+      return;
+    }
+
+    // In a channel: default for every thread without its own override.
+    const channelId = i.channelId;
+    if (raw === "inherit") {
+      db.setChannelThinking(channelId, null);
+      await i.reply({
+        embeds: [
+          embed(
+            "✅ Channel Thinking Cleared",
+            "No channel default — runs use prompt keywords unless a thread sets `/thinking` itself.",
+            0x00ff00
+          ),
+        ],
+      });
+      return;
+    }
+    const tokens = Number(raw);
+    db.setChannelThinking(channelId, tokens);
+    await i.reply({
+      embeds: [
+        embed(
+          "✅ Channel Thinking Set",
+          `Channel default: **${label(tokens)}**. Applies to every thread here without its own \`/thinking\` override.`,
           0x00ff00
         ),
       ],
