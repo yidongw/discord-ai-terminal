@@ -12,6 +12,9 @@ export interface AgentRunOptions {
   prNumber?: number;
   // Goal for this session (cc only)
   goal?: string;
+  // MAX_THINKING_TOKENS to inject at claude launch (cc only).
+  // undefined or 0 = no injection (prompt-keyword-driven thinking).
+  thinkingTokens?: number;
 }
 
 // Normalized events that session-manager handles regardless of agent

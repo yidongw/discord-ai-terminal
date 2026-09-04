@@ -9,6 +9,7 @@ vi.mock("../../src/db/database.js", () => {
     getModel = vi.fn(() => "gpt-5");
     getCodexModel = vi.fn(() => "gpt-5-codex");
     getCsModel = vi.fn(() => "cs-1");
+    getChannelThinking = vi.fn(() => undefined);
     getToolOverrides = vi.fn(() => ({}));
     updateModelOverride = vi.fn();
     deleteActiveRunsForThread = vi.fn();

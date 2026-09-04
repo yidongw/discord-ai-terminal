@@ -35,7 +35,7 @@ describe('buildClaudeCommand', () => {
   // as unknown CLI options.
   it('should build basic command without session ID (auto mode)', () => {
     const command = buildClaudeCommand('/test/dir', 'hello world');
-    expect(command).toContain("cd /test/dir && MAX_THINKING_TOKENS=31999 claude --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
+    expect(command).toContain("cd /test/dir && claude --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
     expect(command).toMatch(/ -- 'hello world'$/);
     expect(command).toContain('--mcp-config');
     expect(command).toContain('--append-system-prompt');
@@ -44,7 +44,7 @@ describe('buildClaudeCommand', () => {
 
   it('should build command with session ID (auto mode)', () => {
     const command = buildClaudeCommand('/test/dir', 'hello world', 'session-123');
-    expect(command).toContain("cd /test/dir && MAX_THINKING_TOKENS=31999 claude --resume session-123 --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
+    expect(command).toContain("cd /test/dir && claude --resume session-123 --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
     expect(command).toMatch(/ -- 'hello world'$/);
     expect(command).toContain('--dangerously-skip-permissions');
   });
@@ -91,7 +91,7 @@ describe('buildClaudeCommand', () => {
 
   it('should use --dangerously-skip-permissions in auto mode explicitly', () => {
     const command = buildClaudeCommand('/test/dir', 'hello world', undefined, undefined, 'auto');
-    expect(command).toContain("cd /test/dir && MAX_THINKING_TOKENS=31999 claude --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
+    expect(command).toContain("cd /test/dir && claude --output-format stream-json --model claude-sonnet-4-6 -p --verbose");
     expect(command).toContain('--dangerously-skip-permissions');
     expect(command).toMatch(/ -- 'hello world'$/);
   });
@@ -153,5 +153,22 @@ describe('buildCodexCommand', () => {
   it('should use the specified codex model', () => {
     const command = buildCodexCommand('/test/dir', 'hello world', undefined, false, 'gpt-5.5');
     expect(command).toBe("cd /test/dir && codex exec --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.5 -C /test/dir 'hello world'");
+  });
+});
+
+describe('buildClaudeCommand thinking budget', () => {
+  it('injects MAX_THINKING_TOKENS when configured', () => {
+    const command = buildClaudeCommand('/test/dir', 'hi', undefined, undefined, 'auto', 'claude-sonnet-4-6', 31999);
+    expect(command).toContain('cd /test/dir && MAX_THINKING_TOKENS=31999 claude --output-format');
+  });
+
+  it('keeps --resume right after the binary with a budget set', () => {
+    const command = buildClaudeCommand('/test/dir', 'hi', 'session-123', undefined, 'auto', 'claude-sonnet-4-6', 4000);
+    expect(command).toContain('MAX_THINKING_TOKENS=4000 claude --resume session-123 --output-format');
+  });
+
+  it('omits the env entirely when unset or explicitly 0', () => {
+    expect(buildClaudeCommand('/test/dir', 'hi')).not.toContain('MAX_THINKING_TOKENS');
+    expect(buildClaudeCommand('/test/dir', 'hi', undefined, undefined, 'auto', 'claude-sonnet-4-6', 0)).not.toContain('MAX_THINKING_TOKENS');
   });
 });

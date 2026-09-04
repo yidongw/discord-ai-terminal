@@ -592,6 +592,11 @@ export class SessionManager {
       console.error(`[run] workDir missing before spawn: ${workDir}`);
     }
 
+    // Thinking budget: thread /thinking override wins (0 = explicitly off),
+    // else channel default; nothing set = keyword-driven. Looked up live each
+    // run (unlike model there is no resume-compatibility reason to freeze it).
+    const thinkingTokens =
+      existing?.thinkingTokens ?? this.db.getChannelThinking(channelId);
     const command = agent.buildCommand(workDir, prompt, {
       sessionId: resumeSessionId,
       mode,
@@ -601,6 +606,7 @@ export class SessionManager {
       discordContext,
       prNumber: opts?.prNumber,
       goal: existing?.goal,
+      thinkingTokens,
     });
 
     // Per-run append-only log. The agent writes here (not to a pipe we own), so
