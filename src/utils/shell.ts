@@ -80,7 +80,12 @@ export function buildClaudeCommand(
   const commandParts = [
     `cd ${workingDir}`,
     "&&",
-    "claude",
+    // MAX_THINKING_TOKENS=31999 forces the ultrathink-tier thinking budget at
+    // launch for every run (scheduled tasks included), independent of whether
+    // the prompt happens to contain a thinking keyword. Kept in the same array
+    // element as "claude" so the --resume/--from-pr splice(3) below still
+    // lands right after the binary.
+    "MAX_THINKING_TOKENS=31999 claude",
     "--output-format",
     "stream-json",
     "--model",
@@ -170,7 +175,9 @@ export function buildClaudeCommandForGitHub(
   const commandParts = [
     `cd ${workingDir}`,
     "&&",
-    "claude",
+    // Same ultrathink-at-launch budget as buildClaudeCommand; single element
+    // so the --from-pr splice(3) stays right after the binary.
+    "MAX_THINKING_TOKENS=31999 claude",
     "--output-format",
     "stream-json",
     "--model",
