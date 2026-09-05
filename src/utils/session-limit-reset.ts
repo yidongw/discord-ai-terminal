@@ -1,9 +1,9 @@
 const USAGE_LIMIT_RE =
-  /you(?:'ve| have) hit your (?:session|weekly|opus) limit/i;
+  /you(?:'ve| have) hit your (?:session|weekly|opus|monthly spend) limit/i;
 
-// "resets 3:45pm", "resets 2:50am (Asia/Bangkok)", or "resets Mon 12:00am"
+// "resets 3:45pm", "resets 11pm", "resets 2:50am (Asia/Bangkok)", or "resets Mon 12:00am"
 const RESET_RE =
-  /resets?\s+(?:(Mon(?:day)?|Tue(?:s(?:day)?)?|Wed(?:nesday)?|Thu(?:rs(?:day)?)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s+)?(\d{1,2}:\d{2}\s*(?:am|pm))(?:\s*\([^)]+\))?/i;
+  /resets?\s+(?:(Mon(?:day)?|Tue(?:s(?:day)?)?|Wed(?:nesday)?|Thu(?:rs(?:day)?)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\([^)]+\))?/i;
 
 const DAY_INDEX: Record<string, number> = {
   sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
@@ -77,10 +77,10 @@ export function parseRateLimitReset(
 }
 
 function parseClock(token: string): { hours: number; minutes: number } | null {
-  const m = token.trim().match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/i);
+  const m = token.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
   if (!m) return null;
   let hours = parseInt(m[1]!, 10);
-  const minutes = parseInt(m[2]!, 10);
+  const minutes = m[2] != null ? parseInt(m[2], 10) : 0;
   const ampm = m[3]!.toLowerCase();
   if (hours < 1 || hours > 12 || minutes < 0 || minutes > 59) return null;
   if (ampm === "am") {

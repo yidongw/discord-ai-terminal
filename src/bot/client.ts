@@ -40,6 +40,7 @@ import {
   type DownloadedAttachment,
 } from "../utils/attachments.js";
 import type { MCPPermissionServer } from "../mcp/server.js";
+import { AskOtherCapture } from "./ask-other-capture.js";
 import type { GitHubHandler } from "../github/handler.js";
 import type { ThreadSession } from "../db/database.js";
 import type { WorkerMessage } from "./worker-mode.js";
@@ -72,6 +73,9 @@ export class DiscordBot {
   >();
   // Keyed by threadId. Tracks the running worker process for discord-ai-terminal threads.
   private workerProcesses = new Map<string, ChildProcess>();
+  // While ask_user_question Other... is awaiting a typed reply, skip that user's
+  // next message in the thread so it isn't treated as a new agent prompt.
+  readonly askOtherCapture = new AskOtherCapture();
 
   constructor(
     private sessionManager: SessionManager,
@@ -1074,6 +1078,12 @@ export class DiscordBot {
     const fromBot = opts?.fromBot ?? false;
 
     if (fromBot && msg.author.id === this.client.user?.id) return;
+
+    // Free-text reply to ask_user_question "Other..." — leave it for awaitMessages.
+    if (!fromBot && this.askOtherCapture.shouldSkip(thread.id, msg.author.id)) {
+      console.log(`[ask-other] skipping message ${msg.id} in ${thread.id} (Other... capture)`);
+      return;
+    }
 
     // Block messages that mention review bots to prevent interference.
     if (!fromBot && hasReviewBotMention(msg.content, this.reviewBotIds)) return;

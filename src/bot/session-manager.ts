@@ -23,6 +23,7 @@ import {
   sessionLimitTaskId,
 } from "./session-limit-wakeup.js";
 import { MAX_STALL_WAKEUPS, STALL_CONTINUATION_PROMPT } from "./stall-wakeup.js";
+import { shouldRetryEmptyDone, isNoResponseAck } from "./empty-done-retry.js";
 import {
   extractGeneratedImagePath,
   extractLocalImageReferences,
@@ -171,6 +172,13 @@ interface ActiveSession {
   pendingOAuthRetry?: boolean;
   // Set when the log stalls with no tool in flight — finalizeRun resumes the agent.
   pendingStallWakeup?: boolean;
+  // Set when Claude exits with 0 turns and no real work (phantom continue after
+  // unexpected process exit). finalizeRun re-dispatches the same user prompt.
+  pendingEmptyDoneRetry?: boolean;
+  // True once we saw non-ack assistant text this run (excludes "No response requested.").
+  sawRealAssistantText?: boolean;
+  // True once any tool_start fired this run (including hidden tools).
+  sawToolUse?: boolean;
 }
 
 export class SessionManager {
@@ -197,6 +205,8 @@ export class SessionManager {
   private resumeRetryCount = new Map<string, number>();
   // Stall wakeups per thread for the current user turn. Cleared on done.
   private stallWakeupCount = new Map<string, number>();
+  // Empty 0-turn done retries per thread. Cleared on a real (turns>0) done.
+  private emptyDoneRetryCount = new Map<string, number>();
   // Where detached runs write their append-only output logs (one per run). The
   // bot tails these and re-attaches to them after a restart.
   private runsDir: string;
@@ -328,6 +338,7 @@ export class SessionManager {
       pendingUsageLimitResume: !!session.pendingUsageLimitResume,
       pendingTurnLimitResume: !!session.pendingTurnLimitResume,
       pendingStallWakeup: !!session.pendingStallWakeup,
+      pendingEmptyDoneRetry: !!session.pendingEmptyDoneRetry,
       hasEnabledScheduledTasks: this.db.listScheduledTasks(threadId).some((t) => t.enabled),
     });
   }
@@ -990,6 +1001,34 @@ export class SessionManager {
         );
         await session.outbox.drain();
       }
+    } else if (session.pendingEmptyDoneRetry) {
+      session.pendingEmptyDoneRetry = false;
+      try {
+        const ctx = session.discordContext ?? {
+          channelId: threadId,
+          channelName: session.thread?.name ?? "thread",
+          userId: "",
+          messageId: "",
+        };
+        console.log(`[empty-done] retrying prompt for ${threadId}: ${session.prompt.slice(0, 80)}…`);
+        await this.runAgent(
+          threadId,
+          session.channelId,
+          session.thread,
+          session.agentKey,
+          session.workDir,
+          session.prompt,
+          ctx,
+        );
+      } catch (err) {
+        console.error(`[empty-done] retry failed for ${threadId}:`, err);
+        session.outbox.enqueue(() =>
+          session.thread.send({
+            embeds: [embed("❌ Empty-done retry failed", String((err as Error).message ?? err), 0xff0000)],
+          })
+        );
+        await session.outbox.drain();
+      }
     } else if (session.pendingOAuthRetry && session.agentKey === "cc") {
       // Thread is released immediately. Actively self-heal the credentials: ask
       // the external refresher to sync a fresh token now, then retry as soon as
@@ -1330,6 +1369,7 @@ export class SessionManager {
 
     if (event.kind === "text") {
       this.noteUsageLimitReset(session, event.content);
+      if (!isNoResponseAck(event.content)) session.sawRealAssistantText = true;
       outbox.pushText(event.content);
       return;
     }
@@ -1374,6 +1414,7 @@ export class SessionManager {
 
     if (event.kind === "tool_start") {
       session.lastToolInFlight = { name: event.name ?? "unknown", input: event.label ?? "" };
+      session.sawToolUse = true;
       // Hidden tools don't get their own embed; instead they bump the running
       // "N hidden" summary. Remember the id so the matching tool_done is dropped
       // (it must not seal the summary).
@@ -1416,6 +1457,41 @@ export class SessionManager {
     if (event.kind === "done") {
       this.resumeRetryCount.delete(threadId);
       this.stallWakeupCount.delete(threadId);
+
+      const retriesSoFar = this.emptyDoneRetryCount.get(threadId) ?? 0;
+      if (
+        shouldRetryEmptyDone({
+          agentKey: session.agentKey,
+          turns: event.turns,
+          sawRealAssistantText: !!session.sawRealAssistantText,
+          toolCallCount: session.sawToolUse ? 1 : session.toolCalls.size,
+          prompt: session.prompt,
+          retriesSoFar,
+        })
+      ) {
+        this.emptyDoneRetryCount.set(threadId, retriesSoFar + 1);
+        session.pendingEmptyDoneRetry = true;
+        session.done = true;
+        console.log(
+          `[empty-done] run=${session.runId} thread=${threadId} — 0-turn phantom continue; will retry prompt`
+        );
+        outbox.enqueue(() =>
+          thread.send({
+            embeds: [
+              embed(
+                "↻ Empty reply — retrying",
+                "Claude exited without doing work (common right after an interrupt). Re-sending your message…",
+                0xffa500
+              ),
+            ],
+          })
+        );
+        this.stopProcess(session, "empty-done-retry");
+        return;
+      }
+
+      // Real completion (or retry already used) — clear empty-done budget.
+      this.emptyDoneRetryCount.delete(threadId);
       session.done = true;
       const parts: string[] = [];
       if (event.turns !== null) parts.push(`${event.turns} turns`);
@@ -1561,6 +1637,7 @@ export class SessionManager {
       this.db.updateSessionId(threadId, raw.sessionId);
       if (raw.content?.trim()) {
         this.noteUsageLimitReset(session, raw.content);
+        if (!isNoResponseAck(raw.content)) session.sawRealAssistantText = true;
         if (session.pendingUsageLimitResume) {
           this.enqueueUsageLimitNotice(session);
           this.stopProcess(session, "rate-limit-assistant");
@@ -1568,6 +1645,7 @@ export class SessionManager {
         outbox.pushText(raw.content);
       }
       for (const tool of (raw.tools ?? [])) {
+        session.sawToolUse = true;
         if (tool.name === "TodoRead") {
           session.hiddenToolIds.add(tool.id);
           continue;

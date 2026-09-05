@@ -9,7 +9,24 @@ describe("session-limit-reset", () => {
   it("detects usage limit messages", () => {
     expect(isUsageLimitMessage("You've hit your session limit · resets 3:45pm")).toBe(true);
     expect(isUsageLimitMessage("You've hit your weekly limit · resets Mon 12:00am")).toBe(true);
+    expect(
+      isUsageLimitMessage(
+        "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 11pm (Asia/Bangkok)"
+      )
+    ).toBe(true);
     expect(isUsageLimitMessage("error_max_turns")).toBe(false);
+  });
+
+  it("parses monthly spend limit with hour-only reset", () => {
+    const now = new Date("2026-09-05T14:00:00");
+    const parsed = parseSessionLimitReset(
+      "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 11pm (Asia/Bangkok)",
+      now
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.resetLabel).toMatch(/11pm/i);
+    expect(new Date(parsed!.resetAt).getHours()).toBe(23);
+    expect(new Date(parsed!.resetAt).getMinutes()).toBe(0);
   });
 
   it("parses same-day reset time", () => {

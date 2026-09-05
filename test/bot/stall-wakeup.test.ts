@@ -24,6 +24,7 @@ describe("stall wakeup", () => {
       pendingUsageLimitResume: false,
       pendingTurnLimitResume: false,
       pendingStallWakeup: true,
+      pendingEmptyDoneRetry: false,
       hasEnabledScheduledTasks: false,
     })).toBe(false);
   });
