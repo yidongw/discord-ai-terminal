@@ -481,7 +481,7 @@ export class MCPPermissionServer {
         return;
       }
 
-      const { prompt, interval, label, max_runs } = req.body ?? {};
+      const { prompt, interval, label, max_runs, start_delay, work_dir } = req.body ?? {};
       if (!prompt || typeof prompt !== 'string') {
         res.json({ error: 'A non-empty "prompt" string is required.' });
         return;
@@ -494,9 +494,23 @@ export class MCPPermissionServer {
       }
       const intervalSeconds = Math.max(parsed, MIN_INTERVAL_SECONDS);
 
+      // Optional first-run offset — lets a caller stagger several loops so they
+      // don't all fire on the same tick. Defaults to one full interval.
+      let firstDelaySeconds = intervalSeconds;
+      if (start_delay !== undefined && start_delay !== null && start_delay !== '') {
+        const sd = parseInterval(start_delay);
+        if (sd === null) {
+          res.json({ error: `Could not parse start_delay "${start_delay}". Use e.g. "5m", "90s".` });
+          return;
+        }
+        firstDelaySeconds = Math.max(sd, 0);
+      }
+      // Optional worktree/cwd override — otherwise inherit the thread's session.
+      const workDir = typeof work_dir === 'string' && work_dir ? work_dir : session.workDir;
+
       const id = `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const now = Date.now();
-      const nextRunAt = now + intervalSeconds * 1000;
+      const nextRunAt = now + firstDelaySeconds * 1000;
 
       try {
         this.db.createScheduledTask({
@@ -504,7 +518,7 @@ export class MCPPermissionServer {
           threadId,
           channelId: session.channelId,
           agent: session.agent,
-          workDir: session.workDir,
+          workDir,
           userId: discordContext.userId,
           prompt,
           label: typeof label === 'string' && label ? label : undefined,
@@ -571,6 +585,73 @@ export class MCPPermissionServer {
       }
       this.db.deleteScheduledTask(id);
       res.json({ ok: true, id });
+    });
+
+    // Edit an existing scheduled task in place — interval, prompt, label,
+    // enabled (pause/resume), worktree, next-run offset — without deleting and
+    // recreating it (which would lose run_count / the task id).
+    this.app.post('/tool/update_scheduled_task', (req, res) => {
+      if (!this.db) {
+        res.json({ error: 'Scheduling not available (no DB).' });
+        return;
+      }
+      const { id, prompt, label, interval, enabled, start_delay, work_dir, max_runs } = req.body ?? {};
+      if (!id || typeof id !== 'string') {
+        res.json({ error: 'A task "id" string is required.' });
+        return;
+      }
+      const existing = this.db.getScheduledTask(id);
+      if (!existing) {
+        res.json({ error: `No scheduled task with id "${id}".` });
+        return;
+      }
+
+      const fields: {
+        prompt?: string; label?: string | null; intervalSeconds?: number;
+        nextRunAt?: number; enabled?: boolean; workDir?: string; maxRuns?: number | null;
+      } = {};
+      if (typeof prompt === 'string' && prompt) fields.prompt = prompt;
+      if (typeof label === 'string') fields.label = label || null;
+      if (typeof enabled === 'boolean') fields.enabled = enabled;
+      if (typeof work_dir === 'string' && work_dir) fields.workDir = work_dir;
+      if (typeof max_runs === 'number') fields.maxRuns = max_runs > 0 ? Math.floor(max_runs) : null;
+      if (interval !== undefined && interval !== null && interval !== '') {
+        const p = parseInterval(interval);
+        if (p === null) {
+          res.json({ error: `Could not parse interval "${interval}". Use e.g. "10m", "2h".` });
+          return;
+        }
+        fields.intervalSeconds = Math.max(p, MIN_INTERVAL_SECONDS);
+      }
+      if (start_delay !== undefined && start_delay !== null && start_delay !== '') {
+        const sd = parseInterval(start_delay);
+        if (sd === null) {
+          res.json({ error: `Could not parse start_delay "${start_delay}". Use e.g. "5m", "90s".` });
+          return;
+        }
+        fields.nextRunAt = Date.now() + Math.max(sd, 0) * 1000;
+      }
+
+      if (Object.keys(fields).length === 0) {
+        res.json({ error: 'Nothing to update. Provide at least one of: prompt, label, interval, enabled, start_delay, work_dir, max_runs.' });
+        return;
+      }
+
+      try {
+        this.db.updateScheduledTask(id, fields);
+        const updated = this.db.getScheduledTask(id);
+        res.json({
+          ok: true,
+          id,
+          updated: Object.keys(fields),
+          interval: updated ? formatInterval(updated.intervalSeconds) : undefined,
+          enabled: updated?.enabled,
+          nextRunInSeconds: updated ? Math.round((updated.nextRunAt - Date.now()) / 1000) : undefined,
+        });
+      } catch (error) {
+        console.error('HTTP update_scheduled_task error:', error);
+        res.json({ error: error instanceof Error ? error.message : String(error) });
+      }
     });
 
     // ── Background jobs (called by mcp-bridge.cjs) ───────────────────────────

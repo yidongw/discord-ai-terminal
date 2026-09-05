@@ -56,6 +56,10 @@ export class Scheduler {
     if (!this.client.isReady()) return;
     this.ticking = true;
     try {
+      // Hygiene: drop spent one-shot session-limit resume rows so they don't
+      // pile up as dead disabled rows.
+      const gc = this.db.deleteSpentSessionLimitTasks();
+      if (gc > 0) console.log(`[scheduler] GC'd ${gc} spent session-limit row(s)`);
       const now = Date.now();
       const due = this.db.getDueScheduledTasks(now);
       for (const task of due) {
@@ -88,6 +92,7 @@ export class Scheduler {
       if (err?.code === 10003) {
         console.error(`[scheduler] thread ${task.threadId} gone, disabling task ${task.id}`);
         this.db.setScheduledTaskEnabled(task.id, false);
+        await this.notifyAutoDisabled(task, "its Discord thread no longer exists");
       } else {
         console.error(`[scheduler] transient fetch error for ${task.threadId}, will retry:`, err);
         this.db.rescheduleScheduledTask(task.id, now + BUSY_RETRY_MS);
@@ -97,6 +102,7 @@ export class Scheduler {
     if (!thread || (thread.type !== ChannelType.PublicThread && thread.type !== ChannelType.PrivateThread)) {
       console.error(`[scheduler] thread ${task.threadId} missing/not a thread, disabling task ${task.id}`);
       this.db.setScheduledTaskEnabled(task.id, false);
+      await this.notifyAutoDisabled(task, "its Discord thread is missing or no longer a thread");
       return;
     }
 
@@ -140,6 +146,30 @@ export class Scheduler {
       task.prompt,
       discordContext
     );
+  }
+
+  // A loop that gets auto-disabled (dead thread) used to vanish silently — only
+  // a console.error. Post to the parent channel so the user sees it and can
+  // re-create the loop in a live thread.
+  private async notifyAutoDisabled(task: ScheduledTask, reason: string): Promise<void> {
+    try {
+      const channel = await this.client.channels.fetch(task.channelId);
+      const sendable = channel as unknown as { send?: (opts: unknown) => Promise<unknown> };
+      if (!sendable || typeof sendable.send !== "function") return;
+      await sendable.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("⚠️ Scheduled loop auto-disabled")
+            .setDescription(
+              `${task.label ? `**${task.label}** ` : ""}\`${task.id}\` was disabled because ${reason}.\n` +
+                `Re-create the loop in a live thread to resume it.`
+            )
+            .setColor(0xe67e22),
+        ],
+      });
+    } catch (err) {
+      console.error(`[scheduler] failed to post auto-disable notice for ${task.id}:`, err);
+    }
   }
 }
 

@@ -164,8 +164,46 @@ const TOOLS = [
           type: 'number',
           description: 'Optional: auto-stop after this many runs. Omit for unlimited.',
         },
+        start_delay: {
+          type: 'string',
+          description:
+            'Optional: when the FIRST run happens, e.g. "5m" from now (default: one full interval). ' +
+            'Use to stagger several loops so they do not all fire on the same tick.',
+        },
+        work_dir: {
+          type: 'string',
+          description:
+            'Optional: absolute path to run this task in (e.g. a git worktree). ' +
+            'Defaults to this thread\'s working directory.',
+        },
       },
       required: ['prompt', 'interval'],
+    },
+  },
+  {
+    name: 'update_scheduled_task',
+    description:
+      'Edit an existing recurring task in place by id (from list_scheduled_tasks) — ' +
+      'change its interval, prompt, label, worktree (work_dir), pause/resume it ' +
+      '(enabled), reschedule the next run (start_delay), or change max_runs — ' +
+      'without deleting and recreating it (which would lose its run count and id). ' +
+      'Provide only the fields you want to change.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The task id to edit (from list_scheduled_tasks).' },
+        prompt: { type: 'string', description: 'New instruction to run each interval.' },
+        label: { type: 'string', description: 'New short display name.' },
+        interval: { type: 'string', description: 'New recurrence, e.g. "10m", "2h". Minimum 60s.' },
+        enabled: { type: 'boolean', description: 'false to pause the loop, true to resume it.' },
+        start_delay: {
+          type: 'string',
+          description: 'Reschedule the NEXT run to this far from now, e.g. "5m", "90s" (staggering).',
+        },
+        work_dir: { type: 'string', description: 'New absolute working directory / worktree path.' },
+        max_runs: { type: 'number', description: 'New auto-stop run count (<=0 clears it).' },
+      },
+      required: ['id'],
     },
   },
   {
