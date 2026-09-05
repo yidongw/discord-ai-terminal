@@ -19,6 +19,7 @@ import { CommandHandler } from "./commands.js";
 import {
   parseAgentInvocations,
   hasAnyMention,
+  hasBlockingUserMention,
   hasReviewBotMention,
   parseAgentFromThreadName,
   titleFromThreadName,
@@ -399,9 +400,10 @@ export class DiscordBot {
 
       if (!this.allowedUserIds.includes(msg.author.id)) return;
 
-      // Skip messages that mention users, roles, @everyone, or @here — these are
-      // typically notifications directed at others, not commands for the bot.
-      if (msg.mentions.users.size > 0 || msg.mentions.roles.size > 0 || msg.mentions.everyone) return;
+      // Skip messages that mention other users/roles/@everyone — those are usually
+      // directed at someone else. Discord auto-includes the replied-to author in
+      // mentions.users; that alone must not block (reply-to-agent would be dropped).
+      if (hasBlockingUserMention(msg)) return;
 
       if (isThread) {
         await this.handleThreadMessage(msg);
@@ -689,9 +691,7 @@ export class DiscordBot {
         (m) =>
           !m.author.bot &&
           this.allowedUserIds.includes(m.author.id) &&
-          m.mentions.users.size === 0 &&
-          m.mentions.roles.size === 0 &&
-          !m.mentions.everyone,
+          !hasBlockingUserMention(m),
       )
       .sort((a, b) => (a.id < b.id ? -1 : 1));
   }
@@ -1671,9 +1671,7 @@ export class DiscordBot {
         (m) =>
           !m.author.bot &&
           this.allowedUserIds.includes(m.author.id) &&
-          m.mentions.users.size === 0 &&
-          m.mentions.roles.size === 0 &&
-          !m.mentions.everyone,
+          !hasBlockingUserMention(m),
       )
       .sort((a, b) => (a.id < b.id ? -1 : 1));
 

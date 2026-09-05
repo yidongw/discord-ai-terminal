@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   hasAnyMention,
+  hasBlockingUserMention,
   hasReviewBotMention,
   parseAgentFromThreadName,
   parseAgentInvocations,
@@ -62,6 +63,77 @@ describe("hasAnyMention", () => {
 
   it("returns false when @ is not followed by a token", () => {
     expect(hasAnyMention("email me @ example.com")).toBe(false);
+  });
+});
+
+describe("hasBlockingUserMention", () => {
+  const users = (...ids: string[]) => {
+    const map = new Map(ids.map((id) => [id, { id }]));
+    return {
+      size: map.size,
+      keys: () => map.keys(),
+    };
+  };
+
+  it("allows plain messages with no mentions", () => {
+    expect(
+      hasBlockingUserMention({
+        mentions: { everyone: false, roles: { size: 0 }, users: users() },
+      })
+    ).toBe(false);
+  });
+
+  it("allows reply-only auto-mention of the replied-to user (e.g. reply to agent)", () => {
+    expect(
+      hasBlockingUserMention({
+        reference: { messageId: "msg-1" },
+        mentions: {
+          everyone: false,
+          roles: { size: 0 },
+          users: users("bot-99"),
+          repliedUser: { id: "bot-99" },
+        },
+      })
+    ).toBe(false);
+  });
+
+  it("blocks intentional pings of other users", () => {
+    expect(
+      hasBlockingUserMention({
+        mentions: {
+          everyone: false,
+          roles: { size: 0 },
+          users: users("user-2"),
+        },
+      })
+    ).toBe(true);
+  });
+
+  it("blocks reply-to-agent that also pings someone else", () => {
+    expect(
+      hasBlockingUserMention({
+        reference: { messageId: "msg-1" },
+        mentions: {
+          everyone: false,
+          roles: { size: 0 },
+          users: users("bot-99", "user-2"),
+          repliedUser: { id: "bot-99" },
+        },
+      })
+    ).toBe(true);
+  });
+
+  it("blocks role and everyone mentions", () => {
+    expect(
+      hasBlockingUserMention({
+        mentions: { everyone: true, roles: { size: 0 }, users: users() },
+      })
+    ).toBe(true);
+    expect(
+      hasBlockingUserMention({
+        mentions: { everyone: false, roles: { size: 1 }, users: users() },
+      })
+    ).toBe(true);
   });
 });
 

@@ -37,6 +37,34 @@ export function hasAnyMention(content: string): boolean {
   return /@\S/.test(content);
 }
 
+/**
+ * True when a message should be ignored because it pings someone else.
+ * Discord auto-includes the replied-to author in `mentions.users` — that alone
+ * must NOT block handling, or reply-to-agent messages are silently dropped.
+ */
+export function hasBlockingUserMention(msg: {
+  mentions: {
+    everyone: boolean;
+    roles: { size: number };
+    users: { size: number; keys: () => IterableIterator<string> };
+    repliedUser?: { id: string } | null;
+  };
+  reference?: { messageId?: string | null } | null;
+}): boolean {
+  if (msg.mentions.everyone || msg.mentions.roles.size > 0) return true;
+  if (msg.mentions.users.size === 0) return false;
+
+  const repliedId =
+    msg.reference?.messageId && msg.mentions.repliedUser
+      ? msg.mentions.repliedUser.id
+      : undefined;
+
+  for (const id of msg.mentions.users.keys()) {
+    if (id !== repliedId) return true;
+  }
+  return false;
+}
+
 export interface ParsedInvocation {
   agent: string;
   prompt: string;
