@@ -1,8 +1,9 @@
 /**
  * Claude Code injects an internal "Continue from where you left off." prompt when a
- * session process exits unexpectedly (e.g. Discord interrupt → SIGTERM → --resume).
- * The model often replies "No response requested." and the CLI exits with a success
- * result of 0 turns / $0 — before the real -p user prompt is processed.
+ * session process exits unexpectedly (e.g. Discord interrupt, or ask_user_question
+ * Other... reply racing into a new runAgent / killProcess). The model often replies
+ * "No response requested." and the CLI exits with success of 0 turns / $0 — before
+ * the real -p user prompt is processed.
  *
  * Detect that phantom completion so we can re-dispatch the user prompt once.
  */

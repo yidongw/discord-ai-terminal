@@ -138,15 +138,22 @@ export class MCPPermissionServer {
 
         if (interaction.customId === 'mcp_ask_other') {
           // User wants to provide custom input
-          await interaction.reply({ content: 'Please type your response:', ephemeral: true });
+          await interaction.reply({ content: 'Please type your response:', flags: 64 });
 
-          const collected = await channel.awaitMessages({
-            filter: (m: any) => m.author.id === discordContext.userId,
-            max: 1,
-            time: 300000,
-          });
-
-          const userResponse = collected.first()?.content || 'No response';
+          // The typed reply is a normal channel message — arm capture so the bot
+          // does not also treat it as a new agent prompt (Interrupt/Queue race).
+          this.discordBot?.askOtherCapture?.begin(discordContext.channelId, discordContext.userId);
+          let userResponse = 'No response';
+          try {
+            const collected = await channel.awaitMessages({
+              filter: (m: any) => m.author.id === discordContext.userId,
+              max: 1,
+              time: 300000,
+            });
+            userResponse = collected.first()?.content || 'No response';
+          } finally {
+            this.discordBot?.askOtherCapture?.end(discordContext.channelId, discordContext.userId);
+          }
           answers[q.question] = userResponse;
 
           // Update the message
