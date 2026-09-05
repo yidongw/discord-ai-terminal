@@ -668,6 +668,45 @@ export class DatabaseManager {
     this.db.prepare(`DELETE FROM scheduled_tasks WHERE thread_id = ?`).run(threadId);
   }
 
+  // Partial update of a scheduled task — only the provided fields are written.
+  // Lets the MCP layer edit interval/prompt/enabled/worktree/next-run without a
+  // raw sqlite UPDATE + manual DB backup.
+  updateScheduledTask(
+    id: string,
+    fields: {
+      prompt?: string;
+      label?: string | null;
+      intervalSeconds?: number;
+      nextRunAt?: number;
+      enabled?: boolean;
+      workDir?: string;
+      maxRuns?: number | null;
+    }
+  ): void {
+    const sets: string[] = [];
+    const vals: (string | number | null)[] = [];
+    if (fields.prompt !== undefined) { sets.push("prompt = ?"); vals.push(fields.prompt); }
+    if (fields.label !== undefined) { sets.push("label = ?"); vals.push(fields.label); }
+    if (fields.intervalSeconds !== undefined) { sets.push("interval_seconds = ?"); vals.push(fields.intervalSeconds); }
+    if (fields.nextRunAt !== undefined) { sets.push("next_run_at = ?"); vals.push(fields.nextRunAt); }
+    if (fields.enabled !== undefined) { sets.push("enabled = ?"); vals.push(fields.enabled ? 1 : 0); }
+    if (fields.workDir !== undefined) { sets.push("work_dir = ?"); vals.push(fields.workDir); }
+    if (fields.maxRuns !== undefined) { sets.push("max_runs = ?"); vals.push(fields.maxRuns); }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE scheduled_tasks SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  }
+
+  // GC spent one-shot session-limit resume rows. They are created with
+  // max_runs=1, so once fired they flip enabled=0 and never run again; without
+  // this they accumulate forever. Returns how many were removed.
+  deleteSpentSessionLimitTasks(): number {
+    const info = this.db
+      .prepare(`DELETE FROM scheduled_tasks WHERE enabled = 0 AND id LIKE 'session-limit-%'`)
+      .run();
+    return info.changes as number;
+  }
+
   // ── Active runs ──────────────────────────────────────────────────────────
 
   private rowToActiveRun(row: any): ActiveRun {
