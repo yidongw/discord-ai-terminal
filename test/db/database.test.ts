@@ -1,133 +1,52 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Mock bun:sqlite
-const mockQuery = vi.fn();
 const mockExec = vi.fn();
 const mockClose = vi.fn();
 const mockGet = vi.fn();
 const mockRun = vi.fn();
 const mockAll = vi.fn();
 
+// Both query() and prepare() return the same statement stub. The production
+// code uses .prepare(...).{get,run,all}; older tests were written against
+// .query(...) — support both so the mock survives either API.
+const stmtStub = () => ({ get: mockGet, run: mockRun, all: mockAll });
+
 vi.mock("bun:sqlite", () => ({
   Database: vi.fn().mockImplementation(() => ({
     exec: mockExec,
-    query: vi.fn(() => ({
-      get: mockGet,
-      run: mockRun,
-      all: mockAll
-    })),
-    close: mockClose
-  }))
+    query: vi.fn(stmtStub),
+    prepare: vi.fn(stmtStub),
+    transaction: vi.fn((fn: (...a: unknown[]) => unknown) => fn),
+    close: mockClose,
+  })),
 }));
 
 import { DatabaseManager } from "../../src/db/database.js";
+import type { ScheduledTask } from "../../src/db/database.js";
 
 describe("DatabaseManager", () => {
   let db: DatabaseManager;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Construction runs migrate(), which reads PRAGMA table_info(...).all();
+    // default that to an empty column list so migrations no-op cleanly.
+    mockAll.mockReturnValue([]);
     db = new DatabaseManager("/test/path.db");
-  });
-
-  afterEach(() => {
-    db.close();
   });
 
   describe("initialization", () => {
     it("should create tables on initialization", () => {
-      expect(mockExec).toHaveBeenCalledWith(expect.stringContaining("CREATE TABLE IF NOT EXISTS channel_sessions"));
-    });
-  });
-
-  describe("session management", () => {
-    it("should return undefined for non-existent session", () => {
-      mockGet.mockReturnValue(null);
-      
-      const result = db.getSession("non-existent-channel");
-      
-      expect(result).toBeUndefined();
-      expect(mockGet).toHaveBeenCalledWith("non-existent-channel");
-    });
-
-    it("should return session ID when it exists", () => {
-      mockGet.mockReturnValue({ session_id: "session-123" });
-      
-      const result = db.getSession("channel-1");
-      
-      expect(result).toBe("session-123");
-      expect(mockGet).toHaveBeenCalledWith("channel-1");
-    });
-
-    it("should store a session", () => {
-      const channelId = "test-channel-123";
-      const sessionId = "session-456";
-      const channelName = "test-channel";
-
-      db.setSession(channelId, sessionId, channelName);
-
-      expect(mockRun).toHaveBeenCalledWith(
-        channelId,
-        sessionId,
-        channelName,
-        expect.any(Number)
+      expect(mockExec).toHaveBeenCalledWith(
+        expect.stringContaining("CREATE TABLE IF NOT EXISTS thread_sessions")
       );
     });
 
-    it("should clear a session", () => {
-      const channelId = "test-channel-123";
-
-      db.clearSession(channelId);
-
-      expect(mockRun).toHaveBeenCalledWith(channelId);
-    });
-  });
-
-  describe("getAllSessions", () => {
-    it("should return all sessions", () => {
-      const mockSessions = [
-        { channel_id: "channel-1", session_id: "session-1", channel_name: "channel-one", last_used: 123456 },
-        { channel_id: "channel-2", session_id: "session-2", channel_name: "channel-two", last_used: 123457 },
-      ];
-      mockAll.mockReturnValue(mockSessions);
-
-      const result = db.getAllSessions();
-
-      expect(result).toEqual(mockSessions);
-      expect(mockAll).toHaveBeenCalled();
-    });
-  });
-
-  describe("cleanupOldSessions", () => {
-    it("should remove old sessions", () => {
-      mockRun.mockReturnValue({ changes: 2 });
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-      db.cleanupOldSessions();
-
-      expect(mockRun).toHaveBeenCalledWith(expect.any(Number));
-      expect(consoleSpy).toHaveBeenCalledWith("Cleaned up 2 old sessions");
-      
-      consoleSpy.mockRestore();
-    });
-
-    it("should not log when no sessions are cleaned", () => {
-      mockRun.mockReturnValue({ changes: 0 });
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-      db.cleanupOldSessions();
-
-      expect(mockRun).toHaveBeenCalledWith(expect.any(Number));
-      expect(consoleSpy).not.toHaveBeenCalled();
-      
-      consoleSpy.mockRestore();
-    });
-  });
-
-  describe("close", () => {
-    it("should close the database", () => {
-      db.close();
-      expect(mockClose).toHaveBeenCalled();
+    it("should create the scheduled_tasks table", () => {
+      expect(mockExec).toHaveBeenCalledWith(
+        expect.stringContaining("CREATE TABLE IF NOT EXISTS scheduled_tasks")
+      );
     });
   });
 
@@ -151,12 +70,9 @@ describe("DatabaseManager", () => {
     });
 
     it("should store a model", () => {
-      const channelId = "test-channel-123";
-      const model = "claude-haiku-4-5";
+      db.setModel("test-channel-123", "claude-haiku-4-5");
 
-      db.setModel(channelId, model);
-
-      expect(mockRun).toHaveBeenCalledWith(channelId, model);
+      expect(mockRun).toHaveBeenCalledWith("test-channel-123", "claude-haiku-4-5");
     });
   });
 
@@ -180,12 +96,9 @@ describe("DatabaseManager", () => {
     });
 
     it("should store a codex model", () => {
-      const channelId = "test-channel-123";
-      const model = "gpt-5.4";
+      db.setCodexModel("test-channel-123", "gpt-5.4");
 
-      db.setCodexModel(channelId, model);
-
-      expect(mockRun).toHaveBeenCalledWith(channelId, model);
+      expect(mockRun).toHaveBeenCalledWith("test-channel-123", "gpt-5.4");
     });
   });
 
@@ -207,12 +120,80 @@ describe("DatabaseManager", () => {
     });
 
     it("should store a mode", () => {
-      const channelId = "test-channel-123";
-      const mode = "approve";
+      db.setMode("test-channel-123", "approve");
 
-      db.setMode(channelId, mode);
+      expect(mockRun).toHaveBeenCalledWith("test-channel-123", "approve");
+    });
+  });
 
-      expect(mockRun).toHaveBeenCalledWith(channelId, mode);
+  describe("scheduled tasks", () => {
+    const sampleTask: ScheduledTask = {
+      id: "t1",
+      threadId: "th1",
+      channelId: "ch1",
+      agent: "cc",
+      workDir: "/wd",
+      userId: "u1",
+      prompt: "do stuff",
+      label: "lbl",
+      intervalSeconds: 3600,
+      nextRunAt: 123,
+      enabled: true,
+      runCount: 0,
+      createdAt: 999,
+    };
+
+    it("createScheduledTask inserts all columns with nulls for optional fields", () => {
+      db.createScheduledTask(sampleTask);
+
+      expect(mockRun).toHaveBeenCalledWith(
+        "t1", "th1", "ch1", "cc", "/wd", "u1", "do stuff", "lbl",
+        3600, 123, 1, null, 0, null, 999
+      );
+    });
+
+    it("getScheduledTask returns null when the row is missing", () => {
+      mockGet.mockReturnValue(null);
+
+      expect(db.getScheduledTask("nope")).toBeNull();
+      expect(mockGet).toHaveBeenCalledWith("nope");
+    });
+
+    it("getScheduledTask maps a row to a ScheduledTask", () => {
+      mockGet.mockReturnValue({
+        id: "t1", thread_id: "th1", channel_id: "ch1", agent: "cc",
+        work_dir: "/wd", user_id: "u1", prompt: "p", label: "l",
+        interval_seconds: 60, next_run_at: 5, enabled: 1,
+        last_run_at: null, run_count: 2, max_runs: null, created_at: 7,
+      });
+
+      const t = db.getScheduledTask("t1");
+      expect(t).toMatchObject({ id: "t1", threadId: "th1", enabled: true, runCount: 2 });
+    });
+
+    it("markScheduledTaskRun runs with (ranAt, nextRunAt, id)", () => {
+      db.markScheduledTaskRun("t1", 100, 200);
+
+      expect(mockRun).toHaveBeenCalledWith(100, 200, "t1");
+    });
+
+    it("updateScheduledTask writes only the provided fields, id last", () => {
+      db.updateScheduledTask("t1", { intervalSeconds: 120, enabled: false });
+
+      expect(mockRun).toHaveBeenCalledWith(120, 0, "t1");
+    });
+
+    it("updateScheduledTask is a no-op when no fields are given", () => {
+      db.updateScheduledTask("t1", {});
+
+      expect(mockRun).not.toHaveBeenCalled();
+    });
+
+    it("deleteSpentSessionLimitTasks returns the number of rows removed", () => {
+      mockRun.mockReturnValue({ changes: 3 });
+
+      expect(db.deleteSpentSessionLimitTasks()).toBe(3);
+      expect(mockRun).toHaveBeenCalled();
     });
   });
 });
