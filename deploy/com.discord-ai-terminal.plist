@@ -29,6 +29,11 @@
 	<key>ThrottleInterval</key>
 	<integer>15</integer>
 
+	<!-- Allow detachAndExit to drain Discord outboxes (SHUTDOWN_DRAIN_MS) before
+	     launchd escalates to SIGKILL. Default is 20s which truncates mid-reply. -->
+	<key>ExitTimeOut</key>
+	<integer>45</integer>
+
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
