@@ -33,6 +33,11 @@ interface StartJobArgs {
  * "wakes" cc with the result. The command runs detached + logs to a file with an
  * exit-code sentinel, so it survives bot restarts and still wakes cc afterward.
  */
+// Fallback prompt when wake_thread is called without an explicit instruction.
+const DEFAULT_WAKE_PROMPT =
+  "You've been woken on demand. Check the latest state of this thread's task and " +
+  "continue now — then post your update to this thread.";
+
 export class BackgroundJobManager {
   private timer?: ReturnType<typeof setInterval>;
   private ticking = false;
@@ -205,6 +210,70 @@ export class BackgroundJobManager {
     } catch (err) {
       console.error(`[bgjob] wake agent launch failed for ${job.jobId}:`, err);
     }
+  }
+
+  /**
+   * On-demand wake: immediately (re)invoke the agent in `threadId` with `prompt`,
+   * resuming that thread's live session and posting its output to the thread. No
+   * scheduled task required — any initialized agent thread can be poked. Skips if
+   * a run is already active (to avoid piling on). Exposed via the wake_thread MCP
+   * tool so one agent can hand work to / wake another thread's agent.
+   */
+  async wakeThread(
+    threadId: string,
+    prompt?: string,
+    opts?: { reason?: string }
+  ): Promise<{ ok: boolean; error?: string; busy?: boolean; agent?: string }> {
+    const session = this.db.getThreadSession(threadId);
+    if (!session) {
+      return { ok: false, error: `No session for thread ${threadId} — it must be an initialized agent thread.` };
+    }
+    if (this.sessionManager.hasActiveProcess(threadId)) {
+      return { ok: false, busy: true, error: "That thread already has a run in flight; try again once it finishes." };
+    }
+
+    let thread: any;
+    try {
+      thread = await this.client.channels.fetch(threadId);
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: err?.code === 10003 ? `Thread ${threadId} no longer exists.` : `Could not fetch thread ${threadId}: ${err?.message ?? err}`,
+      };
+    }
+    if (!thread || (thread.type !== ChannelType.PublicThread && thread.type !== ChannelType.PrivateThread)) {
+      return { ok: false, error: `${threadId} is not an active thread.` };
+    }
+
+    const runPrompt = typeof prompt === "string" && prompt.trim() ? prompt : DEFAULT_WAKE_PROMPT;
+
+    try {
+      await thread.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("⏰ Woken on demand")
+            .setDescription(`${opts?.reason ? `**${opts.reason}**\n` : ""}\`${truncate(runPrompt, 200)}\``)
+            .setColor(0x9b59b6),
+        ],
+      });
+    } catch (err) {
+      return { ok: false, error: `Could not post to thread: ${err instanceof Error ? err.message : String(err)}` };
+    }
+
+    try {
+      await this.sessionManager.runAgent(
+        threadId,
+        session.channelId,
+        thread,
+        session.agent,
+        session.workDir,
+        runPrompt,
+        { channelId: threadId, channelName: thread.name ?? "thread", userId: "", messageId: "" }
+      );
+    } catch (err) {
+      return { ok: false, error: `Agent launch failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    return { ok: true, agent: session.agent };
   }
 
   private readOutput(job: BackgroundJob): string {

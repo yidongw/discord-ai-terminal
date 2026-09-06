@@ -272,6 +272,33 @@ const TOOLS = [
       required: ['id'],
     },
   },
+  {
+    name: 'wake_thread',
+    description:
+      "Immediately wake ANOTHER Discord thread's agent session so it runs right " +
+      'now and posts to that thread — without waiting for any schedule. This ' +
+      "resumes the target thread's live agent conversation with a one-off prompt " +
+      '(different from update_scheduled_task, which reschedules a recurring task). ' +
+      'Use it to hand work to, or nudge, a specific thread\'s agent by its thread ' +
+      'id — e.g. wake the system-supervisor loop to handle something urgent. Find ' +
+      "a loop's thread id via list_scheduled_tasks (threadId field). No-op-safe: " +
+      'if the target thread already has a run in flight it returns {busy:true} and ' +
+      'you can retry shortly.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        thread_id: { type: 'string', description: 'The Discord thread id whose agent to wake.' },
+        prompt: {
+          type: 'string',
+          description:
+            'What the woken agent should do this run (a fresh standalone instruction). ' +
+            'Optional — a generic "check state and continue" prompt is used if omitted.',
+        },
+        reason: { type: 'string', description: 'Optional short label shown in the wake notice embed.' },
+      },
+      required: ['thread_id'],
+    },
+  },
 ];
 
 function send(message) {
