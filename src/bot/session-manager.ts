@@ -196,6 +196,10 @@ interface ActiveSession {
   sawRealAssistantText?: boolean;
   // True once any tool_start fired this run (including hidden tools).
   sawToolUse?: boolean;
+  // High-water mark of log bytes fully parsed this run. Persisted to
+  // active_runs.stdout_offset only when the outbox is idle (Discord caught up),
+  // so a restart re-tails undelivered lines instead of skipping them.
+  parsedOffset?: number;
 }
 
 export class SessionManager {
@@ -776,6 +780,18 @@ export class SessionManager {
     startOffset: number,
     isAlive: () => boolean
   ): void {
+    session.parsedOffset = startOffset;
+    // Persist the delivery watermark only when Discord has caught up. Parsing
+    // alone must not advance stdout_offset — that was the "restart mid-reply
+    // loses the rest of the message" hole in the original reattach design.
+    const persistDeliveredOffset = () => {
+      const offset = session.parsedOffset;
+      if (offset === undefined) return;
+      if (session.outbox.isBusy()) return;
+      try { this.db.updateActiveRunOffset(session.runId, offset); } catch {}
+    };
+    session.outbox.setOnIdle(persistDeliveredOffset);
+
     const tailer = new RunTailer({
       logPath: session.logPath,
       startOffset,
@@ -802,7 +818,8 @@ export class SessionManager {
         }
       },
       onOffset: (offset) => {
-        try { this.db.updateActiveRunOffset(session.runId, offset); } catch {}
+        session.parsedOffset = offset;
+        persistDeliveredOffset();
       },
       onStall: () => this.handleLogStall(threadId, session, agent),
       onFinalize: () => this.finalizeRun(threadId, session),
@@ -959,6 +976,7 @@ export class SessionManager {
 
     this.db.deleteActiveRun(session.runId);
     this.removeLog(session.logPath);
+    session.outbox.setOnIdle(undefined);
 
     // Catch PRs created during the session when the GitHub webhook was missed.
     // Only for discord/ worktree branches; ensurePrLinkedToMakerThread is idempotent.
@@ -1906,6 +1924,15 @@ export class SessionManager {
       Promise.all(drains),
       new Promise<void>((res) => setTimeout(res, SHUTDOWN_DRAIN_MS)),
     ]);
+    // If drain timed out, stdout_offset must stay at the last *delivered* mark
+    // (persistDeliveredOffset skips while busy). Clear idle hooks so a late
+    // send completion after exit can't write a too-high offset.
+    for (const [, outbox] of this.outboxes) {
+      outbox.setOnIdle(undefined);
+      if (outbox.isBusy()) {
+        console.warn("[shutdown] outbox still busy after drain timeout — leaving stdout_offset at last delivered mark");
+      }
+    }
     for (const [, typing] of this.typing) typing.stop();
   }
 
@@ -1934,6 +1961,10 @@ export class Outbox {
   private queue: OutItem[] = [];
   private running = false;
   private idleWaiters: Array<() => void> = [];
+  // Fired whenever the queue becomes fully idle (after Discord sends finish).
+  // Used to persist the log byte-offset only once delivery has caught up — so a
+  // bot restart re-reads undelivered lines instead of skipping them.
+  private onIdleCb?: () => void;
   // The live "N hidden" summary embed and its accumulated per-tool counts. While
   // open, consecutive hidden tool calls edit this one message; the next visible
   // message (text, a shown tool, a status embed) seals it, so the following
@@ -1956,6 +1987,15 @@ export class Outbox {
     this.thread = thread;
     this.onLocalImageReference = onLocalImageReference;
     this.claimImagePath = claimImagePath;
+  }
+
+  /** Register (or clear) the idle callback — one per active run via startTailer. */
+  setOnIdle(cb: (() => void) | undefined): void {
+    this.onIdleCb = cb;
+  }
+
+  isBusy(): boolean {
+    return this.busy;
   }
 
   private get busy(): boolean {
@@ -2031,6 +2071,7 @@ export class Outbox {
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
     for (const w of waiters) w();
+    try { this.onIdleCb?.(); } catch (err) { console.error("[outbox] onIdle failed:", err); }
   }
 
   // Close the current hidden-tool summary so the next hidden call starts a fresh
