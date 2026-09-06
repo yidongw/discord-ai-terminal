@@ -56,6 +56,32 @@ describe("Outbox", () => {
     expect(descOf(thread.sends[0])).toContain("hello");
   });
 
+  it("fires onIdle only after Discord delivery catches up (delivery watermark)", async () => {
+    const thread = makeThread();
+    const outbox = new Outbox(thread);
+    const idleOffsets: number[] = [];
+    let parsedOffset = 0;
+    outbox.setOnIdle(() => {
+      if (!outbox.isBusy()) idleOffsets.push(parsedOffset);
+    });
+
+    thread.openGate();
+    outbox.pushText("first");
+    parsedOffset = 100;
+    // Simulate tailer advancing parse offset while outbox is still sending.
+    expect(outbox.isBusy()).toBe(true);
+    expect(idleOffsets).toEqual([]);
+
+    parsedOffset = 250;
+    outbox.pushText(" second");
+    thread.releaseGate();
+    await outbox.drain();
+
+    expect(idleOffsets.length).toBeGreaterThanOrEqual(1);
+    expect(idleOffsets[idleOffsets.length - 1]).toBe(250);
+    expect(outbox.isBusy()).toBe(false);
+  });
+
   it("coalesces text that arrives while a send is in flight", async () => {
     const thread = makeThread();
     const outbox = new Outbox(thread);
