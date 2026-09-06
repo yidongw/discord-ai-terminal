@@ -563,6 +563,7 @@ export class MCPPermissionServer {
       const threadId = scope === 'all' ? undefined : discordContext?.channelId;
       const tasks = this.db.listScheduledTasks(threadId).map((t) => ({
         id: t.id,
+        threadId: t.threadId,
         prompt: t.prompt,
         label: t.label,
         interval: formatInterval(t.intervalSeconds),
@@ -657,6 +658,34 @@ export class MCPPermissionServer {
         });
       } catch (error) {
         console.error('HTTP update_scheduled_task error:', error);
+        res.json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
+    // Immediately wake another thread's agent session so it runs NOW and posts to
+    // that Discord thread — no schedule involved. Unlike update_scheduled_task
+    // (which reschedules a recurring task's prompt), this resumes the target
+    // thread's live agent session with a one-off prompt. Lets one agent hand work
+    // to / nudge another thread's agent (e.g. wake the system-supervisor loop).
+    this.app.post('/tool/wake_thread', async (req, res) => {
+      if (!this.bgJobs) {
+        res.json({ error: 'Wake not available (no background-job manager wired).' });
+        return;
+      }
+      const { thread_id, prompt, reason } = req.body ?? {};
+      if (!thread_id || typeof thread_id !== 'string') {
+        res.json({ error: 'A "thread_id" string is required.' });
+        return;
+      }
+      try {
+        const result = await this.bgJobs.wakeThread(
+          thread_id,
+          typeof prompt === 'string' ? prompt : undefined,
+          { reason: typeof reason === 'string' ? reason : undefined }
+        );
+        res.json(result);
+      } catch (error) {
+        console.error('HTTP wake_thread error:', error);
         res.json({ error: error instanceof Error ? error.message : String(error) });
       }
     });
