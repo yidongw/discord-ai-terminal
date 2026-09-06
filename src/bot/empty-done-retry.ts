@@ -5,10 +5,15 @@
  * "No response requested." and the CLI exits with success of 0 turns / $0 — before
  * the real -p user prompt is processed.
  *
- * Detect that phantom completion so we can re-dispatch the user prompt once.
+ * The same 0-turn success also shows up when Claude ingests a pending
+ * task-notification (or other queue noise) and exits without calling the model on
+ * the user's -p prompt. Detect that phantom completion so we can re-dispatch.
+ *
+ * Retry budget: attempt 1 resumes the same session; attempt 2 starts fresh so a
+ * wedged resume transcript cannot loop forever.
  */
 
-export const MAX_EMPTY_DONE_RETRIES = 1;
+export const MAX_EMPTY_DONE_RETRIES = 2;
 
 const NO_RESPONSE_ACKS = new Set([
   "no response requested.",
@@ -42,4 +47,13 @@ export function shouldRetryEmptyDone(ctx: EmptyDoneContext): boolean {
   if (!ctx.prompt.trim()) return false;
   if (ctx.retriesSoFar >= MAX_EMPTY_DONE_RETRIES) return false;
   return true;
+}
+
+/**
+ * After the first same-session retry still returns 0 turns, drop the resume ID
+ * so Claude cannot keep short-circuiting on a wedged transcript.
+ * `retryAttempt` is 1-based (the value stored in emptyDoneRetryCount after arming).
+ */
+export function shouldFreshSessionEmptyDone(retryAttempt: number): boolean {
+  return retryAttempt >= 2;
 }

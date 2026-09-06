@@ -23,7 +23,12 @@ import {
   sessionLimitTaskId,
 } from "./session-limit-wakeup.js";
 import { MAX_STALL_WAKEUPS, STALL_CONTINUATION_PROMPT } from "./stall-wakeup.js";
-import { shouldRetryEmptyDone, isNoResponseAck } from "./empty-done-retry.js";
+import {
+  shouldRetryEmptyDone,
+  shouldFreshSessionEmptyDone,
+  isNoResponseAck,
+  MAX_EMPTY_DONE_RETRIES,
+} from "./empty-done-retry.js";
 import {
   extractGeneratedImagePath,
   extractLocalImageReferences,
@@ -175,6 +180,8 @@ interface ActiveSession {
   // Set when Claude exits with 0 turns and no real work (phantom continue after
   // unexpected process exit). finalizeRun re-dispatches the same user prompt.
   pendingEmptyDoneRetry?: boolean;
+  // When set with pendingEmptyDoneRetry, the retry drops --resume (wedged session).
+  pendingEmptyDoneFreshSession?: boolean;
   // True once we saw non-ack assistant text this run (excludes "No response requested.").
   sawRealAssistantText?: boolean;
   // True once any tool_start fired this run (including hidden tools).
@@ -1003,6 +1010,8 @@ export class SessionManager {
       }
     } else if (session.pendingEmptyDoneRetry) {
       session.pendingEmptyDoneRetry = false;
+      const freshSession = !!session.pendingEmptyDoneFreshSession;
+      session.pendingEmptyDoneFreshSession = false;
       try {
         const ctx = session.discordContext ?? {
           channelId: threadId,
@@ -1010,7 +1019,9 @@ export class SessionManager {
           userId: "",
           messageId: "",
         };
-        console.log(`[empty-done] retrying prompt for ${threadId}: ${session.prompt.slice(0, 80)}…`);
+        console.log(
+          `[empty-done] retrying prompt for ${threadId} fresh=${freshSession}: ${session.prompt.slice(0, 80)}…`
+        );
         await this.runAgent(
           threadId,
           session.channelId,
@@ -1019,6 +1030,7 @@ export class SessionManager {
           session.workDir,
           session.prompt,
           ctx,
+          freshSession ? { freshSession: true } : undefined,
         );
       } catch (err) {
         console.error(`[empty-done] retry failed for ${threadId}:`, err);
@@ -1469,18 +1481,23 @@ export class SessionManager {
           retriesSoFar,
         })
       ) {
-        this.emptyDoneRetryCount.set(threadId, retriesSoFar + 1);
+        const attempt = retriesSoFar + 1;
+        this.emptyDoneRetryCount.set(threadId, attempt);
         session.pendingEmptyDoneRetry = true;
+        session.pendingEmptyDoneFreshSession = shouldFreshSessionEmptyDone(attempt);
         session.done = true;
+        const fresh = session.pendingEmptyDoneFreshSession;
         console.log(
-          `[empty-done] run=${session.runId} thread=${threadId} — 0-turn phantom continue; will retry prompt`
+          `[empty-done] run=${session.runId} thread=${threadId} attempt=${attempt} fresh=${fresh} — 0-turn phantom; will retry prompt`
         );
         outbox.enqueue(() =>
           thread.send({
             embeds: [
               embed(
-                "↻ Empty reply — retrying",
-                "Claude exited without doing work (common right after an interrupt). Re-sending your message…",
+                fresh ? "↻ Empty reply — fresh session" : "↻ Empty reply — retrying",
+                fresh
+                  ? "Claude exited with 0 turns again. Starting a fresh session and re-sending your message…"
+                  : "Claude exited without doing work (common right after an interrupt). Re-sending your message…",
                 0xffa500
               ),
             ],
@@ -1490,6 +1507,23 @@ export class SessionManager {
         return;
       }
 
+      if (
+        session.agentKey === "cc" &&
+        event.turns === 0 &&
+        !session.sawRealAssistantText &&
+        !(session.sawToolUse || session.toolCalls.size > 0)
+      ) {
+        console.log(
+          `[empty-done] giving up run=${session.runId} thread=${threadId} retries=${retriesSoFar} — posting Done 0 turns`
+        );
+      }
+      const emptyDoneExhausted =
+        session.agentKey === "cc" &&
+        event.turns === 0 &&
+        retriesSoFar >= MAX_EMPTY_DONE_RETRIES &&
+        !session.sawRealAssistantText &&
+        !(session.sawToolUse || session.toolCalls.size > 0);
+
       // Real completion (or retry already used) — clear empty-done budget.
       this.emptyDoneRetryCount.delete(threadId);
       session.done = true;
@@ -1498,7 +1532,11 @@ export class SessionManager {
       if (event.cost !== null) parts.push(event.cost < 0.01 ? `${(event.cost * 100).toFixed(2)}¢` : `$${event.cost.toFixed(2)}`);
       if (event.tokens) parts.push(event.tokens);
       if (event.ctxPct !== null) parts.push(`${event.ctxPct}% ctx`);
-      const statsLine = parts.length ? `*${parts.join(" · ")}*` : "Complete.";
+      let statsLine = parts.length ? `*${parts.join(" · ")}*` : "Complete.";
+      if (emptyDoneExhausted) {
+        statsLine +=
+          "\n\nClaude kept exiting with 0 turns. Try `/clear` then resend your message.";
+      }
       const threadSession = this.db.getThreadSession(threadId);
       const handoffBot = threadSession?.handoffBot;
       const includeHandoff =
