@@ -11,7 +11,6 @@ export interface HandoffIdleContext {
   pendingUsageLimitResume: boolean;
   pendingTurnLimitResume: boolean;
   pendingStallWakeup: boolean;
-  pendingIncompleteContinue: boolean;
   pendingEmptyDoneRetry: boolean;
   hasEnabledScheduledTasks: boolean;
 }
@@ -26,7 +25,6 @@ export function shouldSendHandoffDone(ctx: HandoffIdleContext): boolean {
     ctx.pendingUsageLimitResume ||
     ctx.pendingTurnLimitResume ||
     ctx.pendingStallWakeup ||
-    ctx.pendingIncompleteContinue ||
     ctx.pendingEmptyDoneRetry
   ) return false;
   if (ctx.hasEnabledScheduledTasks) return false;

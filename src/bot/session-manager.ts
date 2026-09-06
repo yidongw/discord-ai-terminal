@@ -22,12 +22,7 @@ import {
   registerSessionLimitWakeup,
   sessionLimitTaskId,
 } from "./session-limit-wakeup.js";
-import {
-  MAX_STALL_WAKEUPS,
-  MAX_INCOMPLETE_CONTINUES,
-  STALL_CONTINUATION_PROMPT,
-  INCOMPLETE_CONTINUATION_PROMPT,
-} from "./stall-wakeup.js";
+import { MAX_STALL_WAKEUPS, STALL_CONTINUATION_PROMPT } from "./stall-wakeup.js";
 import {
   shouldRetryEmptyDone,
   shouldFreshSessionEmptyDone,
@@ -90,11 +85,9 @@ const SIGKILL_GRACE_MS = 15_000;
 // visible continuously while a run is active or its outbox is still draining.
 const TYPING_REFRESH_MS = 8000;
 // On graceful shutdown, how long we wait for outboxes to deliver already-parsed
-// output before exiting. Must be long enough for a mid-reply Discord backlog
-// (rate limits); too short and the log offset is already advanced so re-attach
-// permanently skips undelivered text ("reply stops halfway"). Agents stay
-// detached either way and are re-attached on the next boot.
-const SHUTDOWN_DRAIN_MS = 30_000;
+// output before exiting. Kept under launchd's restart grace so the agents (which
+// we deliberately leave running) are re-attached cleanly on the next boot.
+const SHUTDOWN_DRAIN_MS = 4000;
 
 interface ActiveSession {
   // Identity of the detached run this session is streaming. The run survives a
@@ -184,9 +177,6 @@ interface ActiveSession {
   pendingOAuthRetry?: boolean;
   // Set when the log stalls with no tool in flight — finalizeRun resumes the agent.
   pendingStallWakeup?: boolean;
-  // Set when the process exits without a Done/result event (and we didn't /stop).
-  // finalizeRun resumes with INCOMPLETE_CONTINUATION_PROMPT once.
-  pendingIncompleteContinue?: boolean;
   // Set when Claude exits with 0 turns and no real work (phantom continue after
   // unexpected process exit). finalizeRun re-dispatches the same user prompt.
   pendingEmptyDoneRetry?: boolean;
@@ -226,7 +216,6 @@ export class SessionManager {
   private resumeRetryCount = new Map<string, number>();
   // Stall wakeups per thread for the current user turn. Cleared on done.
   private stallWakeupCount = new Map<string, number>();
-  private incompleteContinueCount = new Map<string, number>();
   // Empty 0-turn done retries per thread. Cleared on a real (turns>0) done.
   private emptyDoneRetryCount = new Map<string, number>();
   // Where detached runs write their append-only output logs (one per run). The
@@ -360,7 +349,6 @@ export class SessionManager {
       pendingUsageLimitResume: !!session.pendingUsageLimitResume,
       pendingTurnLimitResume: !!session.pendingTurnLimitResume,
       pendingStallWakeup: !!session.pendingStallWakeup,
-      pendingIncompleteContinue: !!session.pendingIncompleteContinue,
       pendingEmptyDoneRetry: !!session.pendingEmptyDoneRetry,
       hasEnabledScheduledTasks: this.db.listScheduledTasks(threadId).some((t) => t.enabled),
     });
@@ -906,56 +894,6 @@ export class SessionManager {
       );
     }
 
-    // Process exited without a stream-json Done/result, and we didn't /stop it.
-    // Common after bot restart: outbox drain times out mid-reply, offset already
-    // advanced, re-attach then sees the PID die — thread goes idle with no Done.
-    if (
-      !session.done &&
-      !session.stopping &&
-      !session.pendingEmptyDoneRetry &&
-      !session.pendingStallWakeup &&
-      !session.pendingFreshSessionRetry &&
-      !session.pendingResumeRetry &&
-      !session.pendingOAuthRetry &&
-      !session.pendingUsageLimitResume &&
-      !session.pendingTurnLimitResume
-    ) {
-      const continues = this.incompleteContinueCount.get(threadId) ?? 0;
-      if (continues < MAX_INCOMPLETE_CONTINUES) {
-        this.incompleteContinueCount.set(threadId, continues + 1);
-        session.pendingIncompleteContinue = true;
-        console.log(
-          `[incomplete] run=${session.runId} thread=${threadId} — exit without Done; will auto-continue`
-        );
-        session.outbox.enqueue(() =>
-          session.thread.send({
-            embeds: [
-              embed(
-                "⚠️ Run interrupted",
-                "Agent exited without Done (often a bot restart mid-reply). Continuing from where it left off…",
-                0xffa500
-              ),
-            ],
-          })
-        );
-      } else {
-        console.log(
-          `[incomplete] run=${session.runId} thread=${threadId} — exit without Done; auto-continue budget exhausted`
-        );
-        session.outbox.enqueue(() =>
-          session.thread.send({
-            embeds: [
-              embed(
-                "⚠️ Run ended without Done",
-                "Agent process exited with no completion event. Send a message to continue.",
-                0xffa500
-              ),
-            ],
-          })
-        );
-      }
-    }
-
     this.enqueueDiscoveredCodexImages(threadId, session);
 
     // Deliver everything already queued before marking the thread idle.
@@ -1084,34 +1022,6 @@ export class SessionManager {
         session.outbox.enqueue(() =>
           session.thread.send({
             embeds: [embed("❌ Stall resume failed", String((err as Error).message ?? err), 0xff0000)],
-          })
-        );
-        await session.outbox.drain();
-      }
-    } else if (session.pendingIncompleteContinue) {
-      session.pendingIncompleteContinue = false;
-      try {
-        const ctx = session.discordContext ?? {
-          channelId: threadId,
-          channelName: session.thread?.name ?? "thread",
-          userId: "",
-          messageId: "",
-        };
-        console.log(`[incomplete] continuing prompt for ${threadId}`);
-        await this.runAgent(
-          threadId,
-          session.channelId,
-          session.thread,
-          session.agentKey,
-          session.workDir,
-          INCOMPLETE_CONTINUATION_PROMPT,
-          ctx,
-        );
-      } catch (err) {
-        console.error(`[incomplete] auto-continue failed for ${threadId}:`, err);
-        session.outbox.enqueue(() =>
-          session.thread.send({
-            embeds: [embed("❌ Incomplete-run continue failed", String((err as Error).message ?? err), 0xff0000)],
           })
         );
         await session.outbox.drain();
@@ -1577,7 +1487,6 @@ export class SessionManager {
     if (event.kind === "done") {
       this.resumeRetryCount.delete(threadId);
       this.stallWakeupCount.delete(threadId);
-      this.incompleteContinueCount.delete(threadId);
 
       const retriesSoFar = this.emptyDoneRetryCount.get(threadId) ?? 0;
       if (

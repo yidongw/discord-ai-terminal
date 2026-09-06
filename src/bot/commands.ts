@@ -854,13 +854,12 @@ export class CommandHandler {
     this.sessionManager.getDb().setRestartNotification(i.channelId, msg.id);
 
     // Spawn the restart detached so it fires after Discord receives the reply.
-    // Prefer SIGTERM (not kickstart -k) so detachAndExit can drain Discord
-    // outboxes; KeepAlive / systemd Restart= then brings the service back.
-    // kickstart -k SIGKILLs immediately and truncates mid-reply streams.
+    // The service manager kills and relaunches this process, so nothing after
+    // the spawn will run reliably.
     const isMac = process.platform === "darwin";
     const uid = process.getuid?.() ?? 501;
     const restartCmd = isMac
-      ? `launchctl kill SIGTERM gui/${uid}/com.discord-ai-terminal`
+      ? `launchctl kickstart -k gui/${uid}/com.discord-ai-terminal`
       : "systemctl --user restart discord-ai-terminal";
 
     Bun.spawn(["sh", "-c", `sleep 1 && ${restartCmd}`], {

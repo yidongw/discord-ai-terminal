@@ -25,7 +25,6 @@ describe("shouldSendHandoffDone", () => {
     pendingUsageLimitResume: false,
     pendingTurnLimitResume: false,
     pendingStallWakeup: false,
-    pendingIncompleteContinue: false,
     pendingEmptyDoneRetry: false,
     hasEnabledScheduledTasks: false,
   };

@@ -66,7 +66,6 @@ describe("empty-done retry", () => {
       pendingUsageLimitResume: false,
       pendingTurnLimitResume: false,
       pendingStallWakeup: false,
-      pendingIncompleteContinue: false,
       pendingEmptyDoneRetry: true,
       hasEnabledScheduledTasks: false,
     })).toBe(false);
