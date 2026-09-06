@@ -1,5 +1,6 @@
-const USAGE_LIMIT_RE =
-  /you(?:'ve| have) hit your (?:session|weekly|opus|monthly spend) limit/i;
+/** Limit line must lead the message — not appear mid-file / mid-quote. */
+const USAGE_LIMIT_AT_START_RE =
+  /^\s*(?:error[:\s]+)?you(?:'ve| have) hit your (?:session|weekly|opus|monthly spend) limit/i;
 
 // "resets 3:45pm", "resets 11pm", "resets 2:50am (Asia/Bangkok)", or "resets Mon 12:00am"
 const RESET_RE =
@@ -16,7 +17,9 @@ export interface SessionLimitReset {
 
 /** True when text looks like a Claude subscription usage-limit message. */
 export function isUsageLimitMessage(text: string): boolean {
-  return USAGE_LIMIT_RE.test(text);
+  // Must lead the string so quoting a worker log that contains the phrase
+  // (e.g. Bash tool output) does not look like *this* run hit the limit.
+  return USAGE_LIMIT_AT_START_RE.test(text);
 }
 
 /**

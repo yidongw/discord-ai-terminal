@@ -17,6 +17,15 @@ describe("session-limit-reset", () => {
     expect(isUsageLimitMessage("error_max_turns")).toBe(false);
   });
 
+  it("ignores limit phrases quoted mid-message (e.g. Bash reading another run's log)", () => {
+    const quoted =
+      "== redrain log ==\n" +
+      "You've hit your monthly spend limit · raise it at claude.ai/settings/usage · your session limit resets 2pm (Asia/Bangkok)\n" +
+      "---end---";
+    expect(isUsageLimitMessage(quoted)).toBe(false);
+    expect(parseSessionLimitReset(quoted)).toBeNull();
+  });
+
   it("parses monthly spend limit with hour-only reset", () => {
     const now = new Date("2026-09-05T14:00:00");
     const parsed = parseSessionLimitReset(

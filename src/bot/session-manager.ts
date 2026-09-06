@@ -1321,7 +1321,9 @@ export class SessionManager {
     );
   }
 
-  // Detect "You've hit your session limit · resets …" in streamed text/errors.
+  // Detect usage limits only on terminal error/result text from Claude Code —
+  // never on ordinary assistant chatter or tool output (those often quote
+  // other runs' "You've hit your … limit" log lines and caused false pauses).
   private noteUsageLimitReset(session: ActiveSession, text: string): void {
     if (session.agentKey !== "cc" || session.pendingUsageLimitResume) return;
     const parsed = parseSessionLimitReset(text);
@@ -1398,7 +1400,6 @@ export class SessionManager {
     }
 
     if (event.kind === "text") {
-      this.noteUsageLimitReset(session, event.content);
       if (!isNoResponseAck(event.content)) session.sawRealAssistantText = true;
       outbox.pushText(event.content);
       return;
@@ -1692,12 +1693,7 @@ export class SessionManager {
     if (raw.kind === "_sdk_assistant") {
       this.db.updateSessionId(threadId, raw.sessionId);
       if (raw.content?.trim()) {
-        this.noteUsageLimitReset(session, raw.content);
         if (!isNoResponseAck(raw.content)) session.sawRealAssistantText = true;
-        if (session.pendingUsageLimitResume) {
-          this.enqueueUsageLimitNotice(session);
-          this.stopProcess(session, "rate-limit-assistant");
-        }
         outbox.pushText(raw.content);
       }
       for (const tool of (raw.tools ?? [])) {
