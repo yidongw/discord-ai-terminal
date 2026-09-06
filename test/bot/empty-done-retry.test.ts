@@ -3,6 +3,7 @@ import {
   MAX_EMPTY_DONE_RETRIES,
   isNoResponseAck,
   shouldRetryEmptyDone,
+  shouldFreshSessionEmptyDone,
 } from "../../src/bot/empty-done-retry.js";
 import { shouldSendHandoffDone } from "../../src/bot/handoff.js";
 
@@ -14,7 +15,7 @@ describe("empty-done retry", () => {
     expect(isNoResponseAck("Here is the real answer")).toBe(false);
   });
 
-  it("retries cc 0-turn done with no real work once", () => {
+  it("retries cc 0-turn done with no real work up to the cap", () => {
     expect(shouldRetryEmptyDone({
       agentKey: "cc",
       turns: 0,
@@ -23,6 +24,19 @@ describe("empty-done retry", () => {
       prompt: "fix the freeze",
       retriesSoFar: 0,
     })).toBe(true);
+    expect(shouldRetryEmptyDone({
+      agentKey: "cc",
+      turns: 0,
+      sawRealAssistantText: false,
+      toolCallCount: 0,
+      prompt: "fix the freeze",
+      retriesSoFar: 1,
+    })).toBe(true);
+  });
+
+  it("uses a fresh session on the second retry attempt", () => {
+    expect(shouldFreshSessionEmptyDone(1)).toBe(false);
+    expect(shouldFreshSessionEmptyDone(2)).toBe(true);
   });
 
   it("does not retry after the cap, for other agents, or after real work", () => {
