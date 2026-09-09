@@ -177,9 +177,12 @@ Type any message in a channel that corresponds to a repository folder. The bot w
   - `claude-haiku-4-5` - Fastest
   - `claude-fable-5` - Long autonomous tasks
 - **/model codex**: Set the Codex model for the channel
-  - `gpt-5.5` - Most capable
-  - `gpt-5.4-mini` - Fast and affordable (default)
-  - `gpt-5.4` - Capable
+  - `gpt-6-astra` - Most capable
+  - `gpt-5.6-sol` - Complex coding / deep work
+  - `gpt-5.6-terra` - Balanced everyday
+  - `gpt-5.6-luna` - Fast and affordable (default)
+  - `gpt-5.5` - Previous flagship
+  - `gpt-5.3-codex-spark` - Near-instant research preview
 - **/goal**: Set or manage a goal for the current thread
   - `/goal set <text>` - Set a goal that will be prepended to all messages
   - `/goal clear` - Remove the goal

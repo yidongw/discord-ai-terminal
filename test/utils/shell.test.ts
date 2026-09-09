@@ -137,22 +137,22 @@ describe('buildClaudeCommand', () => {
 describe('buildCodexCommand', () => {
   it('should build a codex exec command with json output and the default model', () => {
     const command = buildCodexCommand('/test/dir', 'hello world');
-    expect(command).toBe("cd /test/dir && codex exec --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini -C /test/dir 'hello world'");
+    expect(command).toBe("cd /test/dir && codex exec --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-luna -C /test/dir 'hello world'");
   });
 
   it('should escape prompts correctly', () => {
     const command = buildCodexCommand('/test/dir', "don't use this");
-    expect(command).toBe("cd /test/dir && codex exec --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini -C /test/dir 'don'\\''t use this'");
+    expect(command).toBe("cd /test/dir && codex exec --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-luna -C /test/dir 'don'\\''t use this'");
   });
 
   it('should build a codex resume command when session id is provided', () => {
     const command = buildCodexCommand('/test/dir', 'hello world', 'session-123');
-    expect(command).toBe("cd /test/dir && codex exec resume --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini session-123 'hello world'");
+    expect(command).toBe("cd /test/dir && codex exec resume --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-luna session-123 'hello world'");
   });
 
   it('should use the specified codex model', () => {
-    const command = buildCodexCommand('/test/dir', 'hello world', undefined, false, 'gpt-5.5');
-    expect(command).toBe("cd /test/dir && codex exec --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.5 -C /test/dir 'hello world'");
+    const command = buildCodexCommand('/test/dir', 'hello world', undefined, false, 'gpt-5.6-sol');
+    expect(command).toBe("cd /test/dir && codex exec --json --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-sol -C /test/dir 'hello world'");
   });
 });
 

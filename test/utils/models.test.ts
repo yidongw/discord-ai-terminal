@@ -33,14 +33,20 @@ describe('normalizeCodexModel', () => {
 
   it('passes through known codex model IDs', () => {
     expect(normalizeCodexModel('gpt-5.5')).toBe('gpt-5.5');
-    expect(normalizeCodexModel('gpt-5.4')).toBe('gpt-5.4');
+    expect(normalizeCodexModel('gpt-5.6-luna')).toBe('gpt-5.6-luna');
+    expect(normalizeCodexModel('gpt-6-astra')).toBe('gpt-6-astra');
+  });
+
+  it('maps retired gpt-5.4 IDs to GPT-5.6 replacements', () => {
+    expect(normalizeCodexModel('gpt-5.4-mini')).toBe('gpt-5.6-luna');
+    expect(normalizeCodexModel('gpt-5.4')).toBe('gpt-5.6-terra');
   });
 });
 
 describe('resolveEffectiveModel', () => {
   const db = {
     getModel: () => 'claude-sonnet-4-6' as const,
-    getCodexModel: () => 'gpt-5.4-mini' as const,
+    getCodexModel: () => 'gpt-5.6-luna' as const,
     getCsModel: () => 'auto' as const,
   };
 

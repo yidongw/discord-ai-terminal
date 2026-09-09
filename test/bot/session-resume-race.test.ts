@@ -34,7 +34,7 @@ vi.mock("../../src/db/database.js", () => {
     getThreadSession = vi.fn(() => null);
     getMode = vi.fn(() => "default");
     getModel = vi.fn(() => "claude-sonnet-4-6");
-    getCodexModel = vi.fn(() => "gpt-5.4-mini");
+    getCodexModel = vi.fn(() => "gpt-5.6-luna");
     getCsModel = vi.fn(() => "auto");
     getToolOverrides = vi.fn(() => ({}));
     updateModelOverride = vi.fn();
