@@ -11,28 +11,28 @@ describe('codexAgent', () => {
     const event = codexAgent.parseLine(
       JSON.stringify({ type: 'thread.started', thread_id: 'thread-123' }),
       '/test/dir',
-      { requestedModel: 'gpt-5.4' }
+      { requestedModel: 'gpt-5.6-terra' }
     );
 
     expect(event).toEqual({
       kind: 'init',
       sessionId: 'thread-123',
-      model: 'gpt-5.4',
+      model: 'gpt-5.6-terra',
       cwd: '/test/dir',
     });
   });
 
   it('uses the model from thread.started events when available', () => {
     const event = codexAgent.parseLine(
-      JSON.stringify({ type: 'thread.started', thread_id: 'thread-123', model: 'gpt-5.4-mini' }),
+      JSON.stringify({ type: 'thread.started', thread_id: 'thread-123', model: 'gpt-5.6-luna' }),
       '/test/dir',
-      { requestedModel: 'gpt-5.4' }
+      { requestedModel: 'gpt-5.6-terra' }
     );
 
     expect(event).toEqual({
       kind: 'init',
       sessionId: 'thread-123',
-      model: 'gpt-5.4-mini',
+      model: 'gpt-5.6-luna',
       cwd: '/test/dir',
     });
   });

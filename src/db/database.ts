@@ -170,7 +170,7 @@ export class DatabaseManager {
 
       CREATE TABLE IF NOT EXISTS channel_codex_models (
         channel_id  TEXT PRIMARY KEY,
-        model       TEXT NOT NULL DEFAULT 'gpt-5.4-mini'
+        model       TEXT NOT NULL DEFAULT 'gpt-5.6-luna'
       );
 
       CREATE TABLE IF NOT EXISTS channel_cs_models (

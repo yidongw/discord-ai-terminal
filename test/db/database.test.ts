@@ -77,12 +77,12 @@ describe("DatabaseManager", () => {
   });
 
   describe("codex model management", () => {
-    it("should return default codex model (gpt-5.4-mini) for non-existent channel", () => {
+    it("should return default codex model (gpt-5.6-luna) for non-existent channel", () => {
       mockGet.mockReturnValue(null);
 
       const result = db.getCodexModel("non-existent-channel");
 
-      expect(result).toBe("gpt-5.4-mini");
+      expect(result).toBe("gpt-5.6-luna");
       expect(mockGet).toHaveBeenCalledWith("non-existent-channel");
     });
 
@@ -96,9 +96,9 @@ describe("DatabaseManager", () => {
     });
 
     it("should store a codex model", () => {
-      db.setCodexModel("test-channel-123", "gpt-5.4");
+      db.setCodexModel("test-channel-123", "gpt-5.6-terra");
 
-      expect(mockRun).toHaveBeenCalledWith("test-channel-123", "gpt-5.4");
+      expect(mockRun).toHaveBeenCalledWith("test-channel-123", "gpt-5.6-terra");
     });
   });
 

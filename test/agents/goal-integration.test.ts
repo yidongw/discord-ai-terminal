@@ -49,7 +49,7 @@ describe("Goal Integration", () => {
     it("should prepend /goal command when set", () => {
       const opts: AgentRunOptions = {
         goal,
-        codexModel: "gpt-5.4-mini",
+        codexModel: "gpt-5.6-luna",
       };
 
       const command = codexAgent.buildCommand(workDir, prompt, opts);
@@ -61,7 +61,7 @@ describe("Goal Integration", () => {
 
     it("should not prepend /goal when not set", () => {
       const opts: AgentRunOptions = {
-        codexModel: "gpt-5.4-mini",
+        codexModel: "gpt-5.6-luna",
       };
 
       const command = codexAgent.buildCommand(workDir, prompt, opts);

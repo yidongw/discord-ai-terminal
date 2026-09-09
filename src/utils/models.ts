@@ -14,9 +14,12 @@ export const CC_MODEL_CHOICES = [
 ] as const;
 
 export const CODEX_MODEL_CHOICES = [
-  { name: "GPT-5.5 — most capable", value: "gpt-5.5" },
-  { name: "GPT-5.4-mini — fast & affordable (default)", value: "gpt-5.4-mini" },
-  { name: "GPT-5.4", value: "gpt-5.4" },
+  { name: "Astra — most capable", value: "gpt-6-astra" },
+  { name: "GPT-5.6 Sol — complex coding", value: "gpt-5.6-sol" },
+  { name: "GPT-5.6 Terra — balanced everyday", value: "gpt-5.6-terra" },
+  { name: "GPT-5.6 Luna — fast & affordable (default)", value: "gpt-5.6-luna" },
+  { name: "GPT-5.5 — previous flagship", value: "gpt-5.5" },
+  { name: "GPT-5.3 Codex Spark — near-instant preview", value: "gpt-5.3-codex-spark" },
 ] as const;
 
 export const CS_MODEL_CHOICES = [
@@ -33,7 +36,7 @@ export type CodexModel = (typeof CODEX_MODEL_CHOICES)[number]["value"];
 export type CsModel = (typeof CS_MODEL_CHOICES)[number]["value"];
 
 export const DEFAULT_CC_MODEL: CcModel = "claude-sonnet-4-6";
-export const DEFAULT_CODEX_MODEL: CodexModel = "gpt-5.4-mini";
+export const DEFAULT_CODEX_MODEL: CodexModel = "gpt-5.6-luna";
 export const DEFAULT_CS_MODEL: CsModel = "auto";
 
 const CC_MODEL_VALUES = new Set<string>(CC_MODEL_CHOICES.map((c) => c.value));
@@ -44,6 +47,12 @@ const CC_ALIAS_MAP: Record<string, CcModel> = {
   sonnet: "claude-sonnet-4-6",
   opus: "claude-opus-4-8",
   haiku: "claude-haiku-4-5",
+};
+
+// GPT-5.4 / mini retired from Codex (ChatGPT sign-in) on 2026-08-31.
+const CODEX_LEGACY_MAP: Record<string, CodexModel> = {
+  "gpt-5.4-mini": "gpt-5.6-luna",
+  "gpt-5.4": "gpt-5.6-terra",
 };
 
 // Short aliases usable as @mention suffixes, e.g. @cco4.8 or @cx5.5
@@ -64,10 +73,17 @@ export const CC_MODEL_ALIASES: Record<string, CcModel> = {
 };
 
 export const CODEX_MODEL_ALIASES: Record<string, CodexModel> = {
+  "astra": "gpt-6-astra",
+  "sol": "gpt-5.6-sol",
+  "terra": "gpt-5.6-terra",
+  "luna": "gpt-5.6-luna",
+  "spark": "gpt-5.3-codex-spark",
+  "5.6": "gpt-5.6-terra",
   "5.5": "gpt-5.5",
-  "5.4": "gpt-5.4",
-  "mini": "gpt-5.4-mini",
-  "5.4-mini": "gpt-5.4-mini",
+  // Legacy suffixes → post-retirement replacements
+  "5.4": "gpt-5.6-terra",
+  "mini": "gpt-5.6-luna",
+  "5.4-mini": "gpt-5.6-luna",
 };
 
 export const CS_MODEL_ALIASES: Record<string, CsModel> = {
@@ -99,7 +115,7 @@ export function normalizeCcModel(stored: string | undefined | null): CcModel {
 export function normalizeCodexModel(stored: string | undefined | null): CodexModel {
   if (!stored) return DEFAULT_CODEX_MODEL;
   if (CODEX_MODEL_VALUES.has(stored)) return stored as CodexModel;
-  return DEFAULT_CODEX_MODEL;
+  return CODEX_LEGACY_MAP[stored] ?? DEFAULT_CODEX_MODEL;
 }
 
 const CS_MODEL_VALUES = new Set<string>(CS_MODEL_CHOICES.map((c) => c.value));
