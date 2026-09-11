@@ -175,6 +175,9 @@ interface ActiveSession {
   // Set when an OAuth auth failure is detected. finalizeRun touches the external
   // credential refresher trigger and retries as soon as a fresh token lands.
   pendingOAuthRetry?: boolean;
+  // Set when a Codex (cx) turn.failed or non-zero exit fires — finalizeRun retries
+  // once silently before surfacing the error to the user.
+  pendingCxErrorRetry?: boolean;
   // Set when the log stalls with no tool in flight — finalizeRun resumes the agent.
   pendingStallWakeup?: boolean;
   // Set when Claude exits with 0 turns and no real work (phantom continue after
@@ -214,6 +217,8 @@ export class SessionManager {
   // Tracks how many automatic --resume retries have been attempted per thread
   // after error_during_execution. Cleared on a successful run; capped at 1.
   private resumeRetryCount = new Map<string, number>();
+  // cx error retries per thread. One silent retry per error episode; cleared on done.
+  private cxRetryCount = new Map<string, number>();
   // Stall wakeups per thread for the current user turn. Cleared on done.
   private stallWakeupCount = new Map<string, number>();
   // Empty 0-turn done retries per thread. Cleared on a real (turns>0) done.
@@ -882,16 +887,38 @@ export class SessionManager {
     // code, so an intentional /stop or timeout won't trip this.
     const code = session.exitCode;
     if (code !== undefined && code !== null && code !== 0 && !session.done && !session.stopping) {
-      const hints: string[] = [`Exit code: ${code}`];
-      if (!fs.existsSync(session.workDir)) {
-        hints.push(`Working directory missing: \`${session.workDir}\``);
+      // Agent processes that crash without emitting an error event get one silent retry.
+      if (session.agentKey === "cx") {
+        const retries = this.cxRetryCount.get(threadId) ?? 0;
+        if (retries < 1) {
+          this.cxRetryCount.set(threadId, retries + 1);
+          session.pendingCxErrorRetry = true;
+          console.log(
+            `[cx-retry] run=${session.runId} thread=${threadId} crash exit=${code} — retrying`
+          );
+        }
+      } else if (session.agentKey === "cc") {
+        const retries = this.resumeRetryCount.get(threadId) ?? 0;
+        if (retries < 1) {
+          this.resumeRetryCount.set(threadId, retries + 1);
+          session.pendingResumeRetry = true;
+          console.log(
+            `[cc-crash-retry] run=${session.runId} thread=${threadId} crash exit=${code} — retrying`
+          );
+        }
       }
-      if (session.nonJsonOutput.length) {
-        hints.push(session.nonJsonOutput.slice(-10).join("\n"));
+      if (!session.pendingCxErrorRetry && !session.pendingResumeRetry) {
+        const hints: string[] = [`Exit code: ${code}`];
+        if (!fs.existsSync(session.workDir)) {
+          hints.push(`Working directory missing: \`${session.workDir}\``);
+        }
+        if (session.nonJsonOutput.length) {
+          hints.push(session.nonJsonOutput.slice(-10).join("\n"));
+        }
+        session.outbox.enqueue(() =>
+          session.thread.send({ embeds: [embed("❌ Process Failed", hints.join("\n\n"), 0xff0000)] })
+        );
       }
-      session.outbox.enqueue(() =>
-        session.thread.send({ embeds: [embed("❌ Process Failed", hints.join("\n\n"), 0xff0000)] })
-      );
     }
 
     this.enqueueDiscoveredCodexImages(threadId, session);
@@ -1055,6 +1082,27 @@ export class SessionManager {
         session.outbox.enqueue(() =>
           session.thread.send({
             embeds: [embed("❌ Empty-done retry failed", String((err as Error).message ?? err), 0xff0000)],
+          })
+        );
+        await session.outbox.drain();
+      }
+    } else if (session.pendingCxErrorRetry) {
+      session.pendingCxErrorRetry = false;
+      try {
+        await this.runAgent(
+          threadId,
+          session.channelId,
+          session.thread,
+          session.agentKey,
+          session.workDir,
+          session.prompt,
+          session.discordContext,
+        );
+      } catch (err) {
+        console.error(`[cx-retry] retry failed for ${threadId}:`, err);
+        session.outbox.enqueue(() =>
+          session.thread.send({
+            embeds: [embed("❌ Failed", String((err as Error).message ?? err), 0xff0000)],
           })
         );
         await session.outbox.drain();
@@ -1488,6 +1536,7 @@ export class SessionManager {
     if (event.kind === "done") {
       this.resumeRetryCount.delete(threadId);
       this.stallWakeupCount.delete(threadId);
+      this.cxRetryCount.delete(threadId);
 
       const retriesSoFar = this.emptyDoneRetryCount.get(threadId) ?? 0;
       if (
@@ -1620,9 +1669,9 @@ export class SessionManager {
         this.stopProcess(session, "usage-limit");
         return;
       }
-      if (event.subtype === "error_during_execution" && session.wasResume) {
+      if (event.subtype === "error_during_execution") {
         const currentSessionId = this.db.getThreadSession(threadId)?.sessionId;
-        console.log(`[session] ${threadId}: error_during_execution — resumed with ${session.prompt.slice(0, 60)}…, DB session now: ${currentSessionId}`);
+        console.log(`[session] ${threadId}: error_during_execution (wasResume=${session.wasResume}) — prompt: ${session.prompt.slice(0, 60)}…, DB session now: ${currentSessionId}`);
         if (this.isMalformedResumeDatabaseError(event.message)) {
           this.resumeRetryCount.delete(threadId);
           session.pendingFreshSessionRetry = true;
@@ -1676,6 +1725,23 @@ export class SessionManager {
         );
         this.stopProcess(session, "oauth-error");
         return;
+      }
+      // Silently retry cx errors once before surfacing to the user. Codex commonly
+      // gets transient turn.failed responses (resource_exhausted, network blips)
+      // that succeed on an immediate retry.
+      if (session.agentKey === "cx") {
+        const retries = this.cxRetryCount.get(threadId) ?? 0;
+        if (retries < 1) {
+          this.cxRetryCount.set(threadId, retries + 1);
+          session.pendingCxErrorRetry = true;
+          session.done = true;
+          console.log(
+            `[cx-retry] run=${session.runId} thread=${threadId} turn.failed="${event.message.slice(0, 80)}" — retrying`
+          );
+          this.stopProcess(session, "cx-error-retry");
+          return;
+        }
+        this.cxRetryCount.delete(threadId);
       }
       session.done = true;
       const detail = session.nonJsonOutput.length
