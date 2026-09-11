@@ -223,13 +223,10 @@ export class BackgroundJobManager {
     threadId: string,
     prompt?: string,
     opts?: { reason?: string }
-  ): Promise<{ ok: boolean; error?: string; busy?: boolean; agent?: string }> {
+  ): Promise<{ ok: boolean; error?: string; busy?: boolean; queued?: boolean; agent?: string }> {
     const session = this.db.getThreadSession(threadId);
     if (!session) {
       return { ok: false, error: `No session for thread ${threadId} — it must be an initialized agent thread.` };
-    }
-    if (this.sessionManager.hasActiveProcess(threadId)) {
-      return { ok: false, busy: true, error: "That thread already has a run in flight; try again once it finishes." };
     }
 
     let thread: any;
@@ -246,6 +243,32 @@ export class BackgroundJobManager {
     }
 
     const runPrompt = typeof prompt === "string" && prompt.trim() ? prompt : DEFAULT_WAKE_PROMPT;
+
+    // If a run is already in flight, don't drop the wake — queue it FIFO so it
+    // fires the moment the current run finishes (same path as a user message that
+    // arrives mid-run: dequeued in session-manager finalize). No caller polling.
+    if (this.sessionManager.hasActiveProcess(threadId)) {
+      this.sessionManager.enqueueMessage(threadId, {
+        prompt: runPrompt,
+        originalText: opts?.reason ? `${opts.reason}: ${runPrompt}` : runPrompt,
+        discordContext: { channelId: threadId, channelName: thread.name ?? "thread", userId: "", messageId: "" },
+        agentKey: session.agent,
+        workDir: session.workDir,
+        channelId: session.channelId,
+        thread,
+      });
+      try {
+        await thread.send({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("⏳ Queued — thread busy")
+              .setDescription(`${opts?.reason ? `**${opts.reason}**\n` : ""}将在当前 run 结束后自动运行\n\`${truncate(runPrompt, 200)}\``)
+              .setColor(0x9b59b6),
+          ],
+        });
+      } catch {}
+      return { ok: true, queued: true, agent: session.agent };
+    }
 
     try {
       await thread.send({
