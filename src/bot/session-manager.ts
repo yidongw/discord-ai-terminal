@@ -887,7 +887,7 @@ export class SessionManager {
     // code, so an intentional /stop or timeout won't trip this.
     const code = session.exitCode;
     if (code !== undefined && code !== null && code !== 0 && !session.done && !session.stopping) {
-      // cx processes that crash without emitting turn.failed get one silent retry.
+      // Agent processes that crash without emitting an error event get one silent retry.
       if (session.agentKey === "cx") {
         const retries = this.cxRetryCount.get(threadId) ?? 0;
         if (retries < 1) {
@@ -897,8 +897,17 @@ export class SessionManager {
             `[cx-retry] run=${session.runId} thread=${threadId} crash exit=${code} — retrying`
           );
         }
+      } else if (session.agentKey === "cc") {
+        const retries = this.resumeRetryCount.get(threadId) ?? 0;
+        if (retries < 1) {
+          this.resumeRetryCount.set(threadId, retries + 1);
+          session.pendingResumeRetry = true;
+          console.log(
+            `[cc-crash-retry] run=${session.runId} thread=${threadId} crash exit=${code} — retrying`
+          );
+        }
       }
-      if (!session.pendingCxErrorRetry) {
+      if (!session.pendingCxErrorRetry && !session.pendingResumeRetry) {
         const hints: string[] = [`Exit code: ${code}`];
         if (!fs.existsSync(session.workDir)) {
           hints.push(`Working directory missing: \`${session.workDir}\``);
@@ -1660,9 +1669,9 @@ export class SessionManager {
         this.stopProcess(session, "usage-limit");
         return;
       }
-      if (event.subtype === "error_during_execution" && session.wasResume) {
+      if (event.subtype === "error_during_execution") {
         const currentSessionId = this.db.getThreadSession(threadId)?.sessionId;
-        console.log(`[session] ${threadId}: error_during_execution — resumed with ${session.prompt.slice(0, 60)}…, DB session now: ${currentSessionId}`);
+        console.log(`[session] ${threadId}: error_during_execution (wasResume=${session.wasResume}) — prompt: ${session.prompt.slice(0, 60)}…, DB session now: ${currentSessionId}`);
         if (this.isMalformedResumeDatabaseError(event.message)) {
           this.resumeRetryCount.delete(threadId);
           session.pendingFreshSessionRetry = true;
