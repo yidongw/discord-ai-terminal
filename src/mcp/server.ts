@@ -673,6 +673,11 @@ export class MCPPermissionServer {
         return;
       }
       const { thread_id, prompt, reason } = req.body ?? {};
+      // Tracer: attribute every wake POST (who/when/what) so a runaway re-wake
+      // source can be pinned from one log line instead of a forensics round.
+      console.log(
+        `HTTP wake_thread: thread=${thread_id} from=${req.ip ?? req.socket?.remoteAddress ?? '?'} reason=${typeof reason === 'string' ? reason : ''} prompt=${typeof prompt === 'string' ? JSON.stringify(prompt.slice(0, 60)) : '(default)'}`
+      );
       if (!thread_id || typeof thread_id !== 'string') {
         res.json({ error: 'A "thread_id" string is required.' });
         return;
