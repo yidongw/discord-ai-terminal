@@ -223,6 +223,12 @@ export class SessionManager {
   private stallWakeupCount = new Map<string, number>();
   // Empty 0-turn done retries per thread. Cleared on a real (turns>0) done.
   private emptyDoneRetryCount = new Map<string, number>();
+  // Hard stop for runaway programmatic-wake replay: last delivery time of each
+  // distinct wake prompt per thread. A wake (no messageId) whose EXACT prompt was
+  // delivered within WAKE_DEDUP_TTL_MS is dropped — covers every replay path
+  // (queue, empty-done, reattach re-run, a buggy re-POSTing emitter) at the single
+  // runAgent choke point. User-typed messages (messageId present) are never deduped.
+  private recentWakePrompts = new Map<string, number>();
   // Where detached runs write their append-only output logs (one per run). The
   // bot tails these and re-attaches to them after a restart.
   private runsDir: string;
@@ -300,6 +306,19 @@ export class SessionManager {
   // Number of user messages waiting in the queue for a thread.
   getQueueLength(threadId: string): number {
     return this.messageQueues.get(threadId)?.length ?? 0;
+  }
+
+  // True when an identical prompt is already waiting in a thread's queue. Used
+  // to dedup programmatic wakes (wake_thread): a caller that re-POSTs the same
+  // wake many times while the thread is busy would otherwise pile up an
+  // unbounded replay backlog that drains one-per-turn for hours (observed: a
+  // buggy monitor re-firing the same post-buy review 30+ times). Collapsing
+  // identical queued prompts to one keeps a spamming caller from wedging the
+  // thread. User messages carry distinct text so this never merges real input.
+  isPromptQueued(threadId: string, prompt: string): boolean {
+    const queue = this.messageQueues.get(threadId);
+    if (!queue) return false;
+    return queue.some((m) => m.prompt === prompt);
   }
 
   // Preview each queued message in a thread (position is 1-based FIFO order).
@@ -564,10 +583,33 @@ export class SessionManager {
     workDir: string,
     prompt: string,
     discordContext: DiscordContext | undefined,
-    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; completion?: CompletionAction; modelOverride?: string; freshSession?: boolean }
+    opts?: { branch?: string; isWorktree?: boolean; prNumber?: number; completion?: CompletionAction; modelOverride?: string; freshSession?: boolean; isRetry?: boolean }
   ): Promise<void> {
     const agent = getAgent(agentKey);
     if (!agent) throw new Error(`Unknown agent: ${agentKey}`);
+
+    // Hard stop for runaway wake replay: a programmatic wake (no messageId) whose
+    // exact prompt was already delivered to this thread within the TTL is a
+    // duplicate/replay — drop it. Distinct real wakes carry distinct text, and
+    // user-typed messages always have a messageId, so this never suppresses
+    // genuine input. Catches replay regardless of upstream source (#406).
+    // Retries are always genuine — skip dedup for them.
+    const isWake = !discordContext?.messageId && !opts?.isRetry;
+    if (isWake && prompt.trim()) {
+      const WAKE_DEDUP_TTL_MS = 10 * 60 * 1000;
+      const key = `${threadId}\n${prompt}`;
+      const now = Date.now();
+      const last = this.recentWakePrompts.get(key);
+      if (last !== undefined && now - last < WAKE_DEDUP_TTL_MS) {
+        console.log(`[wake-dedup] dropped duplicate wake for ${threadId} (last ${Math.round((now - last) / 1000)}s ago): ${prompt.slice(0, 50)}`);
+        return;
+      }
+      this.recentWakePrompts.set(key, now);
+      // Bound the map: drop entries older than the TTL.
+      if (this.recentWakePrompts.size > 200) {
+        for (const [k, t] of this.recentWakePrompts) if (now - t >= WAKE_DEDUP_TTL_MS) this.recentWakePrompts.delete(k);
+      }
+    }
 
     const dyingSession = this.active.get(threadId);
     this.killProcess(threadId);
@@ -992,7 +1034,7 @@ export class SessionManager {
           session.workDir,
           session.prompt,
           session.discordContext,
-          { freshSession: true }
+          { freshSession: true, isRetry: true }
         );
       } catch (err) {
         console.error(`[fresh-session-retry] retry failed for ${threadId}:`, err);
@@ -1016,7 +1058,7 @@ export class SessionManager {
           session.workDir,
           session.prompt,
           session.discordContext,
-          // No freshSession — use the session ID already in the DB
+          { isRetry: true }
         );
       } catch (err) {
         console.error(`[resume-retry] retry failed for ${threadId}:`, err);
@@ -1044,7 +1086,8 @@ export class SessionManager {
           session.agentKey,
           session.workDir,
           SESSION_LIMIT_CONTINUATION_PROMPT,
-          ctx
+          ctx,
+          { isRetry: true }
         );
       } catch (err) {
         console.error(`[turn-limit] auto-resume failed for ${threadId}:`, err);
@@ -1072,6 +1115,7 @@ export class SessionManager {
           session.workDir,
           STALL_CONTINUATION_PROMPT,
           ctx,
+          { isRetry: true }
         );
       } catch (err) {
         console.error(`[stall-wakeup] auto-resume failed for ${threadId}:`, err);
@@ -1104,7 +1148,7 @@ export class SessionManager {
           session.workDir,
           session.prompt,
           ctx,
-          freshSession ? { freshSession: true } : undefined,
+          freshSession ? { freshSession: true, isRetry: true } : { isRetry: true },
         );
       } catch (err) {
         console.error(`[empty-done] retry failed for ${threadId}:`, err);
@@ -1126,6 +1170,7 @@ export class SessionManager {
           session.workDir,
           session.prompt,
           session.discordContext,
+          { isRetry: true }
         );
       } catch (err) {
         console.error(`[cx-retry] retry failed for ${threadId}:`, err);
@@ -1576,6 +1621,9 @@ export class SessionManager {
           toolCallCount: session.sawToolUse ? 1 : session.toolCalls.size,
           prompt: session.prompt,
           retriesSoFar,
+          // Programmatic wakes carry no messageId; a no-op to a wake is valid,
+          // so don't re-run it (see shouldRetryEmptyDone). Inbox row backstops.
+          isWake: !session.discordContext?.messageId,
         })
       ) {
         const attempt = retriesSoFar + 1;
