@@ -919,6 +919,35 @@ export class SessionManager {
           session.thread.send({ embeds: [embed("❌ Process Failed", hints.join("\n\n"), 0xff0000)] })
         );
       }
+    } else if ((code === 0 || code === null) && !session.done && !session.stopping) {
+      // Process exited cleanly (or via signal) but never emitted a done event — silent
+      // failure. Common causes: API hiccup before the first token, context overflow,
+      // or early init error written only to stderr (which we ignore). Retry once.
+      if (session.agentKey === "cc") {
+        const retries = this.resumeRetryCount.get(threadId) ?? 0;
+        if (retries < 1) {
+          this.resumeRetryCount.set(threadId, retries + 1);
+          session.pendingResumeRetry = true;
+          console.log(
+            `[cc-empty-retry] run=${session.runId} thread=${threadId} silent exit code=${String(code)} — retrying`
+          );
+        } else {
+          session.outbox.enqueue(() =>
+            session.thread.send({
+              embeds: [embed("⚠️ Session exited silently", `Process exited (code ${String(code)}) without output after retry. Use \`/clear\` to reset.`, 0xff6600)],
+            })
+          );
+        }
+      } else if (session.agentKey === "cx") {
+        const retries = this.cxRetryCount.get(threadId) ?? 0;
+        if (retries < 1) {
+          this.cxRetryCount.set(threadId, retries + 1);
+          session.pendingCxErrorRetry = true;
+          console.log(
+            `[cx-empty-retry] run=${session.runId} thread=${threadId} silent exit code=${String(code)} — retrying`
+          );
+        }
+      }
     }
 
     this.enqueueDiscoveredCodexImages(threadId, session);
