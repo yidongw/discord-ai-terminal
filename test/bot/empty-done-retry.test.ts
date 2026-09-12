@@ -57,6 +57,21 @@ describe("empty-done retry", () => {
     expect(shouldRetryEmptyDone({ ...base, prompt: "  " })).toBe(false);
   });
 
+  it("does not retry a programmatic wake (no messageId) — valid no-op, inbox backstops", () => {
+    const base = {
+      agentKey: "cc",
+      turns: 0 as number | null,
+      sawRealAssistantText: false,
+      toolCallCount: 0,
+      prompt: "买后仓位复核 MICRODUCK [robinhood/live] …",
+      retriesSoFar: 0,
+    };
+    // A user-typed message that phantoms still retries…
+    expect(shouldRetryEmptyDone({ ...base, isWake: false })).toBe(true);
+    // …but a wake the agent deliberately no-ops does not re-spam.
+    expect(shouldRetryEmptyDone({ ...base, isWake: true })).toBe(false);
+  });
+
   it("suppresses handoff Done while empty-done retry is pending", () => {
     expect(shouldSendHandoffDone({
       handoffBot: "review-bot",
