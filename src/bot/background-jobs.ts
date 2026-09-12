@@ -248,6 +248,14 @@ export class BackgroundJobManager {
     // fires the moment the current run finishes (same path as a user message that
     // arrives mid-run: dequeued in session-manager finalize). No caller polling.
     if (this.sessionManager.hasActiveProcess(threadId)) {
+      // Dedup: if an identical wake is already queued, collapse to it. A caller
+      // that re-POSTs the same prompt while the thread is busy (e.g. a buggy
+      // monitor re-firing the same post-buy review) would otherwise build an
+      // unbounded backlog that replays one-per-turn for hours. One queued copy
+      // still fires when the run ends; the redundant repeats are dropped.
+      if (this.sessionManager.isPromptQueued(threadId, runPrompt)) {
+        return { ok: true, queued: true, agent: session.agent };
+      }
       this.sessionManager.enqueueMessage(threadId, {
         prompt: runPrompt,
         originalText: opts?.reason ? `${opts.reason}: ${runPrompt}` : runPrompt,
