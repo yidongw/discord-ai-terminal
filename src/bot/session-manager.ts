@@ -973,10 +973,25 @@ export class SessionManager {
           console.log(
             `[cc-empty-retry] run=${session.runId} thread=${threadId} silent exit code=${String(code)} — retrying`
           );
+        } else if (retries < 2) {
+          // The resume retry also died silently — the saved session itself is the
+          // likely culprit (e.g. a multi-MB history file getting claude killed on
+          // load). Escalate to one fresh-session retry; its init event writes a
+          // new session id to the DB, rotating the bloated session out for good.
+          this.resumeRetryCount.set(threadId, retries + 1);
+          session.pendingFreshSessionRetry = true;
+          console.log(
+            `[cc-fresh-retry] run=${session.runId} thread=${threadId} silent exit again (code=${String(code)}) — retrying with a fresh session`
+          );
+          session.outbox.enqueue(() =>
+            session.thread.send({
+              embeds: [embed("♻️ Session reset", "Two runs exited silently in a row — restarting with a fresh session (history dropped).", 0xffaa00)],
+            })
+          );
         } else {
           session.outbox.enqueue(() =>
             session.thread.send({
-              embeds: [embed("⚠️ Session exited silently", `Process exited (code ${String(code)}) without output after retry. Use \`/clear\` to reset.`, 0xff6600)],
+              embeds: [embed("⚠️ Session exited silently", `Process exited (code ${String(code)}) without output after retries. Use \`/clear\` to reset.`, 0xff6600)],
             })
           );
         }

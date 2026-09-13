@@ -33,6 +33,9 @@ export interface EmptyDoneContext {
   toolCallCount: number;
   prompt: string;
   retriesSoFar: number;
+  /** True when this run was a programmatic wake (wake_thread), i.e. its Discord
+   *  context has no messageId — not a human-typed message. */
+  isWake?: boolean;
 }
 
 /**
@@ -41,6 +44,14 @@ export interface EmptyDoneContext {
  */
 export function shouldRetryEmptyDone(ctx: EmptyDoneContext): boolean {
   if (ctx.agentKey !== "cc") return false;
+  // Never retry a programmatic wake. A no-op reply to a wake is a VALID terminal
+  // state (the agent looked and decided nothing's needed), not a crashed turn to
+  // recover — and real wakes are backed by a durable inbox row the loop re-reads,
+  // so a dropped phantom wake self-heals. Retrying instead re-ran the SAME wake
+  // prompt for hours (a stale THEPENIS/MICRODUCK post-buy review replayed 30+
+  // times, surviving queue-flush and bot restart because retry state is separate
+  // from the queue). User-typed messages (messageId present) still get recovery.
+  if (ctx.isWake) return false;
   if (ctx.turns !== 0) return false;
   if (ctx.sawRealAssistantText) return false;
   if (ctx.toolCallCount > 0) return false;
