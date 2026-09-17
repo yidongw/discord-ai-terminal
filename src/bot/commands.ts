@@ -860,7 +860,9 @@ export class CommandHandler {
     const uid = process.getuid?.() ?? 501;
     const restartCmd = isMac
       ? `launchctl kickstart -k gui/${uid}/com.discord-ai-terminal`
-      : "systemctl --user restart discord-ai-terminal";
+      // Prefer the user unit; hosts that install the bot as a system unit have
+      // no user bus, so fall back to a passwordless sudo restart.
+      : "systemctl --user restart discord-ai-terminal 2>/dev/null || sudo -n systemctl restart discord-ai-terminal";
 
     Bun.spawn(["sh", "-c", `sleep 1 && ${restartCmd}`], {
       stdio: ["ignore", "ignore", "ignore"],
