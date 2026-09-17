@@ -175,6 +175,7 @@ Type any message in a channel that corresponds to a repository folder. The bot w
   - `claude-opus-4-7`, `claude-opus-4-6` - Earlier Opus versions
   - `claude-sonnet-4-5` - Earlier Sonnet
   - `claude-haiku-4-5` - Fastest
+  - `claude-fable-5-1` - Long autonomous tasks (latest Fable)
   - `claude-fable-5` - Long autonomous tasks
 - **/model codex**: Set the Codex model for the channel
   - `gpt-6-astra` - Most capable
