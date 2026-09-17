@@ -84,6 +84,10 @@ export interface ActiveRun {
   // summary). Persisted so it survives a restart — see SessionManager's
   // CompletionAction. Opaque to the DB layer.
   completionJson?: string;
+  // The user prompt this run was started with. Persisted so a run that dies
+  // without a done event while the bot is down (e.g. the service manager killed
+  // it during a restart) can be retried after re-attach instead of going silent.
+  prompt?: string;
 }
 
 // A long-running shell command the user asked cc to run "in the background".
@@ -297,6 +301,9 @@ export class DatabaseManager {
     );
     if (!runCols.includes("completion_json")) {
       this.db.exec(`ALTER TABLE active_runs ADD COLUMN completion_json TEXT`);
+    }
+    if (!runCols.includes("prompt")) {
+      this.db.exec(`ALTER TABLE active_runs ADD COLUMN prompt TEXT`);
     }
     // Drop the obsolete all-or-nothing tool-visibility table (replaced by the
     // per-tool channel_hidden_tools table).
@@ -721,6 +728,7 @@ export class DatabaseManager {
       stdoutOffset: row.stdout_offset,
       startedAt: row.started_at,
       completionJson: row.completion_json ?? undefined,
+      prompt: row.prompt ?? undefined,
     };
   }
 
@@ -728,8 +736,8 @@ export class DatabaseManager {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO active_runs
-         (run_id, thread_id, channel_id, agent, work_dir, pid, log_path, stdout_offset, started_at, completion_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (run_id, thread_id, channel_id, agent, work_dir, pid, log_path, stdout_offset, started_at, completion_json, prompt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         run.runId,
@@ -741,7 +749,8 @@ export class DatabaseManager {
         run.logPath,
         run.stdoutOffset,
         run.startedAt,
-        run.completionJson ?? null
+        run.completionJson ?? null,
+        run.prompt ?? null
       );
     this.mirrorDb?.createActiveRun(run);
   }

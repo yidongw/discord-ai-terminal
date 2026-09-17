@@ -730,6 +730,7 @@ export class SessionManager {
       runId, threadId, channelId, agent: agentKey, workDir, pid, logPath,
       stdoutOffset: 0, startedAt,
       completionJson: opts?.completion ? JSON.stringify(opts.completion) : undefined,
+      prompt,
     });
 
     const session: ActiveSession = {
@@ -961,11 +962,34 @@ export class SessionManager {
           session.thread.send({ embeds: [embed("❌ Process Failed", hints.join("\n\n"), 0xff0000)] })
         );
       }
-    } else if ((code === 0 || code === null) && !session.done && !session.stopping) {
+    } else if ((code === 0 || code === null || code === undefined) && !session.done && !session.stopping) {
       // Process exited cleanly (or via signal) but never emitted a done event — silent
       // failure. Common causes: API hiccup before the first token, context overflow,
       // or early init error written only to stderr (which we ignore). Retry once.
-      if (session.agentKey === "cc") {
+      //
+      // `undefined` is a re-attached run whose process was already gone when the
+      // bot came back up — typically the service manager took the agent down
+      // together with the bot (systemd KillMode=control-group). There is no exit
+      // code to inspect, but the user is still waiting on a reply, so it gets the
+      // same retry ladder; finishing quietly here was the "bot went silent" bug.
+      if (code === undefined) {
+        console.log(
+          `[reattach] run=${session.runId} thread=${threadId} exited without a done event while the bot was down`
+        );
+      }
+      if (!session.prompt) {
+        // Nothing to retry with (the active_runs row predates the persisted
+        // prompt). Say so instead of leaving the thread hanging.
+        session.outbox.enqueue(() =>
+          session.thread.send({
+            embeds: [embed(
+              "⚠️ Run interrupted",
+              "The agent exited without replying while the bot was restarting, and the original prompt is not available to retry. Send your message again to continue.",
+              0xff6600
+            )],
+          })
+        );
+      } else if (session.agentKey === "cc") {
         const retries = this.resumeRetryCount.get(threadId) ?? 0;
         if (retries < 1) {
           this.resumeRetryCount.set(threadId, retries + 1);
@@ -1429,7 +1453,9 @@ export class SessionManager {
       },
       nonJsonOutput: [],
       wasResume: true,
-      prompt: "", // not available for re-attached runs; pendingFreshResume won't fire here
+      // Persisted at spawn so a run that died while we were down can be retried
+      // (older rows predate the column and come back empty — see finalizeRun).
+      prompt: run.prompt ?? "",
     };
     this.active.set(run.threadId, session);
     this.getTyping(run.threadId, thread).start();
