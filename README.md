@@ -278,6 +278,18 @@ systemctl --user start discord-ai-terminal
 loginctl enable-linger
 ```
 
+The service file sets `KillMode=process` on purpose. Agent runs are spawned
+detached and survive a bot restart (the bot re-attaches to them on boot); with
+systemd's default `KillMode=control-group` a restart would kill every in-flight
+`claude`/`codex` process along with the bot, and the thread would never get its
+reply. If you install the bot as a **system** unit instead (`/etc/systemd/system`),
+keep that setting — e.g. via a drop-in:
+
+```bash
+sudo systemctl edit discord-ai-terminal   # add: [Service]\nKillMode=process
+sudo systemctl daemon-reload
+```
+
 ### Service Management (Linux)
 
 ```bash

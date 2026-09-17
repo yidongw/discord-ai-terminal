@@ -11,6 +11,11 @@ ExecStartPre=/bin/sleep 15
 ExecStart=%h/.bun/bin/bun run src/index.ts
 Restart=on-failure
 RestartSec=10
+# Agent runs (claude/codex) are spawned detached and are meant to survive a bot
+# restart — the next boot re-attaches to them. systemd's default
+# KillMode=control-group would SIGTERM the whole cgroup on restart, killing
+# those runs mid-turn with no done event. Only signal the bot itself.
+KillMode=process
 Environment=PATH=%h/.local/share/fnm/node-versions/v24.12.0/installation/bin:%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
