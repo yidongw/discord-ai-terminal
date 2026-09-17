@@ -10,6 +10,7 @@ export const CC_MODEL_CHOICES = [
   { name: "Opus 4.6", value: "claude-opus-4-6" },
   { name: "Sonnet 4.5", value: "claude-sonnet-4-5" },
   { name: "Haiku 4.5 — fastest", value: "claude-haiku-4-5" },
+  { name: "Fable 5.1 — long autonomous tasks", value: "claude-fable-5-1" },
   { name: "Fable 5 — long autonomous tasks", value: "claude-fable-5" },
 ] as const;
 
@@ -69,7 +70,9 @@ export const CC_MODEL_ALIASES: Record<string, CcModel> = {
   "sonnet4.5": "claude-sonnet-4-5",
   "h4.5": "claude-haiku-4-5",
   "haiku": "claude-haiku-4-5",
-  "fable": "claude-fable-5",
+  "fable5.1": "claude-fable-5-1",
+  "fable5": "claude-fable-5-1",
+  "fable": "claude-fable-5-1",
 };
 
 export const CODEX_MODEL_ALIASES: Record<string, CodexModel> = {
