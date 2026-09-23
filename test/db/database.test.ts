@@ -51,12 +51,12 @@ describe("DatabaseManager", () => {
   });
 
   describe("model management", () => {
-    it("should return default model (claude-sonnet-4-6) for non-existent channel", () => {
+    it("should return default model (claude-opus-5-5) for non-existent channel", () => {
       mockGet.mockReturnValue(null);
 
       const result = db.getModel("non-existent-channel");
 
-      expect(result).toBe("claude-sonnet-4-6");
+      expect(result).toBe("claude-opus-5-5");
       expect(mockGet).toHaveBeenCalledWith("non-existent-channel");
     });
 

@@ -4,18 +4,25 @@
 // - https://developers.openai.com/codex/models
 
 export const CC_MODEL_CHOICES = [
-  { name: "Sonnet 4.6 — balanced default", value: "claude-sonnet-4-6" },
-  { name: "Opus 4.8 — most capable", value: "claude-opus-4-8" },
+  { name: "Opus 5.5 — most capable (default)", value: "claude-opus-5-5" },
+  { name: "Opus 5", value: "claude-opus-5" },
+  { name: "Sonnet 5", value: "claude-sonnet-5" },
+  { name: "Fable 5.1 — long autonomous tasks", value: "claude-fable-5-1" },
+  { name: "Mythos 5.1 — advanced research", value: "claude-mythos-5-1" },
+  { name: "Fable 5 — long autonomous tasks", value: "claude-fable-5" },
+  { name: "Mythos 5 — advanced research", value: "claude-mythos-5" },
+  { name: "Sonnet 4.6 — balanced", value: "claude-sonnet-4-6" },
+  { name: "Opus 4.8", value: "claude-opus-4-8" },
   { name: "Opus 4.7", value: "claude-opus-4-7" },
   { name: "Opus 4.6", value: "claude-opus-4-6" },
   { name: "Sonnet 4.5", value: "claude-sonnet-4-5" },
   { name: "Haiku 4.5 — fastest", value: "claude-haiku-4-5" },
-  { name: "Fable 5.1 — long autonomous tasks", value: "claude-fable-5-1" },
-  { name: "Fable 5 — long autonomous tasks", value: "claude-fable-5" },
 ] as const;
 
 export const CODEX_MODEL_CHOICES = [
   { name: "Astra — most capable", value: "gpt-6-astra" },
+  { name: "GPT-6 Sol — complex coding", value: "gpt-6-sol" },
+  { name: "GPT-6 Luna — fast & affordable", value: "gpt-6-luna" },
   { name: "GPT-5.6 Sol — complex coding", value: "gpt-5.6-sol" },
   { name: "GPT-5.6 Terra — balanced everyday", value: "gpt-5.6-terra" },
   { name: "GPT-5.6 Luna — fast & affordable (default)", value: "gpt-5.6-luna" },
@@ -36,7 +43,7 @@ export type CcModel = (typeof CC_MODEL_CHOICES)[number]["value"];
 export type CodexModel = (typeof CODEX_MODEL_CHOICES)[number]["value"];
 export type CsModel = (typeof CS_MODEL_CHOICES)[number]["value"];
 
-export const DEFAULT_CC_MODEL: CcModel = "claude-sonnet-4-6";
+export const DEFAULT_CC_MODEL: CcModel = "claude-opus-5-5";
 export const DEFAULT_CODEX_MODEL: CodexModel = "gpt-5.6-luna";
 export const DEFAULT_CS_MODEL: CsModel = "auto";
 
@@ -46,7 +53,7 @@ const CODEX_MODEL_VALUES = new Set<string>(CODEX_MODEL_CHOICES.map((c) => c.valu
 // Map legacy alias values stored before versioned IDs were introduced.
 const CC_ALIAS_MAP: Record<string, CcModel> = {
   sonnet: "claude-sonnet-4-6",
-  opus: "claude-opus-4-8",
+  opus: "claude-opus-5-5",
   haiku: "claude-haiku-4-5",
 };
 
@@ -58,6 +65,16 @@ const CODEX_LEGACY_MAP: Record<string, CodexModel> = {
 
 // Short aliases usable as @mention suffixes, e.g. @cco4.8 or @cx5.5
 export const CC_MODEL_ALIASES: Record<string, CcModel> = {
+  "o5.5": "claude-opus-5-5",
+  "opus5.5": "claude-opus-5-5",
+  "opus": "claude-opus-5-5",
+  "o5": "claude-opus-5",
+  "opus5": "claude-opus-5",
+  "s5": "claude-sonnet-5",
+  "sonnet5": "claude-sonnet-5",
+  "mythos5.1": "claude-mythos-5-1",
+  "mythos5": "claude-mythos-5",
+  "mythos": "claude-mythos-5-1",
   "s4.6": "claude-sonnet-4-6",
   "sonnet4.6": "claude-sonnet-4-6",
   "o4.8": "claude-opus-4-8",
@@ -77,9 +94,14 @@ export const CC_MODEL_ALIASES: Record<string, CcModel> = {
 
 export const CODEX_MODEL_ALIASES: Record<string, CodexModel> = {
   "astra": "gpt-6-astra",
-  "sol": "gpt-5.6-sol",
+  "6sol": "gpt-6-sol",
+  "6luna": "gpt-6-luna",
+  "sol": "gpt-6-sol",
   "terra": "gpt-5.6-terra",
-  "luna": "gpt-5.6-luna",
+  "luna": "gpt-6-luna",
+  "5.6sol": "gpt-5.6-sol",
+  "5.6terra": "gpt-5.6-terra",
+  "5.6luna": "gpt-5.6-luna",
   "spark": "gpt-5.3-codex-spark",
   "5.6": "gpt-5.6-terra",
   "5.5": "gpt-5.5",
