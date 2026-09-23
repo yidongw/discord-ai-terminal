@@ -169,7 +169,7 @@ export class DatabaseManager {
 
       CREATE TABLE IF NOT EXISTS channel_models (
         channel_id  TEXT PRIMARY KEY,
-        model       TEXT NOT NULL DEFAULT 'claude-sonnet-4-6'
+        model       TEXT NOT NULL DEFAULT 'claude-opus-5-5'
       );
 
       CREATE TABLE IF NOT EXISTS channel_codex_models (
