@@ -170,15 +170,20 @@ Type any message in a channel that corresponds to a repository folder. The bot w
   - `plan` - Create detailed plan before executing
   - `approve` - Ask permission (✅/❌) before each dangerous action
 - **/model cc**: Set the Claude Code model for the channel (pinned version IDs)
-  - `claude-sonnet-4-6` - Balanced default
-  - `claude-opus-4-8` - Most capable Opus
+  - `claude-opus-5-5` - Most capable (default)
+  - `claude-opus-5` - Earlier Opus 5
+  - `claude-sonnet-5` - Balanced Claude 5
+  - `claude-fable-5-1`, `claude-fable-5` - Long autonomous tasks
+  - `claude-mythos-5-1`, `claude-mythos-5` - Advanced research
+  - `claude-sonnet-4-6` - Earlier balanced model
+  - `claude-opus-4-8` - Earlier Opus
   - `claude-opus-4-7`, `claude-opus-4-6` - Earlier Opus versions
   - `claude-sonnet-4-5` - Earlier Sonnet
   - `claude-haiku-4-5` - Fastest
-  - `claude-fable-5-1` - Long autonomous tasks (latest Fable)
-  - `claude-fable-5` - Long autonomous tasks
 - **/model codex**: Set the Codex model for the channel
   - `gpt-6-astra` - Most capable
+  - `gpt-6-sol` - Complex coding / balanced flagship
+  - `gpt-6-luna` - Fast and affordable
   - `gpt-5.6-sol` - Complex coding / deep work
   - `gpt-5.6-terra` - Balanced everyday
   - `gpt-5.6-luna` - Fast and affordable (default)
