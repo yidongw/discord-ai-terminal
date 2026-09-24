@@ -223,10 +223,24 @@ export class BackgroundJobManager {
     threadId: string,
     prompt?: string,
     opts?: { reason?: string }
-  ): Promise<{ ok: boolean; error?: string; busy?: boolean; queued?: boolean; agent?: string }> {
+  ): Promise<{ ok: boolean; error?: string; busy?: boolean; queued?: boolean; agent?: string; usageLimited?: boolean }> {
     const session = this.db.getThreadSession(threadId);
     if (!session) {
       return { ok: false, error: `No session for thread ${threadId} — it must be an initialized agent thread.` };
+    }
+
+    // A thread waiting out a usage-limit reset cannot run: a wake would start a
+    // run that dies immediately with reason=rate-limit while the caller is told
+    // it was delivered, so its fallback (e.g. page another thread) never fires.
+    // 2026-09-23/24: the foxhole risk thread was limited ~38h and every urgent
+    // page to it was "delivered" into instant rate-limit deaths.
+    const usageWait = this.sessionManager.getUsageLimitWait(threadId);
+    if (usageWait.waiting) {
+      return {
+        ok: false,
+        usageLimited: true,
+        error: `Thread ${threadId} is waiting for a usage-limit reset (${usageWait.resetLabel}); wake not delivered.`,
+      };
     }
 
     let thread: any;
