@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DatabaseManager } from "../../src/db/database.js";
-import { registerSessionLimitWakeup } from "../../src/bot/session-limit-wakeup.js";
+import { registerSessionLimitWakeup, clearStaleSessionLimitWakeup } from "../../src/bot/session-limit-wakeup.js";
 
 describe("session-limit wakeup (sqlite)", () => {
   let dir: string;
@@ -38,5 +38,26 @@ describe("session-limit wakeup (sqlite)", () => {
 
     const due = db.getDueScheduledTasks(Date.now());
     expect(due.some((t) => t.id === "session-limit-thread-abc")).toBe(true);
+  });
+
+  it("clears a still-future wakeup once a run completes normally", () => {
+    const now = Date.now();
+    registerSessionLimitWakeup(db, {
+      threadId: "thread-abc", channelId: "c", workDir: "/tmp/work", userId: "u",
+      resetAt: now + 30 * 3_600_000,
+    });
+    expect(clearStaleSessionLimitWakeup(db, "thread-abc", now)).toBe(true);
+    expect(db.getScheduledTask("session-limit-thread-abc")).toBeNull();
+    expect(clearStaleSessionLimitWakeup(db, "thread-abc", now)).toBe(false);
+  });
+
+  it("leaves an already-due wakeup for the scheduler to run", () => {
+    const now = Date.now();
+    registerSessionLimitWakeup(db, {
+      threadId: "thread-abc", channelId: "c", workDir: "/tmp/work", userId: "u",
+      resetAt: now - 1000,
+    });
+    expect(clearStaleSessionLimitWakeup(db, "thread-abc", now)).toBe(false);
+    expect(db.getScheduledTask("session-limit-thread-abc")).not.toBeNull();
   });
 });

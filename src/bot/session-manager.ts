@@ -20,6 +20,7 @@ import { parseSessionLimitReset } from "../utils/session-limit-reset.js";
 import {
   SESSION_LIMIT_CONTINUATION_PROMPT,
   registerSessionLimitWakeup,
+  clearStaleSessionLimitWakeup,
   sessionLimitTaskId,
 } from "./session-limit-wakeup.js";
 import { MAX_STALL_WAKEUPS, STALL_CONTINUATION_PROMPT } from "./stall-wakeup.js";
@@ -1469,6 +1470,17 @@ export class SessionManager {
     this.startTailer(run.threadId, session, agent, run.stdoutOffset, () => isPidAlive(run.pid));
   }
 
+  // A run that really completed proves the usage window no longer blocks this
+  // thread (e.g. its model was switched off the limited one). A leftover future
+  // session-limit wakeup would otherwise keep getUsageLimitWait() true, so every
+  // bot message to the thread is queued until the old reset time instead of
+  // running (2026-09-24: five loop threads moved from a rate-limited model to
+  // another one kept queueing urgent wakes for ~30h).
+  private clearStaleUsageLimitWakeup(threadId: string): void {
+    if (!clearStaleSessionLimitWakeup(this.db, threadId)) return;
+    console.log(`[session-limit] cleared stale resume for ${threadId} — a run completed normally`);
+  }
+
   // Arm a one-shot scheduled task that re-invokes cc when the subscription usage
   // window resets. Replaces any prior session-limit wakeup for this thread.
   private scheduleUsageLimitResume(threadId: string, session: ActiveSession): void {
@@ -1713,6 +1725,9 @@ export class SessionManager {
       // Real completion (or retry already used) — clear empty-done budget.
       this.emptyDoneRetryCount.delete(threadId);
       session.done = true;
+      if (!session.pendingUsageLimitResume && (session.sawRealAssistantText || session.sawToolUse || session.toolCalls.size > 0)) {
+        this.clearStaleUsageLimitWakeup(threadId);
+      }
       const parts: string[] = [];
       if (event.turns !== null) parts.push(`${event.turns} turns`);
       if (event.cost !== null) parts.push(event.cost < 0.01 ? `${(event.cost * 100).toFixed(2)}¢` : `$${event.cost.toFixed(2)}`);

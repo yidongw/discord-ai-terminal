@@ -54,3 +54,19 @@ export function registerSessionLimitWakeup(
   db.createScheduledTask(task);
   return task;
 }
+
+/** Drop a still-future session-limit wakeup for a thread whose run just completed
+ *  normally: the limit evidently no longer blocks it, and a leftover row keeps
+ *  queueing every bot message to the thread until the old reset time. Returns
+ *  whether a row was removed. */
+export function clearStaleSessionLimitWakeup(
+  db: Pick<DatabaseManager, "getScheduledTask" | "deleteScheduledTask">,
+  threadId: string,
+  now: number = Date.now()
+): boolean {
+  const id = sessionLimitTaskId(threadId);
+  const task = db.getScheduledTask(id);
+  if (!task || task.nextRunAt <= now) return false;
+  db.deleteScheduledTask(id);
+  return true;
+}
