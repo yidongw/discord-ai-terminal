@@ -1888,6 +1888,20 @@ export class SessionManager {
         }
         this.cxRetryCount.delete(threadId);
       }
+      // Transient Anthropic API server errors (5xx mid-stream) are retryable (PR #174,
+      // re-placed after the OAuth/cx branches). Retry --resume once silently; only
+      // surface the error on a second failure.
+      if (session.agentKey === "cc" && event.message.startsWith("API Error:")) {
+        const retries = this.resumeRetryCount.get(threadId) ?? 0;
+        console.log(`[session] ${threadId}: API error (retry ${retries}/1): ${event.message.slice(0, 120)}`);
+        if (retries < 1) {
+          this.resumeRetryCount.set(threadId, retries + 1);
+          session.pendingResumeRetry = true;
+          this.stopProcess(session, "api-error-retry");
+          return;
+        }
+        this.resumeRetryCount.delete(threadId);
+      }
       session.done = true;
       const detail = session.nonJsonOutput.length
         ? `${event.message}\n\n${session.nonJsonOutput.join("\n")}`
