@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from "vitest";
 import { BackgroundJobManager } from "../../src/bot/background-jobs.js";
 
 describe("wakeThread vs usage-limit wait", () => {
