@@ -168,4 +168,12 @@ async function main() {
   console.log("Agent Discord Bot started.");
 }
 
-main().catch(console.error);
+// Boot failures (most often: login() can't reach Discord because the network is
+// still down) must exit non-zero. The MCP server is already listening by then, so
+// its open socket keeps the event loop alive and the process lingers forever as a
+// bot that never connected — invisible to KeepAlive, which only restarts on exit.
+// Same contract as GatewayWatchdog: die and let launchd retry (ThrottleInterval).
+main().catch((err) => {
+  console.error("[boot] startup failed — exiting so KeepAlive restarts the bot:", err);
+  process.exit(1);
+});
