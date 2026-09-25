@@ -13,6 +13,10 @@ export interface DiscordContext {
   channelName: string;
   userId: string;
   messageId?: string;
+  /** Set by the scheduler for a recurring/one-shot scheduled task firing. It has
+   *  no messageId like a programmatic wake, but it is NOT a wake: a 0-turn
+   *  phantom on it silently drops a whole loop round (see empty-done-retry.ts). */
+  scheduled?: boolean;
 }
 
 export type PermissionMode = "auto" | "plan" | "approve";

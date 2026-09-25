@@ -30,6 +30,7 @@ import {
   shouldFreshSessionEmptyDone,
   isNoResponseAck,
   MAX_EMPTY_DONE_RETRIES,
+  isProgrammaticWake,
 } from "./empty-done-retry.js";
 import {
   extractGeneratedImagePath,
@@ -1689,7 +1690,8 @@ export class SessionManager {
           retriesSoFar,
           // Programmatic wakes carry no messageId; a no-op to a wake is valid,
           // so don't re-run it (see shouldRetryEmptyDone). Inbox row backstops.
-          isWake: !session.discordContext?.messageId,
+          // Scheduled task firings also lack a messageId but ARE retried.
+          isWake: isProgrammaticWake(session.discordContext),
         })
       ) {
         const attempt = retriesSoFar + 1;

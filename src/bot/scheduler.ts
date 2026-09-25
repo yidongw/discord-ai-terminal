@@ -116,6 +116,7 @@ export class Scheduler {
       channelName: thread.name ?? task.label ?? "scheduled",
       userId: task.userId,
       messageId: "",
+      scheduled: true,
     };
 
     await thread.send({
