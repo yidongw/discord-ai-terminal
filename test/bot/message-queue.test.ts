@@ -124,7 +124,7 @@ describe("message queue helpers", () => {
 
     expect(manager.isWaitingForUsageLimitReset("thread-a")).toBe(true);
     expect(manager.getUsageLimitWait("thread-a").waiting).toBe(true);
-    expect(manager.getUsageLimitWait("thread-a").resetLabel).toBe(new Date(future).toLocaleString());
+    expect(manager.getUsageLimitWait("thread-a").resetLabel).toBe(`<t:${Math.floor(future / 1000)}:f> (<t:${Math.floor(future / 1000)}:R>)`);
   });
 
   it("returns false when the usage-limit wakeup is disabled or past due", () => {

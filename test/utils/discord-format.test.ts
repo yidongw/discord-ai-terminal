@@ -29,3 +29,10 @@ describe("truncateForEmbed", () => {
     expect(embed.data.description!.length).toBeLessThanOrEqual(MAX_EMBED_DESCRIPTION);
   });
 });
+
+describe("discordTimestamp", () => {
+  it("renders a viewer-local Discord timestamp with a relative hint", async () => {
+    const { discordTimestamp } = await import("../../src/utils/discord-format.js");
+    expect(discordTimestamp(1790377200000)).toBe("<t:1790377200:f> (<t:1790377200:R>)");
+  });
+});

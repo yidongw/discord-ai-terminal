@@ -161,3 +161,11 @@ export function formatForDiscord(content: string): string {
 
   return output;
 }
+
+/** Discord renders `<t:unix:f>` in EACH viewer's own timezone (and `:R` as a
+ *  relative "in 3 hours"), so a reset time never shows in the server's timezone
+ *  (replaces PR #64's per-user /timezone setting — no schema change needed). */
+export function discordTimestamp(ms: number): string {
+  const sec = Math.floor(ms / 1000);
+  return `<t:${sec}:f> (<t:${sec}:R>)`;
+}

@@ -9,6 +9,7 @@ import {
   MAX_EMBED_DESCRIPTION,
   MAX_EMBED_TITLE,
   truncateForEmbed,
+  discordTimestamp,
 } from "../utils/discord-format.js";
 import { getAgent, type AgentEvent, type AgentRunner } from "../agents/index.js";
 import { DatabaseManager, toolIsHidden, type ActiveRun } from "../db/database.js";
@@ -360,7 +361,7 @@ export class SessionManager {
   getUsageLimitWait(threadId: string): { waiting: boolean; resetLabel?: string } {
     const task = this.db.getScheduledTask(sessionLimitTaskId(threadId));
     if (!task?.enabled || task.nextRunAt <= Date.now()) return { waiting: false };
-    return { waiting: true, resetLabel: new Date(task.nextRunAt).toLocaleString() };
+    return { waiting: true, resetLabel: discordTimestamp(task.nextRunAt) };
   }
 
   /** Handoff @-mention belongs in Done only when the thread is going fully idle. */
@@ -1518,7 +1519,7 @@ export class SessionManager {
     session.pendingUsageLimitResume = true;
     session.pendingTurnLimitResume = false;
     session.usageLimitResetAt = parsed.resetAt;
-    session.usageLimitResetLabel = parsed.resetLabel;
+    session.usageLimitResetLabel = discordTimestamp(parsed.resetAt);
   }
 
   private enqueueUsageLimitNotice(session: ActiveSession): void {
@@ -1613,12 +1614,12 @@ export class SessionManager {
         session.pendingUsageLimitResume = true;
         session.pendingTurnLimitResume = false;
         session.usageLimitResetAt = event.resetAt;
-        session.usageLimitResetLabel = event.resetLabel;
+        session.usageLimitResetLabel = discordTimestamp(event.resetAt);
         this.enqueueUsageLimitNotice(session);
         this.stopProcess(session, "rate-limit");
       } else {
         session.usageLimitResetAt = event.resetAt;
-        session.usageLimitResetLabel = event.resetLabel;
+        session.usageLimitResetLabel = discordTimestamp(event.resetAt);
       }
       return;
     }
