@@ -98,6 +98,15 @@ async function main() {
   // Replay user messages that arrived in known threads while the bot was down.
   await bot.recoverMissedMessages();
 
+  // Replay programmatic wakes that were queued behind a busy run when the bot
+  // went down (the in-memory queue does not survive a restart).
+  try {
+    const n = await bgJobs.restorePersistedWakes();
+    if (n) console.log(`[wake-restore] replayed ${n} queued wake(s)`);
+  } catch (err) {
+    console.error("[wake-restore] failed:", err);
+  }
+
   // If /update triggered this restart, send a confirmation to the channel.
   // Interaction reply messages can only be edited via the interaction's webhook
   // token (which doesn't survive restarts), so we send a new message instead.

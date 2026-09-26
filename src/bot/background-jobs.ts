@@ -219,6 +219,29 @@ export class BackgroundJobManager {
    * a run is already active (to avoid piling on). Exposed via the wake_thread MCP
    * tool so one agent can hand work to / wake another thread's agent.
    */
+  /**
+   * Replay programmatic wakes that were queued behind a busy run when the bot
+   * went down (queued_wakes). Each row is removed first and re-issued through
+   * wakeThread, which runs it now if the thread is idle or re-queues (and
+   * re-persists) it if a re-attached run is still going. Call once on boot,
+   * after reattachRuns so busy threads are detected correctly.
+   */
+  async restorePersistedWakes(): Promise<number> {
+    const rows = this.db.listQueuedWakes();
+    let restored = 0;
+    for (const row of rows) {
+      this.db.deleteQueuedWake(row.id);
+      try {
+        const res = await this.wakeThread(row.threadId, row.prompt, { reason: "恢复重启前排队的叫醒" });
+        if (res.ok) restored++;
+        else console.error(`[wake-restore] ${row.threadId} not restored: ${res.error}`);
+      } catch (err) {
+        console.error(`[wake-restore] ${row.threadId} failed:`, err);
+      }
+    }
+    return restored;
+  }
+
   async wakeThread(
     threadId: string,
     prompt?: string,

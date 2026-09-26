@@ -146,6 +146,18 @@ export class DatabaseManager {
 
   private initializeTables(): void {
     this.db.exec(`
+      -- Programmatic wakes (wake_thread) queued behind a busy run. The in-memory
+      -- FIFO is lost on a bot restart; this row survives it and is replayed on
+      -- boot (BackgroundJobs.restorePersistedWakes). User messages are NOT stored
+      -- here — recoverMissedMessages replays those from Discord history.
+      CREATE TABLE IF NOT EXISTS queued_wakes (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id      TEXT NOT NULL,
+        prompt         TEXT NOT NULL,
+        original_text  TEXT NOT NULL,
+        created_at     INTEGER NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS thread_sessions (
         thread_id             TEXT PRIMARY KEY,
         channel_id            TEXT NOT NULL,
@@ -769,6 +781,31 @@ export class DatabaseManager {
 
   // Forget every run for a thread (e.g. a new run is replacing it, or the
   // thread/worktree is being torn down).
+  insertQueuedWake(threadId: string, prompt: string, originalText: string): number {
+    const r = this.db
+      .prepare(`INSERT INTO queued_wakes (thread_id, prompt, original_text, created_at) VALUES (?, ?, ?, ?)`)
+      .run(threadId, prompt, originalText, Date.now());
+    return Number(r.lastInsertRowid);
+  }
+
+  deleteQueuedWake(id: number): void {
+    this.db.prepare(`DELETE FROM queued_wakes WHERE id = ?`).run(id);
+  }
+
+  deleteQueuedWakesForThread(threadId: string): void {
+    this.db.prepare(`DELETE FROM queued_wakes WHERE thread_id = ?`).run(threadId);
+  }
+
+  listQueuedWakes(): { id: number; threadId: string; prompt: string; originalText: string; createdAt: number }[] {
+    return (this.db.prepare(`SELECT * FROM queued_wakes ORDER BY id ASC`).all() as any[]).map((r) => ({
+      id: r.id,
+      threadId: r.thread_id,
+      prompt: r.prompt,
+      originalText: r.original_text,
+      createdAt: r.created_at,
+    }));
+  }
+
   deleteActiveRunsForThread(threadId: string): void {
     this.db.prepare(`DELETE FROM active_runs WHERE thread_id = ?`).run(threadId);
     this.mirrorDb?.deleteActiveRunsForThread(threadId);

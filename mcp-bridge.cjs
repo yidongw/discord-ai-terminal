@@ -281,9 +281,11 @@ const TOOLS = [
       '(different from update_scheduled_task, which reschedules a recurring task). ' +
       'Use it to hand work to, or nudge, a specific thread\'s agent by its thread ' +
       'id — e.g. wake the system-supervisor loop to handle something urgent. Find ' +
-      "a loop's thread id via list_scheduled_tasks (threadId field). No-op-safe: " +
-      'if the target thread already has a run in flight it returns {busy:true} and ' +
-      'you can retry shortly.',
+      "a loop's thread id via list_scheduled_tasks (threadId field). If the target " +
+      'thread already has a run in flight, the wake is QUEUED (FIFO; an identical ' +
+      'queued prompt is deduped) and runs the moment the current run finishes — it ' +
+      'returns {ok:true, queued:true}, no retry needed. Queued wakes are persisted ' +
+      'and replayed after a bot restart.',
     inputSchema: {
       type: 'object',
       properties: {
