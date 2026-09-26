@@ -66,6 +66,9 @@ export interface QueuedMessage {
   workDir: string;
   channelId: string;
   thread: any;
+  /** queued_wakes row id — set for programmatic wakes (no messageId) so the
+   *  queued wake survives a bot restart. */
+  persistId?: number;
 }
 
 export type CompletionAction =
@@ -291,6 +294,16 @@ export class SessionManager {
 
   // Append a user-initiated message to the per-thread FIFO queue.
   enqueueMessage(threadId: string, msg: QueuedMessage): void {
+    // A programmatic wake (wake_thread / background-job completion) has no
+    // Discord message behind it, so recoverMissedMessages can't replay it after a
+    // restart — persist it. User messages are recovered from Discord history.
+    if (!msg.discordContext.messageId && msg.persistId == null) {
+      try {
+        msg.persistId = this.db.insertQueuedWake(threadId, msg.prompt, msg.originalText);
+      } catch (err) {
+        console.error(`[queue] failed to persist queued wake for ${threadId}:`, err);
+      }
+    }
     const queue = this.messageQueues.get(threadId) ?? [];
     queue.push(msg);
     this.messageQueues.set(threadId, queue);
@@ -302,6 +315,9 @@ export class SessionManager {
     if (!queue || queue.length === 0) return undefined;
     const msg = queue.shift()!;
     if (queue.length === 0) this.messageQueues.delete(threadId);
+    if (msg.persistId != null) {
+      try { this.db.deleteQueuedWake(msg.persistId); } catch {}
+    }
     return msg;
   }
 
@@ -485,6 +501,7 @@ export class SessionManager {
     this.killProcess(threadId);
     this.db.deleteThreadSession(threadId);
     this.messageQueues.delete(threadId);
+    try { this.db.deleteQueuedWakesForThread(threadId); } catch {}
   }
 
   // Remove a thread's isolated worktree + branch. The session row is always

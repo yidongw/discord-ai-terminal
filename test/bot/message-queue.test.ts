@@ -24,6 +24,9 @@ vi.mock("../../src/db/database.js", () => {
     getScheduledTask = vi.fn(() => null);
     updateScheduledTaskPrompt = vi.fn();
     listScheduledTasks = vi.fn(() => []);
+    insertQueuedWake = vi.fn(() => 42);
+    deleteQueuedWake = vi.fn();
+    deleteQueuedWakesForThread = vi.fn();
   }
 
   return {
@@ -178,5 +181,25 @@ describe("message queue helpers", () => {
     mockScheduledTask(null);
     expect(manager.setUsageLimitResumePrompt("thread-a", "too late")).toBe(false);
     expect(manager.getDb().updateScheduledTaskPrompt).not.toHaveBeenCalled();
+  });
+});
+
+describe("queued wake persistence (survives a bot restart)", () => {
+  it("persists a programmatic wake (no messageId) on enqueue and deletes it on dequeue", () => {
+    const manager = new SessionManager();
+    const db = manager.getDb() as any;
+    const wake = { ...queuedMsg("t-1", "c-1", "wake: fix exec failure", "incident"), discordContext: { channelId: "t-1", channelName: "incident", userId: "", messageId: "" } };
+    manager.enqueueMessage("t-1", wake);
+    expect(db.insertQueuedWake).toHaveBeenCalledWith("t-1", "wake: fix exec failure", "wake: fix exec failure");
+    const out = manager.dequeueMessage("t-1");
+    expect(out?.prompt).toBe("wake: fix exec failure");
+    expect(db.deleteQueuedWake).toHaveBeenCalledWith(42);
+  });
+
+  it("does NOT persist a user message (recoverMissedMessages replays those from Discord)", () => {
+    const manager = new SessionManager();
+    const db = manager.getDb() as any;
+    manager.enqueueMessage("t-2", queuedMsg("t-2", "c-1", "hello", "chat"));
+    expect(db.insertQueuedWake).not.toHaveBeenCalled();
   });
 });
