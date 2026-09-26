@@ -4,10 +4,30 @@ import {
   isNoResponseAck,
   shouldRetryEmptyDone,
   shouldFreshSessionEmptyDone,
+  isProgrammaticWake,
 } from "../../src/bot/empty-done-retry.js";
 import { shouldSendHandoffDone } from "../../src/bot/handoff.js";
 
 describe("empty-done retry", () => {
+  it("a scheduled task firing is not a programmatic wake, so its 0-turn phantom is retried", () => {
+    // smart-money 2h loop lost 3 rounds on 2026-09-25 (08:53/12:55/18:55Z):
+    // scheduler sends messageId "" → treated as a wake → 'giving up retries=0'.
+    const scheduled = { channelId: "t", channelName: "loop", userId: "u", messageId: "", scheduled: true };
+    expect(isProgrammaticWake(scheduled)).toBe(false);
+    expect(isProgrammaticWake({ channelId: "t", channelName: "x", userId: "", messageId: "" })).toBe(true);
+    expect(isProgrammaticWake(undefined)).toBe(true);
+    expect(isProgrammaticWake({ channelId: "t", channelName: "x", userId: "u", messageId: "123" })).toBe(false);
+    expect(shouldRetryEmptyDone({
+      agentKey: "cc",
+      turns: 0,
+      sawRealAssistantText: false,
+      toolCallCount: 0,
+      prompt: "smart-money 2h review",
+      retriesSoFar: 0,
+      isWake: isProgrammaticWake(scheduled),
+    })).toBe(true);
+  });
+
   it("recognizes Claude Code no-response acknowledgements", () => {
     expect(isNoResponseAck("No response requested.")).toBe(true);
     expect(isNoResponseAck("  no action needed.  ")).toBe(true);
