@@ -608,8 +608,11 @@ export class SessionManager {
     // duplicate/replay — drop it. Distinct real wakes carry distinct text, and
     // user-typed messages always have a messageId, so this never suppresses
     // genuine input. Catches replay regardless of upstream source (#406).
-    // Retries are always genuine — skip dedup for them.
-    const isWake = !discordContext?.messageId && !opts?.isRetry;
+    // Retries are always genuine — skip dedup for them. So are scheduled task
+    // firings: the scheduler arms next_run before launching (no double-fire), and
+    // a loop re-run inside the TTL (e.g. an operator pulling the next run forward
+    // after a 0-turn phantom) was silently dropped as a "duplicate wake".
+    const isWake = isProgrammaticWake(discordContext) && !opts?.isRetry;
     if (isWake && prompt.trim()) {
       const WAKE_DEDUP_TTL_MS = 10 * 60 * 1000;
       const key = `${threadId}\n${prompt}`;
