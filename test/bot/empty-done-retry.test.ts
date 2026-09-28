@@ -14,9 +14,11 @@ describe("empty-done retry", () => {
     // scheduler sends messageId "" → treated as a wake → 'giving up retries=0'.
     const scheduled = { channelId: "t", channelName: "loop", userId: "u", messageId: "", scheduled: true };
     expect(isProgrammaticWake(scheduled)).toBe(false);
-    expect(isProgrammaticWake({ channelId: "t", channelName: "x", userId: "", messageId: "" })).toBe(true);
+    const wake = { channelId: "t", channelName: "x", userId: "", messageId: "" };
+    expect(isProgrammaticWake(wake)).toBe(true);
     expect(isProgrammaticWake(undefined)).toBe(true);
-    expect(isProgrammaticWake({ channelId: "t", channelName: "x", userId: "u", messageId: "123" })).toBe(false);
+    const typed = { channelId: "t", channelName: "x", userId: "u", messageId: "123" };
+    expect(isProgrammaticWake(typed)).toBe(false);
     expect(shouldRetryEmptyDone({
       agentKey: "cc",
       turns: 0,
