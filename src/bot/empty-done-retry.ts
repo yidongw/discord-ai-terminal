@@ -39,6 +39,17 @@ export interface EmptyDoneContext {
 }
 
 /**
+ * A programmatic wake (wake_thread) arrives with no messageId. A scheduled task
+ * firing ALSO has no messageId but is not a wake: a scheduled loop round that
+ * exits with 0 turns (typically after ingesting a pending task-notification from
+ * the thread's own background job) did no work at all, and nothing re-reads it —
+ * the round is simply lost until the next interval. Those must stay retryable.
+ */
+export function isProgrammaticWake(ctx: { messageId?: string; scheduled?: boolean } | undefined): boolean {
+  return !ctx?.messageId && !ctx?.scheduled;
+}
+
+/**
  * True when a done event looks like the interrupt/restart phantom continue —
  * no model turns, no real work, and we still have a user prompt to retry.
  */
