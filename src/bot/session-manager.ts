@@ -1720,6 +1720,7 @@ export class SessionManager {
         session.pendingEmptyDoneFreshSession = shouldFreshSessionEmptyDone(attempt);
         session.done = true;
         const fresh = session.pendingEmptyDoneFreshSession;
+        const prevSessionId = fresh ? this.db.getThreadSession(threadId)?.sessionId : undefined;
         console.log(
           `[empty-done] run=${session.runId} thread=${threadId} attempt=${attempt} fresh=${fresh} — 0-turn phantom; will retry prompt`
         );
@@ -1729,7 +1730,7 @@ export class SessionManager {
               embed(
                 fresh ? "↻ Empty reply — fresh session" : "↻ Empty reply — retrying",
                 fresh
-                  ? "Claude exited with 0 turns again. Starting a fresh session and re-sending your message…"
+                  ? `Claude exited with 0 turns again. Starting a fresh session and re-sending your message…${prevSessionId ? `\n\n*Previous session ID: \`${prevSessionId}\`*` : ""}`
                   : "Claude exited without doing work (common right after an interrupt). Re-sending your message…",
                 0xffa500
               ),
