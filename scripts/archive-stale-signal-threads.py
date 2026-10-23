@@ -8,10 +8,16 @@ message sends start failing. Runs hourly via launchd
 a new message in an archived thread auto-unarchives it.
 """
 import json
+import os
 import subprocess
 import time
 
-ENV_PATH = "/Users/xinjuan/git/discord-ai-terminal/.env"
+# The repo's own .env, wherever the checkout lives (macOS launchd or the Linux systemd timer).
+# A hard-coded /Users/... path broke the Linux timer whenever a deploy reset the working tree.
+ENV_PATH = os.environ.get(
+    "DISCORD_ENV_PATH",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"),
+)
 GUILD = "1509786717731688498"
 SIGNAL_CHANNELS = {
     "1544660493887610910",  # rb-trade-signal
