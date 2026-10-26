@@ -168,6 +168,11 @@ interface ActiveSession {
   // True when this run used --resume (session already existed). Lets the error
   // handler give a more useful message when the resume itself fails.
   wasResume: boolean;
+  // Session ID this thread pointed at before this run's init forked a new one.
+  // If the run dies (e.g. OAuth/auth failure) before producing any real assistant
+  // content, we revert the DB pointer to this so the thread resumes the real
+  // conversation next time instead of being stranded on an empty forked session.
+  previousSessionId?: string;
   // Original user prompt for this run — kept so we can auto-retry with a fresh
   // session when a resume fails due to mid-execution interruption.
   prompt: string;
@@ -1567,6 +1572,22 @@ export class SessionManager {
     return /database disk image is malformed/i.test(message);
   }
 
+  // If this run's init forked a new session ID but the run then died before
+  // producing any real assistant content (e.g. the resume hit an expired/
+  // unrefreshable OAuth token), the DB is now pointing at an empty forked
+  // session — point it back at what we resumed from so the next message resumes
+  // the real conversation instead of starting blank. No-op once real text is seen.
+  private revertEmptySessionPointer(threadId: string, session: ActiveSession): void {
+    if (session.sawRealAssistantText) return;
+    const prev = session.previousSessionId;
+    if (!prev) return;
+    const current = this.db.getThreadSession(threadId)?.sessionId;
+    if (current && current !== prev) {
+      this.db.updateSessionId(threadId, prev);
+      console.log(`[session] ${threadId}: reverted session pointer ${current} → ${prev} (run ended without content)`);
+    }
+  }
+
   // Translates a parsed agent event into ordered outbox operations. This is
   // synchronous: it only enqueues work, it never awaits Discord, so stdout
   // parsing stays ahead and the outbox handles delivery + ordering + batching.
@@ -1577,6 +1598,9 @@ export class SessionManager {
       const prevSessionId = this.db.getThreadSession(threadId)?.sessionId;
       if (prevSessionId && prevSessionId !== event.sessionId) {
         console.log(`[session] ${threadId}: session ID changed on resume: ${prevSessionId} → ${event.sessionId}`);
+        // Remember what we resumed from so a pre-content failure (e.g. auth) can
+        // revert the DB pointer instead of stranding the thread on an empty fork.
+        if (session.previousSessionId === undefined) session.previousSessionId = prevSessionId;
       }
       this.db.updateSessionId(threadId, event.sessionId);
       const displayModel = session.requestedModel || event.model;
@@ -1864,6 +1888,9 @@ export class SessionManager {
         } else {
           this.resumeRetryCount.delete(threadId);
           session.done = true;
+          // Giving up on the resume — if it never produced content, revert the
+          // pointer so a later /clear-free retry still targets the real session.
+          this.revertEmptySessionPointer(threadId, session);
           outbox.enqueue(() =>
             thread.send({
               embeds: [embed(
@@ -1880,6 +1907,9 @@ export class SessionManager {
       if (!session.pendingOAuthRetry && /OAuth session expired|Failed to authenticate/i.test(event.message)) {
         session.pendingOAuthRetry = true;
         session.done = true;
+        // Auth died before this resumed run produced anything — don't let the
+        // thread stay stranded on the empty forked session Claude just created.
+        this.revertEmptySessionPointer(threadId, session);
         requestCredentialRefresh();
         const healMode = CREDS_TRIGGER_FILE ? `trigger ${CREDS_TRIGGER_FILE}` : "poll only";
         console.log(`[session] ${threadId}: OAuth auth failure — refreshing credentials (${healMode}) and retrying when fresh`);
@@ -1927,6 +1957,8 @@ export class SessionManager {
         this.resumeRetryCount.delete(threadId);
       }
       session.done = true;
+      // A hard failure before any content — don't leave the thread on an empty fork.
+      this.revertEmptySessionPointer(threadId, session);
       const detail = session.nonJsonOutput.length
         ? `${event.message}\n\n${session.nonJsonOutput.join("\n")}`
         : event.message;
