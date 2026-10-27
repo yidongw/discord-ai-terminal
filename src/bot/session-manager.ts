@@ -1325,7 +1325,7 @@ export class SessionManager {
             embeds: [
               new EmbedBuilder()
                 .setTitle("📋 Processing queued message")
-                .setDescription(preview)
+                .setDescription(preview || "*(attachment only)*")
                 .setColor(0x5865f2),
             ],
           });
