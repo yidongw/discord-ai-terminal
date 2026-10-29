@@ -136,6 +136,10 @@ export class DatabaseManager {
   constructor(dbPath?: string) {
     const finalPath = dbPath || path.join(process.cwd(), "sessions.db");
     this.db = new Database(finalPath);
+    // WAL mode allows concurrent reads during writes; busy_timeout retries
+    // instead of immediately throwing "database is locked" under write contention.
+    this.db.exec("PRAGMA journal_mode=WAL");
+    this.db.exec("PRAGMA busy_timeout=5000");
     this.initializeTables();
     this.migrate();
   }
