@@ -591,8 +591,9 @@ export class MCPPermissionServer {
         res.json({ error: `No scheduled task with id "${id}".` });
         return;
       }
-      this.db.deleteScheduledTask(id);
-      res.json({ ok: true, id });
+      // Cancel = pause and keep: tasks are never deleted (run_count, prompt and id survive).
+      this.db.setScheduledTaskEnabled(id, false);
+      res.json({ ok: true, id, paused: true });
     });
 
     // Edit an existing scheduled task in place — interval, prompt, label,

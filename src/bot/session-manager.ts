@@ -534,13 +534,13 @@ export class SessionManager {
       } catch (e) {
         return { removed: false, reason: String(e) };
       }
-      this.db.deleteScheduledTasksForThread(threadId);
+      this.db.disableScheduledTasksForThread(threadId);
       return { removed: true };
     }
 
     const result = removeWorktree(repoPath, session.workDir, session.branch, force);
     if (result.removed) {
-      this.db.deleteScheduledTasksForThread(threadId);
+      this.db.disableScheduledTasksForThread(threadId);
     }
     return result;
   }

@@ -178,6 +178,18 @@ export class DatabaseManager {
         handoff_bot_id        TEXT
       );
 
+      -- Every thread→session mapping a /clear replaced: sessions are never forgotten
+      -- (T3 and resumes find old conversations by this mapping).
+      CREATE TABLE IF NOT EXISTS thread_sessions_history (
+        thread_id   TEXT NOT NULL,
+        session_id  TEXT,
+        work_dir    TEXT,
+        branch      TEXT,
+        agent       TEXT,
+        created_at  INTEGER,
+        replaced_at INTEGER NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS channel_modes (
         channel_id  TEXT PRIMARY KEY,
         mode        TEXT NOT NULL DEFAULT 'auto'
@@ -503,7 +515,13 @@ export class DatabaseManager {
       .run(sessionId, threadId);
   }
 
+  // /clear starts a fresh session for the thread; the old mapping is kept in
+  // thread_sessions_history first, so no session is ever lost.
   deleteThreadSession(threadId: string): void {
+    this.db.prepare(
+      `INSERT INTO thread_sessions_history (thread_id, session_id, work_dir, branch, agent, created_at, replaced_at)
+       SELECT thread_id, session_id, work_dir, branch, agent, created_at, ? FROM thread_sessions WHERE thread_id = ?`
+    ).run(Date.now(), threadId);
     this.db.prepare(`DELETE FROM thread_sessions WHERE thread_id = ?`).run(threadId);
   }
 
@@ -683,12 +701,17 @@ export class DatabaseManager {
     this.db.prepare(`UPDATE scheduled_tasks SET enabled = ? WHERE id = ?`).run(enabled ? 1 : 0, id);
   }
 
+  // Internal only: the bot's own temporary session-limit wakeups. A user's or an
+  // agent's task is never deleted — it is paused (enabled = 0) and kept.
   deleteScheduledTask(id: string): void {
     this.db.prepare(`DELETE FROM scheduled_tasks WHERE id = ?`).run(id);
   }
 
-  deleteScheduledTasksForThread(threadId: string): void {
-    this.db.prepare(`DELETE FROM scheduled_tasks WHERE thread_id = ?`).run(threadId);
+  // A thread that closes or is deleted keeps its scheduled tasks, paused: loops
+  // (smartmoney, position-review, …) lost their tasks this way when their threads
+  // were auto-archived. Resume with the scheduler tools.
+  disableScheduledTasksForThread(threadId: string): void {
+    this.db.prepare(`UPDATE scheduled_tasks SET enabled = 0 WHERE thread_id = ?`).run(threadId);
   }
 
   // Partial update of a scheduled task — only the provided fields are written.

@@ -263,7 +263,7 @@ const TOOLS = [
   },
   {
     name: 'cancel_scheduled_task',
-    description: 'Cancel/stop a recurring task by its id (from list_scheduled_tasks).',
+    description: 'Stop a recurring task by its id (from list_scheduled_tasks). The task is paused and kept (never deleted); resume it with update_scheduled_task enabled=true.',
     inputSchema: {
       type: 'object',
       properties: {

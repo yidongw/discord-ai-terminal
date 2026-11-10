@@ -18,7 +18,7 @@ vi.mock("../../src/db/database.js", () => {
     deleteActiveRun = vi.fn();
     updateSessionId = vi.fn();
     updateActiveRunOffset = vi.fn();
-    deleteScheduledTasksForThread = vi.fn();
+    disableScheduledTasksForThread = vi.fn();
     deleteThreadSession = vi.fn();
     hasActiveRun = vi.fn(() => false);
     getScheduledTask = vi.fn(() => null);
