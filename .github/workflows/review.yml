@@ -1,0 +1,240 @@
+name: Review
+
+# Trusted tests + gates + blocking code review for every push to dev (owner 11-11: the same flow as
+# yidongw/tralyx, pikeway and foxhole-backend; one shared `dev` branch; hotfixes straight onto main with a
+# `Hotfix: <why>` trailer; review fixes on devfix/<sha>). Driven on the 总控 (cx43) by tralyx main's
+# scripts/ci/review-dispatch.sh with REPO=yidongw/discord-ai-terminal (timer
+# discord-ai-terminal-review-dispatch); deploys by ~/bin/discord-ai-terminal-autodeploy (timer, cx43).
+#
+# Trust model: workflow_run always runs THIS file as it is on main, so a branch cannot change what
+# tests or reviews it. The pushed commit is checked out as data (the reviewer never runs its code).
+# A main head (Hotfix: / Train-Merge:) is titled `recheck <sha>`, a dev/devfix head `review <sha>`.
+#
+# Runners (GitHub-hosted minutes are not paid): `tests` on instabox-discord-ai-terminal (InstaBox VM
+# sandbox; no unreviewed code runs on cx43, where the bot runs), `review` + `status` on
+# cx43-discord-ai-terminal-review (labels cx43,discord-ai-terminal-review).
+run-name: ${{ github.event.workflow_run.head_branch == 'main' && 'recheck' || 'review' }} ${{ github.event.workflow_run.head_sha }}
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [requested]
+
+permissions:
+  contents: read
+  statuses: write
+  actions: read
+
+concurrency:
+  # dev: a running review is not cancelled by a newer dev push (merge train); main: one group per sha.
+  group: review-${{ github.event.workflow_run.head_branch }}-${{ github.event.workflow_run.event }}-${{ github.event.workflow_run.run_attempt }}${{ github.event.workflow_run.head_branch != 'dev' && format('-{0}', github.event.workflow_run.head_sha) || '' }}
+  cancel-in-progress: ${{ github.event.workflow_run.head_branch != 'dev' }}
+
+env:
+  SHA: ${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  # main's check list over the pushed sha. Runs for dev, devfix/* (a review fix lands on its tests
+  # alone) and the main heads that did not come from a reviewed dev sha (Hotfix:, Train-Merge:).
+  # A plain fast-forward of main to a reviewed dev sha is not tested again (its review run was).
+  #
+  # The checks: bun install (frozen lockfile), tsc over src/ (tsconfig.ci.json), a bun build of
+  # src/index.ts (every import resolves), the MCP smoke test (scripts/ci/smoke-mcp.ts: /health,
+  # /tool/wake_thread, /mcp initialize on a local port) and `bun test` measured against
+  # test/known-failures.txt: a failing test that is not listed there fails the job (the suite had
+  # failures before this flow existed; the list may only shrink as they are fixed).
+  tests:
+    if: >-
+      github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt == 1 &&
+      (github.event.workflow_run.head_branch == 'dev' || startsWith(github.event.workflow_run.head_branch, 'devfix/') ||
+       (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: '))))
+    # Unreviewed code runs only on the InstaBox VM, and there never as the runner's own identity: every
+    # candidate command runs as a THROWAWAY user created for this job (datci<run id>: not in the docker or
+    # sudo group, its own home/TMPDIR, no write access to any runner directory; the runner dirs are 0750),
+    # killed and deleted at the end (step below + the runner's root-owned job-completed hook as a backstop).
+    # The runner's job-started hook admits only this job and holds the VM-wide one-job-at-a-time lock
+    # (/srv/ci-serial.sh: two suites at once OOM the 8 GB VM).
+    runs-on: [self-hosted, instabox, discord-ai-terminal-tests]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2 # what cx43 runs the bot with (/usr/local/bin/bun)
+      - name: Throwaway test user (trusted, as the runner)
+        run: |
+          CIU=datci${GITHUB_RUN_ID}
+          D=/data/discord-ai-terminal-work/ci/$CIU
+          sudo useradd --system --user-group --no-create-home --home-dir "$D" --shell /usr/sbin/nologin "$CIU"
+          sudo install -d -o root -g root -m 755 /data/discord-ai-terminal-work/ci "$D"
+          sudo install -d -o "$CIU" -g "$CIU" -m 700 "$D/home" "$D/tmp" "$D/src"
+          sudo install -d -o root -g root -m 755 "$D/bin"
+          sudo install -o root -g root -m 755 "$(command -v bun)" "$D/bin/bun"
+          sudo ln -s bun "$D/bin/bunx"
+          sudo cp -a "$GITHUB_WORKSPACE/." "$D/src/" && sudo chown -R "$CIU:$CIU" "$D/src"
+          echo "CIU=$CIU" >> "$GITHUB_ENV"; echo "CID=$D" >> "$GITHUB_ENV"
+          # how every candidate command below runs: as $CIU, clean environment, in its copy of the tree
+          printf '%s\n' '#!/usr/bin/env bash' \
+            'exec sudo -n -u "$CIU" env -i HOME="$CID/home" TMPDIR="$CID/tmp" PATH="$CID/bin:/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8 CI=true BUN_INSTALL_CACHE_DIR="$CID/home/.bun-cache" bash -c "cd \"$CID/src\" && $1"' \
+            > "$RUNNER_TEMP/as-ci"; chmod 755 "$RUNNER_TEMP/as-ci"
+      - name: The test user has no Docker, no sudo, no runner access (fail closed)
+        run: |
+          "$RUNNER_TEMP/as-ci" '
+            id
+            if id -nG | tr " " "\n" | grep -qxE "docker|sudo|user"; then echo "::error::test user in a privileged group"; exit 1; fi
+            for s in /var/run/docker.sock /run/docker.sock; do
+              [ -e "$s" ] || continue
+              if [ -r "$s" ] || [ -w "$s" ] || curl -s -m 5 --unix-socket "$s" http://localhost/_ping >/dev/null 2>&1; then echo "::error::$s usable"; exit 1; fi
+            done
+            if sudo -n true 2>/dev/null; then echo "::error::test user has sudo"; exit 1; fi
+            for d in /srv/discord-ai-terminal-r1 /srv/foxhole-backend-r1 /srv/tralyx-r1 /data/discord-ai-terminal-work /data/home; do
+              if [ -w "$d" ] || ls "$d/.credentials" >/dev/null 2>&1; then echo "::error::test user can write $d or read a runner credential"; exit 1; fi
+            done
+            echo "ok: $(id -un) has no Docker, no sudo, no runner access"'
+      - name: Install
+        run: '"$RUNNER_TEMP/as-ci" "bun install --frozen-lockfile"'
+      - name: Typecheck (src)
+        run: '"$RUNNER_TEMP/as-ci" "bunx tsc --noEmit -p tsconfig.ci.json"'
+      - name: Build (every import of src/index.ts resolves)
+        run: '"$RUNNER_TEMP/as-ci" "bun build src/index.ts --target=bun --outdir \"\$TMPDIR/build\" >/dev/null"'
+      - name: MCP smoke test (/health, /tool/wake_thread, /mcp)
+        run: '"$RUNNER_TEMP/as-ci" "timeout 60 bun run scripts/ci/smoke-mcp.ts"'
+      - name: Unit tests (bun test; nothing may fail that test/known-failures.txt does not list)
+        run: |
+          "$RUNNER_TEMP/as-ci" "timeout 600 bun test" > "$RUNNER_TEMP/bun-test.out" 2>&1 || true
+          sed -E 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/bun-test.out" > "$RUNNER_TEMP/bun-test.txt"
+          tail -8 "$RUNNER_TEMP/bun-test.txt"
+          grep -qE '^Ran [1-9][0-9]* tests? across' "$RUNNER_TEMP/bun-test.txt" || { echo "::error::bun test did not finish (no summary line)"; tail -40 "$RUNNER_TEMP/bun-test.txt"; exit 1; }
+          grep -E '^\(fail\) ' "$RUNNER_TEMP/bun-test.txt" | sed -E 's/ \[[0-9.]+(ms|s)\]$//' | sort -u > "$RUNNER_TEMP/failed.txt" || true
+          # the runner's own checkout: the test user cannot rewrite it while the suite runs
+          grep -E '^\(fail\) ' "$GITHUB_WORKSPACE/test/known-failures.txt" 2>/dev/null | sort -u > "$RUNNER_TEMP/known.txt" || true
+          new=$(comm -23 "$RUNNER_TEMP/failed.txt" "$RUNNER_TEMP/known.txt")
+          echo "failed: $(wc -l < "$RUNNER_TEMP/failed.txt"), listed as known: $(wc -l < "$RUNNER_TEMP/known.txt")"
+          if [ -n "$new" ]; then
+            echo "::error::tests failing that test/known-failures.txt does not list:"
+            printf '%s\n' "$new" | sed 's/^/ × /'
+            exit 1
+          fi
+          echo "ok: no new test failures"
+      - name: Remove the test user (kills every process it left)
+        if: always()
+        run: |
+          [ -n "${CIU:-}" ] || exit 0
+          sudo pkill -KILL -u "$CIU" || true
+          sleep 1
+          sudo userdel "$CIU" || true
+          sudo rm -rf "$CID"
+
+  review:
+    if: >-
+      github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt == 1 &&
+      (github.event.workflow_run.head_branch == 'dev' || (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: '))))
+    runs-on: [self-hosted, cx43, discord-ai-terminal-review]
+    timeout-minutes: 90
+    steps:
+      - name: Status pending
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/$SHA" \
+            -d '{"state":"pending","context":"review/blocking","description":"gates + code review running","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}' >/dev/null
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4 # main: gates + review-passed.sh
+        with:
+          path: .trusted
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ env.SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # cx43's system node is 22
+      - name: Reviewer (yidongw/tralyx main's isolated review-gate)
+        run: |
+          R=$HOME/.local/state/discord-ai-terminal-reviewer
+          git -C "$HOME/git/tralyx" fetch -q origin main
+          [ -d "$R" ] || git -C "$HOME/git/tralyx" worktree add -q --detach "$R" origin/main
+          git -C "$R" checkout -q --detach origin/main
+          want=$(sha256sum "$R/package-lock.json" | cut -d' ' -f1)
+          if [ "$(cat "$R/.deps-stamp" 2>/dev/null)" != "$want" ] || [ ! -d "$R/node_modules" ]; then
+            # Root disk is shared: hardlink a matching install (the pikeway reviewer's) instead of a new 1 GB copy.
+            P=$HOME/.local/state/pikeway-reviewer
+            rm -rf "$R/node_modules.tmp"
+            if [ -d "$P/node_modules" ] && cmp -s "$P/package-lock.json" "$R/package-lock.json" && cp -al "$P/node_modules" "$R/node_modules.tmp"; then
+              rm -rf "$R/node_modules"; mv "$R/node_modules.tmp" "$R/node_modules"
+            else
+              rm -rf "$R/node_modules.tmp"; (cd "$R" && npm ci --no-audit --no-fund >/dev/null)
+            fi
+            echo "$want" > "$R/.deps-stamp"
+          fi
+          echo "R=$R" >> "$GITHUB_ENV"
+      - name: Reviewed range
+        working-directory: candidate
+        run: |
+          if [ "${{ github.event.workflow_run.head_branch }}" = main ]; then
+            msg=$(git show -s --format=%B HEAD)
+            if grep -qE '^Train-Merge: [0-9a-f]{40}' <<<"$msg" && git rev-parse -q --verify HEAD^2 >/dev/null; then
+              # The dev side's own passing review (attested back to the main-side parent) covers merge-base..HEAD^2:
+              # then only HEAD^2..HEAD (what the merge adds) is reviewed. A dev side without one — a review-fix
+              # landing, whose fix runs the trusted tests only — gets the whole incoming range HEAD^1..HEAD reviewed.
+              if GH_TOKEN=${{ github.token }} REVIEW_MERGE_INTO=1 bash ../.trusted/scripts/ci/review-passed.sh "$(git rev-parse HEAD^2)" "${{ github.repository }}" "$(git rev-parse HEAD^1)"; then
+                base=$(git rev-parse HEAD^2)
+              else
+                echo "dev side $(git rev-parse --short HEAD^2) has no passing review: reviewing HEAD^1..HEAD"
+                base=$(git rev-parse HEAD^1)
+              fi
+              echo "ATTEST_BASE=$(git rev-parse HEAD^1)" >> "$GITHUB_ENV"
+            else
+              grep -qE '^Hotfix: [^[:space:]]' <<<"$msg" || { echo "main head without a Hotfix: trailer"; exit 1; }
+              base=$(git rev-parse HEAD^)
+            fi
+          else
+            base=$(git merge-base origin/main HEAD)
+          fi
+          echo "REVIEW_BASE=$base" >> "$GITHUB_ENV"
+      - name: Commit gates (main's script, the branch's commits)
+        working-directory: candidate
+        run: bash ../.trusted/scripts/ci/commit-gates.sh "$REVIEW_BASE" HEAD
+      # The isolated reviewer runs `docker run --pull=never alpine:3.20`; never `docker image prune -a` on cx43.
+      - name: Reviewer image present
+        run: docker image inspect alpine:3.20 >/dev/null 2>&1 || docker pull -q alpine:3.20
+      - name: Attestation (reviewed range)
+        working-directory: candidate
+        run: |
+          mkdir -p ../attest
+          printf '{"head":"%s","base":"%s"}\n' "$(git rev-parse HEAD)" "${ATTEST_BASE:-$REVIEW_BASE}" > ../attest/review-attestation.json
+          cat ../attest/review-attestation.json
+      - name: Review (blocking; tralyx main's reviewer, this repo's diff)
+        working-directory: candidate
+        run: $R/node_modules/.bin/tsx "$R/src/cli/review-gate.ts" --base "$REVIEW_BASE" --head HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-attestation
+          path: attest/review-attestation.json
+          retention-days: 90
+
+  # The review/blocking status (a convenience; scripts/ci/review-passed.sh is the authority).
+  status:
+    needs: [tests, review]
+    if: >-
+      !cancelled() &&
+      github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt == 1 &&
+      (github.event.workflow_run.head_branch == 'dev' || (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: '))))
+    runs-on: [self-hosted, cx43, discord-ai-terminal-review]
+    timeout-minutes: 5
+    steps:
+      - name: Status result
+        run: |
+          state=$([ "$OUTCOME" = success ] && echo success || echo failure)
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/$SHA" \
+            -d "{\"state\":\"$state\",\"context\":\"review/blocking\",\"description\":\"tests + gates + review: $state\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" >/dev/null
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTCOME: ${{ needs.tests.result == 'success' && needs.review.result == 'success' && 'success' || 'failure' }}

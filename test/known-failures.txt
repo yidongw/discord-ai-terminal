@@ -1,0 +1,66 @@
+# Tests that already failed under `bun test` when the ship flow started (2026-11-11, main 0fbe3c6),
+# on cx43 and on the InstaBox CI VM. review.yml's `tests` job fails on any failing test NOT listed here.
+# Fixing one: delete its line in the same commit. Never add a line to hide a new failure.
+(fail) CommandHandler > getCommands > should return array of slash commands
+(fail) CommandHandler > handleInteraction > should deny unauthorized users
+(fail) CommandHandler > handleInteraction > should handle clear command for authorized user
+(fail) CommandHandler > handleInteraction > should handle provider command for authorized user
+(fail) CommandHandler > handleInteraction > should ignore non-chat input commands
+(fail) CommandHandler > handleInteraction > should ignore unknown commands
+(fail) createGhWrapper > exits 127 instead of recursing when no real gh exists on PATH
+(fail) createGhWrapper > resolves the real gh even when its dir is not first on PATH
+(fail) DatabaseManager > codex model management > should return codex model when it exists
+(fail) DatabaseManager > codex model management > should return default codex model (gpt-5.6-luna) for non-existent channel
+(fail) DatabaseManager > codex model management > should store a codex model
+(fail) DatabaseManager > initialization > should create tables on initialization
+(fail) DatabaseManager > initialization > should create the scheduled_tasks table
+(fail) DatabaseManager > model management > should return default model (claude-opus-5-5) for non-existent channel
+(fail) DatabaseManager > model management > should return model when it exists
+(fail) DatabaseManager > model management > should store a model
+(fail) DatabaseManager > mode management > should return default mode (auto) for non-existent channel
+(fail) DatabaseManager > mode management > should return mode when it exists
+(fail) DatabaseManager > mode management > should store a mode
+(fail) DatabaseManager > scheduled tasks > createScheduledTask inserts all columns with nulls for optional fields
+(fail) DatabaseManager > scheduled tasks > deleteSpentSessionLimitTasks returns the number of rows removed
+(fail) DatabaseManager > scheduled tasks > getScheduledTask maps a row to a ScheduledTask
+(fail) DatabaseManager > scheduled tasks > getScheduledTask returns null when the row is missing
+(fail) DatabaseManager > scheduled tasks > markScheduledTaskRun runs with (ranAt, nextRunAt, id)
+(fail) DatabaseManager > scheduled tasks > updateScheduledTask is a no-op when no fields are given
+(fail) DatabaseManager > scheduled tasks > updateScheduledTask writes only the provided fields, id last
+(fail) Goal Database Operations > should clear goal when set to null
+(fail) Goal Database Operations > should create session with goal
+(fail) Goal Database Operations > should create session without goal
+(fail) Goal Database Operations > should persist goal across updates
+(fail) Goal Database Operations > should support goals in all agent types
+(fail) Goal Database Operations > should update goal for existing session
+(fail) Handoff Database Operations > should clear handoff bot
+(fail) Handoff Database Operations > should preserve handoff when session is replaced without handoff field
+(fail) Handoff Database Operations > should store and retrieve handoff bot with id
+(fail) isPidAlive > returns true for the current process and false for invalid pids
+(fail) oauth-creds-heal > credsAreFresh rejects the same failing token even when not expired
+(fail) oauth-creds-heal > requestCredentialRefresh touches the trigger file
+(fail) oauth-creds-heal > waitForFreshCreds returns false when only the same token is present
+(fail) oauth-creds-heal > waitForFreshCreds returns true when a different fresh token appears
+(fail) Outbox > uploads URL-encoded local markdown images as Discord files
+(fail) parseSdkLine > ignores allowed rate_limit_event (informational, not a limit hit)
+(fail) parseSdkLine > maps other result errors to error
+(fail) parseSdkLine > prefers the error detail string over subtype
+(fail) queued_wakes (sqlite) — wakes queued behind a busy run survive a restart > persists across a re-open of the same file (a bot restart)
+(fail) queued_wakes (sqlite) — wakes queued behind a busy run survive a restart > round-trips in FIFO order and deletes by id / by thread
+(fail) RunTailer > emits complete lines, buffers the trailing partial, and tracks the byte offset
+(fail) RunTailer > finalizes immediately when the log file does not exist
+(fail) RunTailer > finalizes once the process is gone and flushes a trailing newline-less line
+(fail) RunTailer > keeps multibyte UTF-8 intact and counts offset in bytes
+(fail) RunTailer > notifies on stall but does not finalize while the process stays alive
+(fail) RunTailer > re-fires onStall every stallTimeoutMs while the log stays silent
+(fail) RunTailer > resumes from a persisted offset without re-emitting consumed lines
+(fail) RunTailer > waits for a not-yet-created log file and streams once it appears
+(fail) session-limit wakeup (sqlite) > clears a still-future wakeup once a run completes normally
+(fail) session-limit wakeup (sqlite) > leaves an already-due wakeup for the scheduler to run
+(fail) session-limit wakeup (sqlite) > persists a due wakeup row the scheduler can pick up
+(fail) SessionManager handoff idle detection > defers handoff while bot messages are queued
+(fail) SessionManager run timeout > ignores stale active-run rows whose pid is no longer alive
+(fail) validateConfig > should exit with error when ALLOWED_USER_ID is missing
+(fail) validateConfig > should exit with error when BASE_FOLDER is missing
+(fail) validateConfig > should exit with error when DISCORD_TOKEN is missing
+(fail) validateConfig > should return valid config when all environment variables are set

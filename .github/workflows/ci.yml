@@ -1,0 +1,26 @@
+name: CI
+
+# Ship flow (owner 11-11, same as yidongw/tralyx, pikeway and foxhole-backend; CLAUDE.md "Shipping"):
+#   every commit → the shared `dev` branch. This run only triggers main's .github/workflows/review.yml
+#   (workflow_run, on `requested`), which runs the TRUSTED tests (main's check list over the pushed sha,
+#   InstaBox runner) and the blocking code review (cx43) in parallel. The cx43 dispatcher fast-forwards
+#   main to a reviewed dev sha; the cx43 controller (~/bin/discord-ai-terminal-autodeploy) then deploys
+#   main's head into the bot's release directory (no container: the bot spawns host CLIs).
+#
+# GitHub-hosted minutes for yidongw are not paid (since 11-09), so nothing runs here: creating this run
+# is all review.yml needs. Do not add `runs-on: ubuntu-*` jobs (they never start); the self-hosted
+# runners' job guards refuse every job but main's review.yml.
+# (.github/workflows/agent-trigger.yml is separate: PR events → the agent server, runner mac-preview.)
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    if: false
+    runs-on: [self-hosted, instabox, discord-ai-terminal-tests]
+    steps:
+      - run: "true"

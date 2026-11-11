@@ -732,7 +732,7 @@ export class DiscordBot {
     triggerMsg: Message;
     explicitModel?: string;
     parentBranch?: string;
-    discordContext?: { channelId: string; channelName: string; userId: string; messageId: string };
+    discordContext?: { channelId: string; channelName: string; userId: string; messageId?: string };
   }): Promise<void> {
     const { thread, channel, agentKey, titleLabel, prompt, triggerMsg, explicitModel, parentBranch } = opts;
     const modelOverride = this.resolveWorkerModel(agentKey, channel.id, { explicitModel });
@@ -900,7 +900,7 @@ export class DiscordBot {
     agentKey: string,
     workDir: string,
     prompt: string,
-    discordContext: { channelId: string; channelName: string; userId: string; messageId: string },
+    discordContext: { channelId: string; channelName: string; userId: string; messageId?: string },
     opts?: { branch?: string; isWorktree?: boolean; modelOverride?: string }
   ): Promise<void> {
     const modelOverride =
