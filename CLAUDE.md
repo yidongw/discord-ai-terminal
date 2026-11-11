@@ -133,12 +133,13 @@ launchctl kickstart -k gui/$(id -u)/com.discord-ai-terminal
 launchctl bootout gui/$(id -u)/com.discord-ai-terminal
 ```
 
-On Linux the bot runs as a systemd user service instead (`discord-ai-terminal`):
+On Linux (cx43) the bot runs as the system unit `discord-ai-terminal.service` (user ubuntu), from the
+release directory `/home/ubuntu/deploy/discord-ai-terminal/current`; deploys and restarts are done by the
+autodeploy controller (see "Shipping"). Log: `/home/ubuntu/logs/discord-ai-terminal.log`.
 
 ```bash
-systemctl --user status discord-ai-terminal
-journalctl --user -u discord-ai-terminal -n 50
-systemctl --user restart discord-ai-terminal
+systemctl status discord-ai-terminal
+readlink /home/ubuntu/deploy/discord-ai-terminal/current   # the deployed release
 ```
 
 See `deploy/com.discord-ai-terminal.plist` (macOS) and `deploy/discord-ai-terminal.service`
@@ -146,4 +147,5 @@ See `deploy/com.discord-ai-terminal.plist` (macOS) and `deploy/discord-ai-termin
 
 ## Testing Notes
 
-- Use `bun run test:run` to run tests. Never use just `bun test`
+- `bun run test:run` runs the suite under vitest. CI runs `bun test` (the code imports `bun:sqlite`, which
+  vitest under Node cannot load) and compares its failures with `test/known-failures.txt`.
