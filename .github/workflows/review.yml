@@ -61,6 +61,12 @@ jobs:
         with:
           ref: ${{ env.SHA }}
           persist-credentials: false
+      - name: Install Bun setup prerequisite
+        run: |
+          if ! command -v unzip >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends unzip
+          fi
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2 # what cx43 runs the bot with (/usr/local/bin/bun)
