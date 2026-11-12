@@ -54,7 +54,7 @@ jobs:
     # killed and deleted at the end (step below + the runner's root-owned job-completed hook as a backstop).
     # The runner's job-started hook admits only this job and holds the VM-wide one-job-at-a-time lock
     # (/srv/ci-serial.sh: two suites at once OOM the 8 GB VM).
-    runs-on: [self-hosted, instabox, discord-ai-terminal-tests]
+    runs-on: [self-hosted, a1, discord-ai-terminal-tests]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
