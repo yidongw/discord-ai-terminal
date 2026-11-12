@@ -6,7 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import { createGhWrapper, computeLinkerToken } from "../../src/github/gh-wrapper.js";
 
-const CONTROL_PORT = 3999;
+let controlPort: number;
 
 // The wrapper shells out to curl and we drive it through spawnSync, which blocks
 // this process's event loop — so an in-process http server could never answer.
@@ -16,8 +16,8 @@ function startStubControlServer(port: number): ChildProcess {
     "require('http').createServer((q,r)=>{" +
     "r.writeHead(200,{'Content-Type':'application/json'});" +
     'r.end(\'{"allow":true}\')' +
-    `}).listen(${port},'127.0.0.1')`;
-  return spawn(process.execPath, ["-e", code], { stdio: "ignore" });
+    `}).listen(${port},'127.0.0.1',function(){process.stdout.write(String(this.address().port)+"\\n")})`;
+  return spawn(process.execPath, ["-e", code], { stdio: ["ignore", "pipe", "ignore"] });
 }
 
 async function waitForPort(port: number, timeoutMs = 5000): Promise<void> {
@@ -57,11 +57,15 @@ describe("createGhWrapper", () => {
     realGhDir = path.join(tmpRoot, "realbin");
     makeFakeGh(realGhDir, "REAL_GH");
     // Wrapper writes into os.tmpdir()/discord-cc-<threadId>; use a unique id.
-    binDir = createGhWrapper(`test-${process.pid}-${Date.now()}`, CONTROL_PORT, "secret");
+
     // The wrapper now fails fast if the control server is unreachable, so stand
     // up a stub that allows every command for the resolution tests.
-    controlServer = startStubControlServer(CONTROL_PORT);
-    await waitForPort(CONTROL_PORT);
+    controlServer = startStubControlServer(0);
+    controlPort = await new Promise<number>((resolve) => {
+      controlServer.stdout!.once("data", (data) => resolve(Number(data.toString().trim())));
+    });
+    await waitForPort(controlPort);
+    binDir = createGhWrapper(`test-${process.pid}-${Date.now()}`, controlPort, "secret");
   });
 
   afterEach(() => {
@@ -97,10 +101,14 @@ describe("createGhWrapper", () => {
 
   // Fail-fast: when the control server is unreachable the wrapper must surface a
   // clear error and exit non-zero, never silently fall through to the real gh.
-  it("fails fast when the control server is unreachable", () => {
+  it("fails fast when the control server is unreachable", async () => {
+    await new Promise<void>((resolve) => {
+      controlServer.once("exit", () => resolve());
+      controlServer.kill();
+    });
     const deadPortBinDir = createGhWrapper(
       `test-dead-${process.pid}-${Date.now()}`,
-      3998, // nothing listening here
+      controlPort, // our server has exited
       "secret"
     );
     try {
@@ -113,7 +121,7 @@ describe("createGhWrapper", () => {
 
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("control server at 127.0.0.1:3998 not responding");
+      expect(result.stderr).toContain(`control server at 127.0.0.1:${controlPort} not responding`);
       // Must not have reached the real gh.
       expect(result.stdout).not.toContain("REAL_GH");
     } finally {
@@ -123,12 +131,15 @@ describe("createGhWrapper", () => {
 
   it("exits 127 instead of recursing when no real gh exists on PATH", () => {
     const ghScript = path.join(binDir, "gh");
+    const utilities = path.join(tmpRoot, "utilities");
+    fs.mkdirSync(utilities);
+    for (const tool of ["dirname"]) fs.symlinkSync(`/usr/bin/${tool}`, path.join(utilities, tool));
     // PATH has the wrapper dir but no real gh (std dirs only) — the
     // self-reference guard must trip rather than recurse.
     const result = spawnSync("/bin/bash", [ghScript, "pr", "view", "1"], {
       encoding: "utf8",
       timeout: 8000,
-      env: { ...process.env, PATH: `${binDir}:/usr/bin:/bin` },
+      env: { ...process.env, PATH: `${binDir}:${utilities}` },
     });
 
     expect(result.error).toBeUndefined();

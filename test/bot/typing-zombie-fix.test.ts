@@ -62,19 +62,24 @@ describe("typing zombie fix integration", () => {
         onFinalize: () => { finalized = true; },
       });
 
+      vi.useFakeTimers();
+      try {
       tailer.start();
-      await wait(30);
+      vi.advanceTimersByTime(30);
       expect(lines.length).toBe(1);
       expect(finalized).toBe(false);
 
-      await wait(80);
+      vi.advanceTimersByTime(80);
       expect(stallNotified).toBe(true);
       expect(finalized).toBe(false);
 
       alive = false;
-      await wait(40);
+      vi.advanceTimersByTime(40);
       expect(finalized).toBe(true);
-      tailer.stop();
+      } finally {
+        tailer.stop();
+        vi.useRealTimers();
+      }
     });
   });
 
