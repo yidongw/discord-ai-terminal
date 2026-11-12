@@ -54,7 +54,7 @@ jobs:
     # killed and deleted at the end (step below + the runner's root-owned job-completed hook as a backstop).
     # The runner's job-started hook admits only this job and holds the VM-wide one-job-at-a-time lock
     # (/srv/ci-serial.sh: two suites at once OOM the 8 GB VM).
-    runs-on: [self-hosted, a1, discord-ai-terminal-tests]
+    runs-on: [self-hosted, instabox, discord-ai-terminal-tests]   # back from A1 (11-12): 3 tests fail there in beforeEach, cause unknown
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -116,6 +116,11 @@ jobs:
           if [ -n "$new" ]; then
             echo "::error::tests failing that test/known-failures.txt does not list:"
             printf '%s\n' "$new" | sed 's/^/ × /'
+            # the reason: bun prints a failing test's error output just before its "(fail)" line — show it per test
+            printf '%s\n' "$new" | while IFS= read -r l; do
+              n=$(grep -nF -- "$l" "$RUNNER_TEMP/bun-test.txt" | head -1 | cut -d: -f1); [ -n "$n" ] || continue
+              echo "::group::output before $l"; sed -n "$(( n > 40 ? n - 40 : 1 )),${n}p" "$RUNNER_TEMP/bun-test.txt"; echo "::endgroup::"
+            done
             exit 1
           fi
           echo "ok: no new test failures"

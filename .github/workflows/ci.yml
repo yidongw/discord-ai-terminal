@@ -21,6 +21,6 @@ permissions:
 jobs:
   trigger:
     if: false
-    runs-on: [self-hosted, a1, discord-ai-terminal-tests]
+    runs-on: [self-hosted, instabox, discord-ai-terminal-tests]
     steps:
       - run: "true"
