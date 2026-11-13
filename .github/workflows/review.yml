@@ -85,7 +85,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/as-ci" '
             id
-            if id -nG | tr " " "\n" | grep -qxE "docker|sudo|user"; then echo "::error::test user in a privileged group"; exit 1; fi
+            if id -nG | tr " " "\n" | grep -xE "docker|sudo|user" >/dev/null; then echo "::error::test user in a privileged group"; exit 1; fi
             for s in /var/run/docker.sock /run/docker.sock; do
               [ -e "$s" ] || continue
               if [ -r "$s" ] || [ -w "$s" ] || curl -s -m 5 --unix-socket "$s" http://localhost/_ping >/dev/null 2>&1; then echo "::error::$s usable"; exit 1; fi
@@ -119,7 +119,7 @@ jobs:
             printf '%s\n' "$new" | sed 's/^/ × /'
             # the reason: bun prints a failing test's error output just before its "(fail)" line — show it per test
             printf '%s\n' "$new" | while IFS= read -r l; do
-              n=$(grep -nF -- "$l" "$RUNNER_TEMP/bun-test.txt" | head -1 | cut -d: -f1); [ -n "$n" ] || continue
+              n=$(grep -nF -m 1 -- "$l" "$RUNNER_TEMP/bun-test.txt" | cut -d: -f1); [ -n "$n" ] || continue
               echo "::group::output before $l"; sed -n "$(( n > 40 ? n - 40 : 1 )),${n}p" "$RUNNER_TEMP/bun-test.txt"; echo "::endgroup::"
             done
             exit 1
@@ -216,18 +216,23 @@ jobs:
             msg=$(git show -s --format=%B HEAD)
             grep -qE '^(Hotfix: [^[:space:]]|Train-Merge: [0-9a-f]{40}|Review-Fix-Of: [0-9a-f]{40})' <<<"$msg" || { echo "main head without a Hotfix: / Train-Merge: / Review-Fix-Of: trailer"; exit 1; }
             base=$(bash ../.trusted/scripts/ci/hotfix-review-base.sh HEAD)
+            gate_base=$base
           elif [ "${{ github.event.workflow_run.head_branch }}" = dev ]; then
             cover=$(bash ../.trusted/scripts/ci/dev-review-base.sh HEAD)
             echo "dev review: covers from ${cover:0:12} (the last completed dev review that passed or was repaired; else main)"
             if bash ../.trusted/scripts/ci/dev-review-base.sh --only-fixes "$cover" HEAD; then kind=tests-only-fix; fi
+            # Clean merges can shorten the code diff; their new commits still need all commit gates.
+            gate_base=$cover
             base=$(bash ../.trusted/scripts/ci/dev-review-base.sh --diff "$cover" HEAD)
           else
             base=$(git merge-base origin/main HEAD)
+            gate_base=$base
           fi
           echo "review-range: $base $(git rev-parse HEAD)"
           echo "review-kind: $kind"
-          git log --oneline "$base..HEAD" | head -50
+          git log --oneline -n 50 "$base..HEAD"
           echo "REVIEW_BASE=$base" >> "$GITHUB_ENV"
+          echo "GATE_BASE=$gate_base" >> "$GITHUB_ENV"
           echo "REVIEW_MAIN=$main" >> "$GITHUB_ENV"
           echo "kind=$kind" >> "$GITHUB_OUTPUT"
         env:
@@ -235,7 +240,7 @@ jobs:
           REPO: ${{ github.repository }}
       - name: Commit gates (main's script, the branch's commits)
         working-directory: candidate
-        run: bash ../.trusted/scripts/ci/commit-gates.sh "$REVIEW_BASE" HEAD
+        run: bash ../.trusted/scripts/ci/commit-gates.sh "$GATE_BASE" HEAD
       # The isolated reviewer runs `docker run --pull=never alpine:3.20`; never `docker image prune -a` on cx43.
       - name: Reviewer image present
         run: docker image inspect alpine:3.20 >/dev/null 2>&1 || docker pull -q alpine:3.20

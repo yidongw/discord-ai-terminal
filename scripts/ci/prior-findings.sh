@@ -20,7 +20,7 @@ for s in $fixes; do
   rid=$(jq -r --arg a "review $s" --arg b "recheck $s" \
     '[.workflow_runs[]? | select((.display_title == $a or .display_title == $b) and .conclusion == "failure")][0].id // empty' <<<"$runs" 2>/dev/null)
   [ -n "$rid" ] || { note "no failed review run found for ${s:0:12}"; continue; }
-  jid=$(api "actions/runs/$rid/jobs" | jq -r '.jobs[]? | select(.name == "review") | .id' 2>/dev/null | head -1)
+  jid=$(api "actions/runs/$rid/jobs" | jq -r '.jobs[]? | select(.name == "review") | .id' 2>/dev/null | sed -n '1p')
   [ -n "$jid" ] || { note "run $rid (${s:0:12}): no review job"; continue; }
   out=$(api "actions/jobs/$jid/logs" | sed -E 's/^[^ ]+ //' | grep -E '^(review-gate: (BLOCKED|NIT)|evidence:)')
   if [ -n "$out" ]; then printf '== the review that blocked %s (run %s):\n%s\n' "$s" "$rid" "$out"; note "previous findings of ${s:0:12} attached (run $rid)"

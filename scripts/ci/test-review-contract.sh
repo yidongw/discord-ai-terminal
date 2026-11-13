@@ -201,6 +201,9 @@ git tag -d deployed >/dev/null
 echo "ok (a)(e)(f)(h) - main: since the last completed, trusted, attested review (merges not skipped; every page; whole log); first run: the deployed sha"
 
 bash "$CI/test-review-regressions.sh" || fail "supplemental coverage/boundary regressions"
+bash "$CI/test-review-workflow-ranges.sh" --gates || fail "workflow commit gate boundaries"
+bash "$CI/test-review-workflow-ranges.sh" --summary || fail "workflow long range summary"
+python3 "$CI/test-review-pipelines.py" || fail "review first-result pipeline regressions"
 bash "$CI/test-review-trailers.sh" || fail "long-message trailer readers"
 bash "$CI/test-commit-gates.sh" || fail "commit verification regressions"
 python3 "$CI/test-runner-workspaces.py" || fail "runner workspace isolation regressions"
