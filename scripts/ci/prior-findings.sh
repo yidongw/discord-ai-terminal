@@ -13,12 +13,9 @@ fixes=$(git log --format=%B "$1..$2" 2>/dev/null | sed -nE 's/^Review-Fix-Of: ([
 [ -n "$fixes" ] || exit 0
 # 11-13: the review.yml step ran without GH_TOKEN — every call was a 404 on the private repo and nothing said why
 [ -n "${GH_TOKEN:-}" ] || { note "no GH_TOKEN — previous findings of $(tr '\n' ' ' <<<"$fixes")unavailable"; exit 0; }
-runs='{"workflow_runs":[]}'
-for page in 1 2 3; do   # the blocked run may be older than the newest 100 completed runs
-  r=$(api "actions/workflows/review.yml/runs?status=completed&per_page=100&page=$page") || { note "run list page $page: API call failed"; break; }
-  runs=$(jq -s '{workflow_runs: (.[0].workflow_runs + (.[1].workflow_runs // []))}' <<<"$runs$r")
-  [ "$(jq '.workflow_runs | length' <<<"$r" 2>/dev/null || echo 0)" -ge 100 ] || break
-done
+review_api() { api "$1"; }
+. "$(dirname "${BASH_SOURCE[0]}")/review-runs.sh"   # only trusted runs' findings reach the reviewer's prompt; every page
+runs=$(review_runs completed | jq -s '{workflow_runs: .}')
 for s in $fixes; do
   rid=$(jq -r --arg a "review $s" --arg b "recheck $s" \
     '[.workflow_runs[]? | select((.display_title == $a or .display_title == $b) and .conclusion == "failure")][0].id // empty' <<<"$runs" 2>/dev/null)

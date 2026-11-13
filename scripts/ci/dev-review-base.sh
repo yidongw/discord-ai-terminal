@@ -9,7 +9,10 @@
 # verdict: success = passed (or a skipped fix range); failure = blocked ONLY when the job log carries the reviewer's
 # "review-gate: BLOCKED #n" verdict. A cancelled / skipped review job, a failed setup or commit gate, a timeout, a reviewer
 # crash or an unreadable verdict reviewed nothing: those commits stay in the range, and a Review-Fix-Of: naming such a
-# commit is no fix. Run lookups read every page of Review runs (not only the newest 100).
+# commit is no fix. Run lookups read every page of Review runs (not only the newest 100), and only TRUSTED runs
+# (review-runs.sh: started from main's review.yml by workflow_run — a branch's own run with the same title is ignored).
+# A review is a range base only while its attestation artifact is usable (review-passed.sh's chain needs it); one without
+# is passed over, so the range grows back to a base the approval consumer can prove.
 #
 #   dev-review-base.sh [<head>]
 #     → the cover base: the newest first-parent ancestor C of <head> (not <head> itself) whose dev review completed and
@@ -31,6 +34,10 @@
 #       (down to main; merges included) is a blocked, unrepaired review (that one is reviewed again). review.yml does not review such a range
 #       again (REVIEW_SKIP); review-passed.sh counts the run as passed when its tests pass.
 #
+# "main" is DEV_REVIEW_MAIN_REF (default origin/main). review.yml pins it to the sha origin/main had at review time and
+# records it in the attestation ("main"); review-passed.sh re-checks a tests-only round against that same boundary, so
+# the answer does not change when main later advances onto the approved fix.
+#
 # Run in the candidate checkout (full history, origin/main present). GH_TOKEN (actions: read), REPO.
 set -euo pipefail
 MAINREF=${DEV_REVIEW_MAIN_REF:-origin/main}
@@ -38,18 +45,14 @@ REPO=${REPO:-${GITHUB_REPOSITORY:-yidongw/discord-ai-terminal}}
 API=${GITHUB_API_URL:-https://api.github.com}
 DEPTH=${REVIEW_BASE_DEPTH:-80}
 api() { curl -fsSL -m 30 -H "Authorization: Bearer ${GH_TOKEN:-}" -H "Accept: application/vnd.github+json" "$API/repos/$REPO/$1"; }
+review_api() { api "$1"; }
+. "$(dirname "${BASH_SOURCE[0]}")/review-runs.sh"   # review_runs / review_attested: the one provenance rule
 
-runs=""   # "<sha> <run id>" of the "review <sha>" / "recheck <sha>" runs (the API lists newest first; every page)
+runs=""   # "<sha> <run id>" of the trusted "review <sha>" / "recheck <sha>" runs (the API lists newest first; every page)
 load_runs() {
-  local page r
-  for page in $(seq 1 20); do
-    r=$(api "actions/workflows/review.yml/runs?per_page=100&page=$page" 2>/dev/null | jq -c '[.workflow_runs[]?]' 2>/dev/null) || break
-    [ "$(jq length <<<"$r")" -gt 0 ] || break
-    runs+=$(jq -r '.[] | select(.display_title | test("^(review|recheck) [0-9a-f]{40}$")) | "\(.display_title | sub("^[a-z]+ "; "")) \(.id)"' <<<"$r")$'\n'
-    [ "$(jq length <<<"$r")" -ge 100 ] || break
-  done
+  runs=$(review_runs | jq -r 'select(.display_title | test("^(review|recheck) [0-9a-f]{40}$")) | "\(.display_title | sub("^[a-z]+ "; "")) \(.id)"')
 }
-verdict() { # verdict <sha> → "pass" | "blocked <base its review used, or ->" of its newest completed review; "" when none
+verdict() { # verdict <sha> → "pass <run id>" | "blocked <base its review used, or -> <run id>" of its newest completed review; "" when none
   # completed = the blocking step ran to a verdict: success, or failure WITH the reviewer's "review-gate: BLOCKED #n"
   # verdict in its log. A crash, an unreadable verdict, a failed setup / commit gate reviewed nothing: not completed.
   local id jobs st jid log rb
@@ -57,14 +60,14 @@ verdict() { # verdict <sha> → "pass" | "blocked <base its review used, or ->" 
     jobs=$(api "actions/runs/$id/jobs" 2>/dev/null || true)
     st=$(jq -r '[.jobs[]? | select(.name == "review") | .steps[]? | select(.name | startswith("Review (blocking")) | .conclusion][0] // ""' <<<"$jobs" 2>/dev/null || true)
     case "$st" in
-      success) echo pass; return ;;
+      success) echo "pass $id"; return ;;
       failure)
         jid=$(jq -r '[.jobs[]? | select(.name == "review")][0].id // empty' <<<"$jobs" 2>/dev/null || true)
         [ -n "$jid" ] || continue
         log=$(api "actions/jobs/$jid/logs" 2>/dev/null | sed -E 's/^[^ ]+ //' || true)
         grep -qE '^review-gate: BLOCKED #[0-9]+' <<<"$log" || continue
         rb=$(sed -nE 's/^review-range: ([0-9a-f]{40}) [0-9a-f]{40}$/\1/p' <<<"$log"); rb=${rb%%$'\n'*}   # no head: an early-closed pipe dies of SIGPIPE under pipefail
-        echo "blocked ${rb:--}"; return ;;
+        echo "blocked ${rb:--} $id"; return ;;
     esac
   done
 }
@@ -78,6 +81,9 @@ clean_merge() { # clean_merge <m> → 0 when m has two parents and its tree is e
 
 only_fixes() { # only_fixes <base> <head>
   local c t n=0 hit v
+  # a tests-only round ends at a fix commit: its Review-Fix-Of: trailer is what starts the main re-check when it
+  # lands (review.yml), so a range whose head is a merge is reviewed normally
+  [ "$(git rev-list --parents -n1 "$2" | wc -w)" = 2 ] || return 1
   [ -n "$runs" ] || load_runs
   # no blocked, unrepaired review in or below the range (down to main), merges included: that one is reviewed again
   for c in $(git rev-list "$2" "^$MAINREF"); do
@@ -125,11 +131,15 @@ if parent=$(git rev-parse -q --verify "$head^1^{commit}") && ! git merge-base --
       v=$(verdict "$c")
       case "${v%% *}" in
         pass|blocked)
-          if [ "$v" = pass ] || repaired "$c" "$head"; then
+          if [ "${v%% *}" = pass ] || repaired "$c" "$head"; then
+            if ! review_attested "${v##* }"; then
+              echo "dev-review-base: the review of ${c:0:12} (run ${v##* }) has no usable attestation — not a base, its commits are reviewed again" >&2
+              continue
+            fi
             if [ -z "$limit" ] || git merge-base --is-ancestor "$c" "$limit"; then base=$c; break; fi
             continue
           fi
-          s=${v#blocked }
+          s=${v#blocked }; s=${s%% *}
           if [ "$s" = - ] || ! git merge-base --is-ancestor "$s" "$c" 2>/dev/null; then s=$mb; fi
           if [ -z "$limit" ]; then limit=$s; else limit=$(git merge-base "$limit" "$s"); fi
           echo "dev-review-base: ${c:0:12} was blocked and is not repaired in ${c:0:12}..${head:0:12} — its range (from ${s:0:12}) is reviewed again" >&2 ;;

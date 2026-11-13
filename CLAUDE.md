@@ -35,14 +35,21 @@ The bot is critical: its MCP server on :3001 is where agents' `wake_thread` call
   - *main*: every `Hotfix:` and `Train-Merge:` head is re-checked over everything since the last **completed** main
     review (the reviewer gave a verdict: passed, or "review-gate: BLOCKED #n"), merge resolutions and tests-only dev
     fixes included; one main reviewer at a time, a superseded waiting one is cancelled and its commits ride the next
-    range. No completed main review yet → the range starts at the deployed sha (tag `deployed`, moved by the
-    autodeploy), never at ancient history.
+    range. A main head carrying `Review-Fix-Of:` (a fix that landed on its tests alone) is re-checked the same way, and
+    `merge-branch.sh` lands a tests-only approval only as such a head — no tests-only fix sits on main unreviewed. No
+    completed main review yet → the range starts at the deployed sha (tag `deployed`, moved by the autodeploy), never
+    at ancient history.
   - *dev*: everything since the last completed dev review that passed or was repaired. A range made only of
     `Review-Fix-Of:` repairs of blocked reviews (plus clean merges) is a **tests-only fix** round: the blocking review
     step does not run (skipped, never reported as passed), the attestation says `"kind":"tests-only-fix"`, and
     `review-passed.sh` accepts it only when the trusted tests passed and its own re-check from the review runs confirms
     every dev commit of the range repairs a completed, blocked review. Main then reviews the fix under the main rule.
-  - *attestations*: `{"head","base","kind"}`, base = the last completed review; uploaded only when this run's
+  - *evidence* (`scripts/ci/review-runs.sh`, one rule for range selection, repair eligibility and approval): only runs
+    GitHub started from main's `review.yml` by `workflow_run` count (a branch's own run with the same title is
+    ignored); every page of runs is read; a review is a range base only while its attestation artifact is usable —
+    otherwise the range falls back to an older base.
+  - *attestations*: `{"head","base","kind","main"}`, base = the last completed review, main = origin/main at review time
+    (the boundary a tests-only round is re-checked against, also after main advanced); uploaded only when this run's
     attestation step succeeded. `review-passed.sh <sha> <repo> <deployed>` accepts a chain of completed reviews from
     `deployed` to `sha` (P → A → B); a skipped, cancelled or never-run review is never a link.
 - **Deploy.** The cx43 timer `discord-ai-terminal-autodeploy` (`~/bin/discord-ai-terminal-autodeploy`, every

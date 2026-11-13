@@ -17,28 +17,23 @@ sha="${1:?usage: review-passed.sh <full-sha> [owner/repo]}"
 repo="${2:-${REPO:-yidongw/discord-ai-terminal}}"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "need a full sha" >&2; exit 2; }
 BR=${REVIEW_DEFAULT_BRANCH:-${MAIN_BRANCH:-main}}
-list_runs() { # list_runs <status> → every Review run (one JSON object per line), all pages (not only the newest 100; cap 20 pages)
-  local p r
-  for p in $(seq 1 20); do
-    r=$(gh api "repos/$repo/actions/workflows/review.yml/runs?event=workflow_run&branch=$BR&status=$1&per_page=100&page=$p" -q '.workflow_runs[] | tojson') || break
-    [ -n "$r" ] || break
-    printf '%s\n' "$r"
-    [ "$(wc -l <<<"$r")" -ge 100 ] || break
-  done
-}
-ids=$(list_runs success | jq -r --arg a "review $sha" --arg b "recheck $sha" 'select(.path == ".github/workflows/review.yml" and (.display_title == $a or .display_title == $b)) | .id')
+review_api() { gh api "repos/$repo/$1"; }
+REVIEW_DEFAULT_BRANCH=$BR
+. "$(dirname "${BASH_SOURCE[0]}")/review-runs.sh"   # review_runs: the one provenance rule, every page (not only the newest 100)
+list_runs() { review_runs "$1"; }
+ids=$(list_runs success | jq -r --arg a "review $sha" --arg b "recheck $sha" 'select(.display_title == $a or .display_title == $b) | .id')
 # A workflow whose jobs were all skipped (CI failed, or not a push) still concludes
 # "success": require the review job itself to have run its blocking step successfully.
-attest_of_kind() { # attest_of_kind <run id> → "<head> <base> <kind>" (kind "review" when the artifact has none); 1 when no artifact
+attest_of_kind() { # attest_of_kind <run id> → "<head> <base> <main at review time, or -> <kind>" (kind "review" when the artifact has none); 1 when no usable artifact
   local art tmpd
-  art=$(gh api "repos/$repo/actions/runs/$1/artifacts" -q '.artifacts[] | select(.name == "review-attestation") | .id' | head -1)
+  art=$(gh api "repos/$repo/actions/runs/$1/artifacts" -q '.artifacts[] | select(.name == "review-attestation" and .expired != true) | .id' | head -1)
   [ -n "$art" ] || return 1
   tmpd=$(mktemp -d); gh api "repos/$repo/actions/artifacts/$art/zip" > "$tmpd/a.zip" && (cd "$tmpd" && unzip -q a.zip)
-  jq -r '"\(.head) \(.base) \(.kind // "review")"' "$tmpd/review-attestation.json"; rm -rf "$tmpd"
+  jq -r '"\(.head) \(.base) \(.main // "-") \(.kind // "review")"' "$tmpd/review-attestation.json"; rm -rf "$tmpd"
 }
 attest_of() { # attest_of <run id> → "<head> <base>" of its review-attestation artifact; 1 when it has none
   local art tmpd
-  art=$(gh api "repos/$repo/actions/runs/$1/artifacts" -q '.artifacts[] | select(.name == "review-attestation") | .id' | head -1)
+  art=$(gh api "repos/$repo/actions/runs/$1/artifacts" -q '.artifacts[] | select(.name == "review-attestation" and .expired != true) | .id' | head -1)
   [ -n "$art" ] || return 1
   tmpd=$(mktemp -d); gh api "repos/$repo/actions/artifacts/$art/zip" > "$tmpd/a.zip" && (cd "$tmpd" && unzip -q a.zip)
   jq -r '"\(.head) \(.base)"' "$tmpd/review-attestation.json"; rm -rf "$tmpd"
@@ -59,7 +54,7 @@ covered() { # covered <base> <deployed> [depth]
   git merge-base --is-ancestor "$b" "$d" 2>/dev/null && return 0
   [ "$n" -lt 40 ] || return 1
   [ -n "$completed_runs" ] || completed_runs=$(list_runs completed)
-  for id in $(jq -r --arg a "review $b" --arg r "recheck $b" 'select(.path == ".github/workflows/review.yml" and (.display_title == $a or .display_title == $r)) | .id' <<<"$completed_runs"); do
+  for id in $(jq -r --arg a "review $b" --arg r "recheck $b" 'select(.display_title == $a or .display_title == $r) | .id' <<<"$completed_runs"); do
     jobs=$(gh api "repos/$repo/actions/runs/$id/jobs")
     st=$(jq -r '[.jobs[] | select(.name == "review") | .steps[] | select(.name | startswith("Review (blocking")) | .conclusion][0] // ""' <<<"$jobs")
     case "$st" in
@@ -90,9 +85,12 @@ covered() { # covered <base> <deployed> [depth]
 #   · it is a TESTS-ONLY FIX round (owner: a dev fix lands on green tests without a second dev review): the blocking step
 #     did not run (skipped), the attestation says kind "tests-only-fix", and — re-checked here from the trusted runs, not
 #     taken from the candidate — every dev-side commit of base..sha is a Review-Fix-Of: repair of a commit whose own review
-#     completed and blocked (dev-review-base.sh --only-fixes). Main then reviews those fixes with everything else (each
-#     Train-Merge / hotfix re-check covers all commits since the last completed main review).
+#     completed and blocked (dev-review-base.sh --only-fixes, against the main boundary the attestation recorded at
+#     review time, so the answer holds after main advanced onto the fix). Main then reviews the fix: its head carries
+#     Review-Fix-Of:, which starts a main re-check when it lands (review.yml), over all commits since the last completed
+#     main review.
 # A run whose review never ran for any other reason (cancelled, setup / gate failure) never passes.
+# REVIEW_KIND_OUT=<file>: the kind of the approving run ("review" | "tests-only-fix") is written there (merge-branch.sh).
 for id in $ids; do
   jobs=$(gh api "repos/$repo/actions/runs/$id/jobs")
   tests=$(jq '[.jobs[] | select(.name == "tests" and .conclusion == "success")] | length' <<<"$jobs")
@@ -105,15 +103,22 @@ for id in $ids; do
     success) [ "$kind" = tests-only-fix ] && { echo "run $id: a tests-only-fix attestation on a reviewed step" >&2; continue; } ;;
     skipped)
       [ "$kind" = tests-only-fix ] || continue
-      read -r ah ab _ <<<"$hb"
+      read -r ah ab am _ <<<"$hb"
       [ "$ah" = "$sha" ] || { echo "run $id: attestation head mismatch" >&2; continue; }
-      if ! (REPO=$repo bash "$(dirname "${BASH_SOURCE[0]}")/dev-review-base.sh" --only-fixes "$ab" "$sha" >/dev/null 2>&1); then
+      # the main boundary of the round is the one its trusted run recorded; an attestation without it (made before the
+      # field existed) is judged against origin/main as it is now
+      mref=${DEV_REVIEW_MAIN_REF:-origin/$BR}
+      if [[ "$am" =~ ^[0-9a-f]{40}$ ]]; then
+        git rev-parse -q --verify "$am^{commit}" >/dev/null 2>&1 || { echo "run $id: attested main ${am:0:12} is not in this clone" >&2; continue; }
+        mref=$am
+      fi
+      if ! (REPO=$repo DEV_REVIEW_MAIN_REF=$mref bash "$(dirname "${BASH_SOURCE[0]}")/dev-review-base.sh" --only-fixes "$ab" "$sha" >/dev/null 2>&1); then
         echo "run $id: tests-only-fix round, but ${ab:0:12}..${sha:0:12} is not only repairs of completed (blocked) reviews" >&2; continue
       fi ;;
     *) continue ;;
   esac
   if [ -n "${3:-}" ]; then
-    art=$(gh api "repos/$repo/actions/runs/$id/artifacts" -q '.artifacts[] | select(.name == "review-attestation") | .id' | head -1)
+    art=$(gh api "repos/$repo/actions/runs/$id/artifacts" -q '.artifacts[] | select(.name == "review-attestation" and .expired != true) | .id' | head -1)
     # Runs made before the attestation step existed (review.yml before this change) carry no
     # artifact, so their reviewed range cannot be proven: never auto-deployable. That is a
     # one-time bootstrap: the commit that introduces the attestation is deployed by hand
@@ -130,10 +135,12 @@ for id in $ids; do
     if ! covered "$base" "$3"; then
       # Coverage is about commits, including empty commits and both sides of renames.
       # Verification and deployment controls also require a trusted review.
-      echo "reviewed range ${base:0:12}..${sha:0:12} does not cover prod ${3:0:12}" >&2
-      exit 1
+      # Not the end: another successful run of this sha (an older full-range one) may still prove the coverage.
+      echo "run $id: reviewed range ${base:0:12}..${sha:0:12} does not cover prod ${3:0:12}" >&2
+      continue
     fi
   fi
+  [ -z "${REVIEW_KIND_OUT:-}" ] || { [ "$st" = skipped ] && echo tests-only-fix || echo review; } > "$REVIEW_KIND_OUT"
   echo "trusted tests + review passed for ${sha:0:12} (run $id)"; exit 0
 done
 echo "no successful trusted review for ${sha:0:12}" >&2
