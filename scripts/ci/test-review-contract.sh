@@ -202,6 +202,7 @@ echo "ok (a)(e)(f)(h) - main: since the last completed, trusted, attested review
 
 bash "$CI/test-review-regressions.sh" || fail "supplemental coverage/boundary regressions"
 bash "$CI/test-review-trailers.sh" || fail "long-message trailer readers"
+bash "$CI/test-commit-gates.sh" || fail "commit verification regressions"
 
 # (a)(b)(d) review.yml wiring (needs PyYAML; the InstaBox test VM has none — checked where it exists)
 done_() { [ "$FAILS" = 0 ] || { echo "$FAILS check(s) failed" >&2; exit 1; }; echo "all passed"; exit 0; }

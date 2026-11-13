@@ -11,8 +11,14 @@
 set -euo pipefail
 BASE="${1:?usage: commit-gates.sh <base> <head>}"
 HEAD_SHA="$(git rev-parse "${2:?usage: commit-gates.sh <base> <head>}")"
+TRUSTED_CI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log() { echo "[gates $(date +%H:%M:%S)] $*"; }
 [ "$(git rev-parse HEAD)" = "$HEAD_SHA" ] || { log "ERROR: HEAD is not $HEAD_SHA"; exit 2; }
+
+verify_checklist() {
+  # Verify: is a bare line followed directly by at least one checked evidence item.
+  awk 'BEGIN{v=0; ok=0} tolower($0) ~ /^verify:[[:space:]]*$/ {v=1; next} v && /^- \[[xX]\] *[^[:space:]]/ {ok=1} v && !/^- \[/ {v=0} END{exit ok?0:1}'
+}
 
 commits="$(git rev-list "$BASE".."$HEAD_SHA")"
 bad=0
@@ -20,8 +26,17 @@ for sha in $commits; do
   msg="$(git show -s --format=%B "$sha")"; short="$(git rev-parse --short "$sha")"
   miss=""
   grep -qiE '^Loop:[[:space:]]*[^[:space:]]' <<<"$msg" || miss="Loop:"
-  # Verify: is a checklist: a bare 'Verify:' line followed (directly) by at least one '- [x] <evidence>' item
-  awk 'BEGIN{v=0; ok=0} tolower($0) ~ /^verify:[[:space:]]*$/ {v=1; next} v && /^- \[[xX]\] *[^[:space:]]/ {ok=1} v && !/^- \[/ {v=0} END{exit ok?0:1}' <<<"$msg" || miss="$miss Verify:"
+  if ! verify_checklist <<<"$msg"; then
+    # Published commit messages cannot be amended by an append-only main repair.
+    # A SHA-bound supplemental checklist must be reviewed into the gate's TRUSTED
+    # checkout, beside this script. Never read it from the candidate's working tree.
+    evidence="$TRUSTED_CI/commit-verification/$sha.txt"
+    if [ -f "$evidence" ] && grep -qxF "Commit: $sha" "$evidence" && verify_checklist < "$evidence"; then
+      log "commit $short: supplemental Verify checklist from trusted $evidence"
+    else
+      miss="$miss Verify:"
+    fi
+  fi
   grep -qiE '^Thread:[[:space:]]*[^[:space:]]' <<<"$msg" || miss="$miss Thread:"
   [ -z "$miss" ] || { log "ERROR: commit $short missing trailer(s): $miss (Verify: is a bare line followed by '- [x] …' items)"; bad=1; }
   t="$(grep -iE '^Thread:' <<<"$msg" | tail -1 | sed -E 's/^[Tt]hread:[[:space:]]*//' | tr -d '[:space:]' || true)"

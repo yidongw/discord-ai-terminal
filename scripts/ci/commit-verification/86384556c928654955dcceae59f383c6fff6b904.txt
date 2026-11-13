@@ -1,0 +1,11 @@
+Commit: 86384556c928654955dcceae59f383c6fff6b904
+
+Supplemental verification for the published runner-label migration. Its original
+Verify block was empty; 6d305c19f80206da712ad35ac609c59281a18c10 recorded the
+failure but could not update the original message. Keep the full review range
+and supply evidence in the trusted gate checkout instead of rewriting history.
+
+Verify:
+- [x] git diff --check 86384556c928654955dcceae59f383c6fff6b904^ 86384556c928654955dcceae59f383c6fff6b904
+- [x] python3 -c 'import subprocess; s="86384556c928654955dcceae59f383c6fff6b904"; files=[".github/workflows/ci.yml", ".github/workflows/review.yml"]; show=lambda rev,path: subprocess.check_output(["git","show",rev+":"+path]); assert subprocess.check_output(["git","diff-tree","--no-commit-id","--name-only","-r",s]).decode().splitlines()==files; assert all(show(s,p)==show(s+"^",p).replace(b"runs-on: [self-hosted, instabox, discord-ai-terminal-tests]",b"runs-on: [self-hosted, a1, discord-ai-terminal-tests]",1) for p in files)' — only the two test-runner labels changed; isolation and test steps are identical.
+- [ ] NOT RUN: historical A1 runner registration, admission hook and full test suite; these static checks do not attest to runtime success.
