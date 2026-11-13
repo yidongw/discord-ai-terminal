@@ -212,7 +212,9 @@ jobs:
           # one main boundary for this run's range scripts and its attestation
           main=$(git rev-parse origin/main^{commit}); export DEV_REVIEW_MAIN_REF=$main
           if [ "${{ github.event.workflow_run.head_branch }}" = main ]; then
-            git show -s --format=%B HEAD | grep -qE '^(Hotfix: [^[:space:]]|Train-Merge: [0-9a-f]{40}|Review-Fix-Of: [0-9a-f]{40})' || { echo "main head without a Hotfix: / Train-Merge: / Review-Fix-Of: trailer"; exit 1; }
+            # Buffer before grep -q so a long commit message cannot give git SIGPIPE under pipefail.
+            msg=$(git show -s --format=%B HEAD)
+            grep -qE '^(Hotfix: [^[:space:]]|Train-Merge: [0-9a-f]{40}|Review-Fix-Of: [0-9a-f]{40})' <<<"$msg" || { echo "main head without a Hotfix: / Train-Merge: / Review-Fix-Of: trailer"; exit 1; }
             base=$(bash ../.trusted/scripts/ci/hotfix-review-base.sh HEAD)
           elif [ "${{ github.event.workflow_run.head_branch }}" = dev ]; then
             cover=$(bash ../.trusted/scripts/ci/dev-review-base.sh HEAD)

@@ -159,7 +159,7 @@ g remote remove origin; git update-ref refs/remotes/origin/main "$P"
 # … and review.yml starts tests + review + status for a Review-Fix-Of: main head, and its range step accepts it
 W=$ROOT/.github/workflows/review.yml
 [ "$(grep -c "contains(github.event.workflow_run.head_commit.message, 'Review-Fix-Of: ')" "$W")" = 3 ] || fail "(g) review.yml: tests / review / status do not all run for a Review-Fix-Of: main head"
-grep -qF "Train-Merge: [0-9a-f]{40}|Review-Fix-Of: [0-9a-f]{40})' ||" "$W" || fail "(g) review.yml: the range step refuses a Review-Fix-Of: main head"
+grep -qF "Train-Merge: [0-9a-f]{40}|Review-Fix-Of: [0-9a-f]{40})'" "$W" || fail "(g) review.yml: the range step refuses a Review-Fix-Of: main head"
 grep -qF '"main":"%s"' "$W" || fail "(g) review.yml: the attestation does not record the main boundary"
 echo "ok (g) - a tests-only fix lands only where main re-checks it (merge-branch.sh + review.yml triggers)"
 
@@ -201,6 +201,7 @@ git tag -d deployed >/dev/null
 echo "ok (a)(e)(f)(h) - main: since the last completed, trusted, attested review (merges not skipped; every page; whole log); first run: the deployed sha"
 
 bash "$CI/test-review-regressions.sh" || fail "supplemental coverage/boundary regressions"
+bash "$CI/test-review-trailers.sh" || fail "long-message trailer readers"
 
 # (a)(b)(d) review.yml wiring (needs PyYAML; the InstaBox test VM has none — checked where it exists)
 done_() { [ "$FAILS" = 0 ] || { echo "$FAILS check(s) failed" >&2; exit 1; }; echo "all passed"; exit 0; }

@@ -13,9 +13,11 @@ reverted() { # reverted <c> <head> [depth] → 0 when a standing "This reverts c
   return 1
 }
 repaired() { # repaired <S> <head> → 0 when S..head carries an effective repair of S
-  local c
+  local c msg
   for c in $(git log --format=%H -F --grep="Review-Fix-Of: $1" "$1..$2" 2>/dev/null || true); do
-    git show -s --format=%B "$c" | grep -qx "Review-Fix-Of: $1" || continue
+    # Read the full message before matching; an early-closing grep -q can give git SIGPIPE under pipefail.
+    msg=$(git show -s --format=%B "$c") || continue
+    grep -qx "Review-Fix-Of: $1" <<<"$msg" || continue
     reverted "$c" "$2" || return 0
   done
   return 1
