@@ -20,18 +20,21 @@ The bot is critical: its MCP server on :3001 is where agents' `wake_thread` call
   `Hotfix: <why>` trailer, for runtime emergencies: it ships once the trusted tests pass on it, its review runs
   afterwards, and a blocked re-check is fixed forward without holding up deploys. CI and docs changes go
   through dev.
-- **Each dev push** starts `review.yml` (main's copy, via `workflow_run`): the trusted tests on the InstaBox
+- **Each dev push** starts `review.yml` (main's copy, via `workflow_run`), which calls yidongw/sheepdog's reusable
+  workflow pinned by a full sha (upgrading = changing that sha): the trusted tests (`.github/sheepdog/tests.sh`) on the InstaBox
   VM (runner `instabox-discord-ai-terminal`) as a throwaway per-job user without Docker or sudo — `bun install
   --frozen-lockfile`, `tsc -p tsconfig.ci.json` (src/), `bun build src/index.ts`, the MCP smoke test
   `scripts/ci/smoke-mcp.ts`, and `bun test`, where any failing test not listed in `test/known-failures.txt`
-  fails the job — and the commit gates plus the isolated blocking code review (tralyx main's review-gate) on
-  cx43 runner `cx43-discord-ai-terminal-review`, in parallel. A running dev review is not cancelled.
+  fails the job — and the commit gates plus sheepdog's isolated blocking code review on the A1 review runner
+  (labels `a1,discord-ai-terminal-review`), in parallel. A running dev review is not cancelled.
 - **Merge train.** The cx43 timer `discord-ai-terminal-review-dispatch` acts on each finished round: a passed
   round fast-forwards main to the reviewed dev sha; a blocked round's findings go to the `Thread:` of every
   author in it, and a fixer agent commits one fix on the blocked sha to `devfix/<sha>`, which lands on main
   once the trusted tests pass there.
-- **Review contract** (11-13; `.github/workflows/review.yml` + `scripts/ci/{hotfix-review-base,dev-review-base,
-  review-passed,review-repair}.sh`, adapted from yidongw/tralyx). Each commit is reviewed once on dev and once on main:
+- **Review contract** (11-13; since the sheepdog migration the scripts live in yidongw/sheepdog `scripts/ci/`
+  {hotfix-review-base,dev-review-base,review-passed,review-repair,review-runs,review-coverage}.sh, its docs/contract.md;
+  this repo keeps only `.github/workflows/review.yml`, `.github/sheepdog/tests.sh`, `.github/sheepdog.yml` and the
+  SHA-bound Verify records in `scripts/ci/commit-verification/`). Each commit is reviewed once on dev and once on main:
   - *main*: every `Hotfix:` and `Train-Merge:` head is re-checked over everything since the last **completed** main
     review (the reviewer gave a verdict: passed, or "review-gate: BLOCKED #n"), merge resolutions and tests-only dev
     fixes included; one main reviewer at a time, a superseded waiting one is cancelled and its commits ride the next
