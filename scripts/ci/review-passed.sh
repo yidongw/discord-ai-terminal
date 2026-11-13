@@ -31,13 +31,6 @@ attest_of_kind() { # attest_of_kind <run id> → "<head> <base> <main at review 
   tmpd=$(mktemp -d); gh api "repos/$repo/actions/artifacts/$art/zip" > "$tmpd/a.zip" && (cd "$tmpd" && unzip -q a.zip)
   jq -r '"\(.head) \(.base) \(.main // "-") \(.kind // "review")"' "$tmpd/review-attestation.json"; rm -rf "$tmpd"
 }
-attest_of() { # attest_of <run id> → "<head> <base>" of its review-attestation artifact; 1 when it has none
-  local art tmpd
-  art=$(gh api "repos/$repo/actions/runs/$1/artifacts" -q '.artifacts[] | select(.name == "review-attestation" and .expired != true) | .id' | head -1)
-  [ -n "$art" ] || return 1
-  tmpd=$(mktemp -d); gh api "repos/$repo/actions/artifacts/$art/zip" > "$tmpd/a.zip" && (cd "$tmpd" && unzip -q a.zip)
-  jq -r '"\(.head) \(.base)"' "$tmpd/review-attestation.json"; rm -rf "$tmpd"
-}
 # Coverage by a chain of completed rounds (dev reviews cover only what no completed review covered, owner 11-12):
 # <base> is covered when it is an ancestor of (or equal to) <deployed>; or a completed review of <base> itself
 # ("review <base>" / "recheck <base>" from main's workflow whose blocking step ran to a verdict: success, or failure WITH
@@ -47,39 +40,8 @@ attest_of() { # attest_of <run id> → "<head> <base>" of its review-attestation
 # parents) and BOTH parents are covered (a main hotfix merged into dev is covered only by its own review chain, never by
 # the dev side's). Every link is a trusted run of this workflow; nothing is taken from the candidate. Fail closed past
 # 40 links.
-. "$(dirname "${BASH_SOURCE[0]}")/review-repair.sh"   # reverted / repaired: the one repair rule
-completed_runs=""
-covered() { # covered <base> <deployed> [depth]
-  local b=$1 d=$2 n=${3:-0} id jobs st jid hb t log
-  git merge-base --is-ancestor "$b" "$d" 2>/dev/null && return 0
-  [ "$n" -lt 40 ] || return 1
-  [ -n "$completed_runs" ] || completed_runs=$(list_runs completed)
-  for id in $(jq -r --arg a "review $b" --arg r "recheck $b" 'select(.display_title == $a or .display_title == $r) | .id' <<<"$completed_runs"); do
-    jobs=$(gh api "repos/$repo/actions/runs/$id/jobs")
-    st=$(jq -r '[.jobs[] | select(.name == "review") | .steps[] | select(.name | startswith("Review (blocking")) | .conclusion][0] // ""' <<<"$jobs")
-    case "$st" in
-      success) ;;
-      failure)
-        # a blocked round is a link only with the reviewer's verdict in its log (read whole first: grep -q closing a
-        # pipe early made the upstream gh/sed die of SIGPIPE under pipefail) AND an effective repair of it in
-        # <base>..<sha> — an unrepaired blocked commit is never vouched for by a later, unrelated review
-        jid=$(jq -r '[.jobs[] | select(.name == "review")][0].id // empty' <<<"$jobs")
-        [ -n "$jid" ] || continue
-        log=$(gh api "repos/$repo/actions/jobs/$jid/logs" 2>/dev/null) || continue
-        grep -qE '^([^ ]+ )?review-gate: BLOCKED #[0-9]+' <<<"$log" || continue
-        repaired "$b" "$sha" || continue ;;
-      *) continue ;;
-    esac
-    hb=$(attest_of "$id") || continue
-    [ "${hb%% *}" = "$b" ] || continue
-    covered "${hb#* }" "$d" $((n + 1)) && return 0
-  done
-  if [ "$(git rev-list --parents -n1 "$b" 2>/dev/null | wc -w)" = 3 ] \
-     && t=$(git merge-tree --write-tree "$b^1" "$b^2" 2>/dev/null) && [ "${t%%$'\n'*}" = "$(git rev-parse "$b^{tree}")" ]; then
-    covered "$(git rev-parse "$b^1")" "$d" $((n + 1)) && covered "$(git rev-parse "$b^2")" "$d" $((n + 1)) && return 0
-  fi
-  return 1
-}
+. "$(dirname "${BASH_SOURCE[0]}")/review-coverage.sh"
+covered() { review_covered "$1" "$2" "$sha" "${3:-0}"; }
 # Contract (CLAUDE.md "Shipping"): a run passes when its trusted `tests` job passed AND either
 #   · its blocking review step "Review (blocking …" ran and succeeded (attestation kind "review", or none: older runs), or
 #   · it is a TESTS-ONLY FIX round (owner: a dev fix lands on green tests without a second dev review): the blocking step
@@ -105,13 +67,11 @@ for id in $ids; do
       [ "$kind" = tests-only-fix ] || continue
       read -r ah ab am _ <<<"$hb"
       [ "$ah" = "$sha" ] || { echo "run $id: attestation head mismatch" >&2; continue; }
-      # the main boundary of the round is the one its trusted run recorded; an attestation without it (made before the
-      # field existed) is judged against origin/main as it is now
-      mref=${DEV_REVIEW_MAIN_REF:-origin/$BR}
-      if [[ "$am" =~ ^[0-9a-f]{40}$ ]]; then
-        git rev-parse -q --verify "$am^{commit}" >/dev/null 2>&1 || { echo "run $id: attested main ${am:0:12} is not in this clone" >&2; continue; }
-        mref=$am
-      fi
+      # A historical tests-only approval needs its recorded boundary. Legacy or malformed
+      # metadata must be rerun; consulting today's main would change the answer after landing.
+      [[ "$am" =~ ^[0-9a-f]{40}$ ]] || { echo "run $id: no immutable main boundary; rerun review" >&2; continue; }
+      git rev-parse -q --verify "$am^{commit}" >/dev/null 2>&1 || { echo "run $id: attested main ${am:0:12} is not in this clone" >&2; continue; }
+      mref=$am
       if ! (REPO=$repo DEV_REVIEW_MAIN_REF=$mref bash "$(dirname "${BASH_SOURCE[0]}")/dev-review-base.sh" --only-fixes "$ab" "$sha" >/dev/null 2>&1); then
         echo "run $id: tests-only-fix round, but ${ab:0:12}..${sha:0:12} is not only repairs of completed (blocked) reviews" >&2; continue
       fi ;;

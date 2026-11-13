@@ -48,8 +48,12 @@ The bot is critical: its MCP server on :3001 is where agents' `wake_thread` call
     GitHub started from main's `review.yml` by `workflow_run` count (a branch's own run with the same title is
     ignored); every page of runs is read; a review is a range base only while its attestation artifact is usable —
     otherwise the range falls back to an older base.
+  - *usable proof*: range selectors and approval share `review-coverage.sh`: the complete predecessor chain must
+    reach the review-time main/deployment anchor, including both parents of a clean merge. Missing, expired or
+    malformed artifacts widen the review; blocked links require an effective repair in the candidate.
   - *attestations*: `{"head","base","kind","main"}`, base = the last completed review, main = origin/main at review time
-    (the boundary a tests-only round is re-checked against, also after main advanced); uploaded only when this run's
+    (the boundary a tests-only round is re-checked against, also after main advanced). Tests-only attestations without
+    that immutable boundary require a rerun. Uploaded only when this run's
     attestation step succeeded. `review-passed.sh <sha> <repo> <deployed>` accepts a chain of completed reviews from
     `deployed` to `sha` (P → A → B); a skipped, cancelled or never-run review is never a link.
 - **Deploy.** The cx43 timer `discord-ai-terminal-autodeploy` (`~/bin/discord-ai-terminal-autodeploy`, every
