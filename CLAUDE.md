@@ -30,6 +30,21 @@ The bot is critical: its MCP server on :3001 is where agents' `wake_thread` call
   round fast-forwards main to the reviewed dev sha; a blocked round's findings go to the `Thread:` of every
   author in it, and a fixer agent commits one fix on the blocked sha to `devfix/<sha>`, which lands on main
   once the trusted tests pass there.
+- **Review contract** (11-13; `.github/workflows/review.yml` + `scripts/ci/{hotfix-review-base,dev-review-base,
+  review-passed,review-repair}.sh`, adapted from yidongw/tralyx). Each commit is reviewed once on dev and once on main:
+  - *main*: every `Hotfix:` and `Train-Merge:` head is re-checked over everything since the last **completed** main
+    review (the reviewer gave a verdict: passed, or "review-gate: BLOCKED #n"), merge resolutions and tests-only dev
+    fixes included; one main reviewer at a time, a superseded waiting one is cancelled and its commits ride the next
+    range. No completed main review yet → the range starts at the deployed sha (tag `deployed`, moved by the
+    autodeploy), never at ancient history.
+  - *dev*: everything since the last completed dev review that passed or was repaired. A range made only of
+    `Review-Fix-Of:` repairs of blocked reviews (plus clean merges) is a **tests-only fix** round: the blocking review
+    step does not run (skipped, never reported as passed), the attestation says `"kind":"tests-only-fix"`, and
+    `review-passed.sh` accepts it only when the trusted tests passed and its own re-check from the review runs confirms
+    every dev commit of the range repairs a completed, blocked review. Main then reviews the fix under the main rule.
+  - *attestations*: `{"head","base","kind"}`, base = the last completed review; uploaded only when this run's
+    attestation step succeeded. `review-passed.sh <sha> <repo> <deployed>` accepts a chain of completed reviews from
+    `deployed` to `sha` (P → A → B); a skipped, cancelled or never-run review is never a link.
 - **Deploy.** The cx43 timer `discord-ai-terminal-autodeploy` (`~/bin/discord-ai-terminal-autodeploy`, every
   3 min) deploys main's head once its trusted `tests` job passed and every commit since the live release came
   through the flow: it prepares `releases/<sha>` (bun install), waits until no agent run is active

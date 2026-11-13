@@ -124,6 +124,8 @@ jobs:
             exit 1
           fi
           echo "ok: no new test failures"
+      - name: Review contract (scripts/ci/test-review-contract.sh — fake GitHub, no network)
+        run: '"$RUNNER_TEMP/as-ci" "bash scripts/ci/test-review-contract.sh"'
       - name: Remove the test user (kills every process it left)
         if: always()
         run: |
@@ -133,13 +135,30 @@ jobs:
           sudo userdel "$CIU" || true
           sudo rm -rf "$CID"
 
+  # Review contract (CLAUDE.md "Shipping", 11-13; scripts/ci/{hotfix-review-base,dev-review-base,review-passed}.sh):
+  #  (a) main: every Hotfix: and Train-Merge: head is re-checked over EVERYTHING since the last completed main review — merge
+  #      resolutions and the tests-only dev fixes a merge brings included; ONE main reviewer at a time (job concurrency
+  #      below: the running one finishes, only the newest waits, a superseded waiting one is cancelled and its commits
+  #      ride the next range).
+  #  (b) dev: everything since the last completed dev review. A range of only Review-Fix-Of: repairs of blocked reviews
+  #      is a TESTS-ONLY FIX round: the blocking reviewer does not run (its step is skipped, never reported as a pass) and
+  #      the attestation says kind "tests-only-fix"; review-passed.sh re-checks the repairs from the runs before it lets
+  #      the fix land on its green tests; main reviews it under (a).
+  #  (c) the attestation base is the last completed review; review-passed.sh follows the chain of completed reviews.
+  #  (d) the attestation is uploaded only when this run's generating step succeeded (attest/ is cleaned first).
+  #  (f) no completed main review yet → the range starts at the deployed sha (tag `deployed`), not ancient history.
   review:
+    concurrency:
+      group: ${{ github.event.workflow_run.head_branch == 'main' && 'review-main-reviewer' || format('review-job-{0}', github.run_id) }}
+      cancel-in-progress: false
     if: >-
       github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt == 1 &&
       (github.event.workflow_run.head_branch == 'dev' || (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: '))))
     runs-on: [self-hosted, a1, discord-ai-terminal-review]
     timeout-minutes: 90
     steps:
+      - name: Clean attestation (a self-hosted workspace keeps files between runs)
+        run: rm -rf attest
       - name: Status pending
         run: |
           curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -180,29 +199,29 @@ jobs:
           fi
           echo "R=$R" >> "$GITHUB_ENV"
       - name: Reviewed range
+        id: range
         working-directory: candidate
         run: |
+          kind=review
           if [ "${{ github.event.workflow_run.head_branch }}" = main ]; then
-            msg=$(git show -s --format=%B HEAD)
-            if grep -qE '^Train-Merge: [0-9a-f]{40}' <<<"$msg" && git rev-parse -q --verify HEAD^2 >/dev/null; then
-              # The dev side's own passing review (attested back to the main-side parent) covers merge-base..HEAD^2:
-              # then only HEAD^2..HEAD (what the merge adds) is reviewed. A dev side without one — a review-fix
-              # landing, whose fix runs the trusted tests only — gets the whole incoming range HEAD^1..HEAD reviewed.
-              if GH_TOKEN=${{ github.token }} REVIEW_MERGE_INTO=1 bash ../.trusted/scripts/ci/review-passed.sh "$(git rev-parse HEAD^2)" "${{ github.repository }}" "$(git rev-parse HEAD^1)"; then
-                base=$(git rev-parse HEAD^2)
-              else
-                echo "dev side $(git rev-parse --short HEAD^2) has no passing review: reviewing HEAD^1..HEAD"
-                base=$(git rev-parse HEAD^1)
-              fi
-              echo "ATTEST_BASE=$(git rev-parse HEAD^1)" >> "$GITHUB_ENV"
-            else
-              grep -qE '^Hotfix: [^[:space:]]' <<<"$msg" || { echo "main head without a Hotfix: trailer"; exit 1; }
-              base=$(git rev-parse HEAD^)
-            fi
+            git show -s --format=%B HEAD | grep -qE '^(Hotfix: [^[:space:]]|Train-Merge: [0-9a-f]{40})' || { echo "main head without a Hotfix: / Train-Merge: trailer"; exit 1; }
+            base=$(bash ../.trusted/scripts/ci/hotfix-review-base.sh HEAD)
+          elif [ "${{ github.event.workflow_run.head_branch }}" = dev ]; then
+            cover=$(bash ../.trusted/scripts/ci/dev-review-base.sh HEAD)
+            echo "dev review: covers from ${cover:0:12} (the last completed dev review that passed or was repaired; else main)"
+            if bash ../.trusted/scripts/ci/dev-review-base.sh --only-fixes "$cover" HEAD; then kind=tests-only-fix; fi
+            base=$(bash ../.trusted/scripts/ci/dev-review-base.sh --diff "$cover" HEAD)
           else
             base=$(git merge-base origin/main HEAD)
           fi
+          echo "review-range: $base $(git rev-parse HEAD)"
+          echo "review-kind: $kind"
+          git log --oneline "$base..HEAD" | head -50
           echo "REVIEW_BASE=$base" >> "$GITHUB_ENV"
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
       - name: Commit gates (main's script, the branch's commits)
         working-directory: candidate
         run: bash ../.trusted/scripts/ci/commit-gates.sh "$REVIEW_BASE" HEAD
@@ -210,15 +229,38 @@ jobs:
       - name: Reviewer image present
         run: docker image inspect alpine:3.20 >/dev/null 2>&1 || docker pull -q alpine:3.20
       - name: Attestation (reviewed range)
+        id: attest
         working-directory: candidate
         run: |
           mkdir -p ../attest
-          printf '{"head":"%s","base":"%s"}\n' "$(git rev-parse HEAD)" "${ATTEST_BASE:-$REVIEW_BASE}" > ../attest/review-attestation.json
+          printf '{"head":"%s","base":"%s","kind":"%s"}\n' "$(git rev-parse HEAD)" "$REVIEW_BASE" "${{ steps.range.outputs.kind }}" > ../attest/review-attestation.json
           cat ../attest/review-attestation.json
-      - name: Review (blocking; tralyx main's reviewer, this repo's diff)
+      # Review ledger: a range carrying review fixes (Review-Fix-Of: S) is re-reviewed with the findings that blocked S
+      # and the fixers' Review-Disputed: trailers. Best effort; the token stays in this step (actions: read).
+      - name: Previous findings (review ledger)
+        if: steps.range.outputs.kind == 'review'
         working-directory: candidate
-        run: $R/node_modules/.bin/tsx "$R/src/cli/review-gate.ts" --base "$REVIEW_BASE" --head HEAD
-      - uses: actions/upload-artifact@v4
+        run: bash ../.trusted/scripts/ci/prior-findings.sh "$REVIEW_BASE" HEAD > "$RUNNER_TEMP/prior-findings.txt" || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+      # Known open findings: the dispatcher's list of findings whose fix rounds are spent (readable only where this runner
+      # shares the dispatcher's host). A repeat of one that the range did not introduce or worsen is marked pre-existing.
+      - name: Known open findings
+        if: steps.range.outputs.kind == 'review'
+        run: |
+          f="$HOME/.local/state/discord-ai-terminal-review-dispatch/open-findings.log"
+          : > "$RUNNER_TEMP/known-open.txt"
+          if [ -r "$f" ]; then grep -E '^review-gate: BLOCKED' "$f" | sed -E 's/^review-gate: BLOCKED (#[0-9]+ )?//' | awk '!seen[$0]++' | tail -60 > "$RUNNER_TEMP/known-open.txt"; fi
+          echo "known open findings: $(wc -l < "$RUNNER_TEMP/known-open.txt")"
+      # (b) a tests-only fix round: this step is SKIPPED (not a pass); review-passed.sh decides from the attestation kind.
+      - name: Review (blocking; tralyx main's reviewer, this repo's diff)
+        if: steps.range.outputs.kind == 'review'
+        working-directory: candidate
+        run: $R/node_modules/.bin/tsx "$R/src/cli/review-gate.ts" --base "$REVIEW_BASE" --head HEAD --prior "$RUNNER_TEMP/prior-findings.txt" --known-open "$RUNNER_TEMP/known-open.txt"
+      # (d) only this run's attestation, also for a blocked review (a repaired blocked round is a link of the chain)
+      - if: ${{ !cancelled() && steps.attest.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
         with:
           name: review-attestation
           path: attest/review-attestation.json
@@ -228,7 +270,7 @@ jobs:
   status:
     needs: [tests, review]
     if: >-
-      !cancelled() &&
+      !cancelled() && needs.review.result != 'cancelled' &&
       github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt == 1 &&
       (github.event.workflow_run.head_branch == 'dev' || (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: '))))
     runs-on: [self-hosted, a1, discord-ai-terminal-review]
