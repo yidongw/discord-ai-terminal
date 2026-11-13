@@ -1,0 +1,5 @@
+# sheepdog adoption marker (github.com/yidongw/sheepdog, docs/adopting.md): the dispatcher uses sheepdog's contract
+# scripts for this repository. The workflow settings are in .github/workflows/review.yml.
+version: 1
+main-branch: main
+dev-branch: dev
