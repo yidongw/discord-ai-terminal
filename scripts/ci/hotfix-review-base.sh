@@ -9,6 +9,8 @@
 #       step "Review (blocking …" succeeded, or failed with the reviewer's "review-gate: BLOCKED #n" verdict in the log.
 #       A review job that was cancelled, skipped, timed out or died before the reviewer gave a verdict reviewed nothing:
 #       its commits ride this range. Nothing is moved past (no "reviewed elsewhere" shortcut on main).
+#       Only trusted runs count (review-runs.sh), and only a review whose attestation artifact is still usable is a
+#       base (review-passed.sh's chain needs it): one without is passed over and the range grows to an older base.
 #       None found within REVIEW_BASE_DEPTH (50) first-parent commits → the deployed sha (tag `deployed`, moved by the
 #       cx43 autodeploy) when it is below <head>, else <head>^1 — never ancient history.
 #     A repair is reviewed in its range with the previous findings (prior-findings.sh).
@@ -30,29 +32,31 @@ api() { curl -fsSL -m 30 -H "Authorization: Bearer ${GH_TOKEN:-}" -H "Accept: ap
 # the step "Review (blocking …" succeeded, or failed WITH the reviewer's "review-gate: BLOCKED #n" in the job log. A review
 # job that died in its setup or commit gates, timed out, was cancelled or skipped reviewed nothing: its commits stay in range.
 completed() { # completed <run id>
-  local jobs st jid
+  local jobs st jid log
   jobs=$(api "actions/runs/$1/jobs" 2>/dev/null) || return 1
   st=$(jq -r '[.jobs[]? | select(.name == "review") | .steps[]? | select(.name | startswith("Review (blocking")) | .conclusion][0] // ""' <<<"$jobs" 2>/dev/null)
   case "$st" in
     success) return 0 ;;
     failure) jid=$(jq -r '[.jobs[]? | select(.name == "review")][0].id // empty' <<<"$jobs")
-             [ -n "$jid" ] && api "actions/jobs/$jid/logs" 2>/dev/null | sed -E 's/^[^ ]+ //' | grep -qE '^review-gate: BLOCKED #[0-9]+' ;;
+             [ -n "$jid" ] || return 1
+             # the whole log first, then match (as dev-review-base.sh / review-passed.sh): grep -q closing the pipe at
+             # the verdict made the upstream curl / sed die of SIGPIPE under pipefail when more log followed
+             log=$(api "actions/jobs/$jid/logs" 2>/dev/null) || return 1
+             grep -qE '^([^ ]+ )?review-gate: BLOCKED #[0-9]+' <<<"$log" ;;
     *) return 1 ;;
   esac
 }
-# "<sha> <run id>" of every "recheck <sha>" run (the API lists newest first)
-runs=""
-for page in 1 2 3; do
-  r=$(api "actions/workflows/review.yml/runs?per_page=100&page=$page" 2>/dev/null \
-      | jq -r '.workflow_runs[]? | select(.display_title | test("^recheck [0-9a-f]{40}$")) | "\(.display_title[8:]) \(.id)"' 2>/dev/null) || break
-  [ -n "$r" ] || break
-  runs+="$r"$'\n'
-done
+review_api() { api "$1"; }
+. "$(dirname "${BASH_SOURCE[0]}")/review-runs.sh"   # review_runs / review_attested: the one provenance rule
+# "<sha> <run id>" of every trusted "recheck <sha>" run (the API lists newest first; every page)
+runs=$(review_runs | jq -r 'select(.display_title | test("^recheck [0-9a-f]{40}$")) | "\(.display_title[8:]) \(.id)"')
 base=""
 if [ -n "$runs" ]; then
   for c in $(git rev-list --first-parent -n "$DEPTH" "$parent"); do
     for id in $(awk -v c="$c" '$1 == c { print $2 }' <<<"$runs"); do
-      completed "$id" && { base=$c; break 2; }
+      completed "$id" || continue
+      review_attested "$id" && { base=$c; break 2; }
+      echo "hotfix-review-base: the review of ${c:0:12} (run $id) has no usable attestation — not a base, its commits are reviewed again" >&2
     done
   done
 fi

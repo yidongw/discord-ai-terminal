@@ -8,7 +8,7 @@ name: Review
 #
 # Trust model: workflow_run always runs THIS file as it is on main, so a branch cannot change what
 # tests or reviews it. The pushed commit is checked out as data (the reviewer never runs its code).
-# A main head (Hotfix: / Train-Merge:) is titled `recheck <sha>`, a dev/devfix head `review <sha>`.
+# A main head (Hotfix: / Train-Merge: / Review-Fix-Of:) is titled `recheck <sha>`, a dev/devfix head `review <sha>`.
 #
 # Runners (GitHub-hosted minutes are not paid): `tests` on instabox-discord-ai-terminal (InstaBox VM
 # sandbox; no unreviewed code runs on cx43, where the bot runs), `review` + `status` on
@@ -35,7 +35,8 @@ env:
 
 jobs:
   # main's check list over the pushed sha. Runs for dev, devfix/* (a review fix lands on its tests
-  # alone) and the main heads that did not come from a reviewed dev sha (Hotfix:, Train-Merge:).
+  # alone) and the main heads that did not come from a reviewed dev sha (Hotfix:, Train-Merge:, and a
+  # Review-Fix-Of: head — a fix that landed on its tests alone and gets its review here).
   # A plain fast-forward of main to a reviewed dev sha is not tested again (its review run was).
   #
   # The checks: bun install (frozen lockfile), tsc over src/ (tsconfig.ci.json), a bun build of
@@ -47,7 +48,7 @@ jobs:
     if: >-
       github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt == 1 &&
       (github.event.workflow_run.head_branch == 'dev' || startsWith(github.event.workflow_run.head_branch, 'devfix/') ||
-       (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: '))))
+       (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: ') || contains(github.event.workflow_run.head_commit.message, 'Review-Fix-Of: '))))
     # Unreviewed code runs only on the InstaBox VM, and there never as the runner's own identity: every
     # candidate command runs as a THROWAWAY user created for this job (datci<run id>: not in the docker or
     # sudo group, its own home/TMPDIR, no write access to any runner directory; the runner dirs are 0750),
@@ -137,14 +138,19 @@ jobs:
 
   # Review contract (CLAUDE.md "Shipping", 11-13; scripts/ci/{hotfix-review-base,dev-review-base,review-passed}.sh):
   #  (a) main: every Hotfix: and Train-Merge: head is re-checked over EVERYTHING since the last completed main review — merge
-  #      resolutions and the tests-only dev fixes a merge brings included; ONE main reviewer at a time (job concurrency
+  #      resolutions and the tests-only dev fixes a merge brings included; a head carrying Review-Fix-Of: (a fix that
+  #      landed on its tests alone, fast-forwarded from dev or devfix/*) is re-checked the same way, so no tests-only
+  #      fix sits on main without a main review; ONE main reviewer at a time (job concurrency
   #      below: the running one finishes, only the newest waits, a superseded waiting one is cancelled and its commits
   #      ride the next range).
   #  (b) dev: everything since the last completed dev review. A range of only Review-Fix-Of: repairs of blocked reviews
   #      is a TESTS-ONLY FIX round: the blocking reviewer does not run (its step is skipped, never reported as a pass) and
   #      the attestation says kind "tests-only-fix"; review-passed.sh re-checks the repairs from the runs before it lets
   #      the fix land on its green tests; main reviews it under (a).
-  #  (c) the attestation base is the last completed review; review-passed.sh follows the chain of completed reviews.
+  #  (c) the attestation base is the last completed review that still has its attestation; review-passed.sh follows the
+  #      chain of completed reviews. "main" in the attestation is origin/main as this run saw it: the boundary a
+  #      tests-only round was judged against, used again by review-passed.sh.
+  #  (e) evidence is read only from trusted runs (scripts/ci/review-runs.sh: workflow_run, main, this file).
   #  (d) the attestation is uploaded only when this run's generating step succeeded (attest/ is cleaned first).
   #  (f) no completed main review yet → the range starts at the deployed sha (tag `deployed`), not ancient history.
   review:
@@ -153,7 +159,7 @@ jobs:
       cancel-in-progress: false
     if: >-
       github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt == 1 &&
-      (github.event.workflow_run.head_branch == 'dev' || (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: '))))
+      (github.event.workflow_run.head_branch == 'dev' || (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: ') || contains(github.event.workflow_run.head_commit.message, 'Review-Fix-Of: '))))
     runs-on: [self-hosted, a1, discord-ai-terminal-review]
     timeout-minutes: 90
     steps:
@@ -203,8 +209,10 @@ jobs:
         working-directory: candidate
         run: |
           kind=review
+          # one main boundary for this run's range scripts and its attestation
+          main=$(git rev-parse origin/main^{commit}); export DEV_REVIEW_MAIN_REF=$main
           if [ "${{ github.event.workflow_run.head_branch }}" = main ]; then
-            git show -s --format=%B HEAD | grep -qE '^(Hotfix: [^[:space:]]|Train-Merge: [0-9a-f]{40})' || { echo "main head without a Hotfix: / Train-Merge: trailer"; exit 1; }
+            git show -s --format=%B HEAD | grep -qE '^(Hotfix: [^[:space:]]|Train-Merge: [0-9a-f]{40}|Review-Fix-Of: [0-9a-f]{40})' || { echo "main head without a Hotfix: / Train-Merge: / Review-Fix-Of: trailer"; exit 1; }
             base=$(bash ../.trusted/scripts/ci/hotfix-review-base.sh HEAD)
           elif [ "${{ github.event.workflow_run.head_branch }}" = dev ]; then
             cover=$(bash ../.trusted/scripts/ci/dev-review-base.sh HEAD)
@@ -218,6 +226,7 @@ jobs:
           echo "review-kind: $kind"
           git log --oneline "$base..HEAD" | head -50
           echo "REVIEW_BASE=$base" >> "$GITHUB_ENV"
+          echo "REVIEW_MAIN=$main" >> "$GITHUB_ENV"
           echo "kind=$kind" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -233,7 +242,7 @@ jobs:
         working-directory: candidate
         run: |
           mkdir -p ../attest
-          printf '{"head":"%s","base":"%s","kind":"%s"}\n' "$(git rev-parse HEAD)" "$REVIEW_BASE" "${{ steps.range.outputs.kind }}" > ../attest/review-attestation.json
+          printf '{"head":"%s","base":"%s","kind":"%s","main":"%s"}\n' "$(git rev-parse HEAD)" "$REVIEW_BASE" "${{ steps.range.outputs.kind }}" "$REVIEW_MAIN" > ../attest/review-attestation.json
           cat ../attest/review-attestation.json
       # Review ledger: a range carrying review fixes (Review-Fix-Of: S) is re-reviewed with the findings that blocked S
       # and the fixers' Review-Disputed: trailers. Best effort; the token stays in this step (actions: read).
@@ -272,7 +281,7 @@ jobs:
     if: >-
       !cancelled() && needs.review.result != 'cancelled' &&
       github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt == 1 &&
-      (github.event.workflow_run.head_branch == 'dev' || (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: '))))
+      (github.event.workflow_run.head_branch == 'dev' || (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: ') || contains(github.event.workflow_run.head_commit.message, 'Review-Fix-Of: '))))
     runs-on: [self-hosted, a1, discord-ai-terminal-review]
     timeout-minutes: 5
     steps:
