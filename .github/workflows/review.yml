@@ -137,7 +137,7 @@ jobs:
     if: >-
       github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt == 1 &&
       (github.event.workflow_run.head_branch == 'dev' || (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: '))))
-    runs-on: [self-hosted, cx43, discord-ai-terminal-review]
+    runs-on: [self-hosted, a1, discord-ai-terminal-review]
     timeout-minutes: 90
     steps:
       - name: Status pending
@@ -231,7 +231,7 @@ jobs:
       !cancelled() &&
       github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt == 1 &&
       (github.event.workflow_run.head_branch == 'dev' || (github.event.workflow_run.head_branch == 'main' && (contains(github.event.workflow_run.head_commit.message, 'Hotfix: ') || contains(github.event.workflow_run.head_commit.message, 'Train-Merge: '))))
-    runs-on: [self-hosted, cx43, discord-ai-terminal-review]
+    runs-on: [self-hosted, a1, discord-ai-terminal-review]
     timeout-minutes: 5
     steps:
       - name: Status result
