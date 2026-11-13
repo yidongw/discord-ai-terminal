@@ -26,7 +26,8 @@ ids=$(list_runs success | jq -r --arg a "review $sha" --arg b "recheck $sha" 'se
 # "success": require the review job itself to have run its blocking step successfully.
 attest_of_kind() { # attest_of_kind <run id> → "<head> <base> <main at review time, or -> <kind>" (kind "review" when the artifact has none); 1 when no usable artifact
   local art tmpd
-  art=$(gh api "repos/$repo/actions/runs/$1/artifacts" -q '.artifacts[] | select(.name == "review-attestation" and .expired != true) | .id' | head -1)
+  # sed prints the first result while draining the producer (head can cause SIGPIPE under pipefail).
+  art=$(gh api "repos/$repo/actions/runs/$1/artifacts" -q '.artifacts[] | select(.name == "review-attestation" and .expired != true) | .id' | sed -n '1p')
   [ -n "$art" ] || return 1
   tmpd=$(mktemp -d); gh api "repos/$repo/actions/artifacts/$art/zip" > "$tmpd/a.zip" && (cd "$tmpd" && unzip -q a.zip)
   jq -r '"\(.head) \(.base) \(.main // "-") \(.kind // "review")"' "$tmpd/review-attestation.json"; rm -rf "$tmpd"
@@ -78,7 +79,7 @@ for id in $ids; do
     *) continue ;;
   esac
   if [ -n "${3:-}" ]; then
-    art=$(gh api "repos/$repo/actions/runs/$id/artifacts" -q '.artifacts[] | select(.name == "review-attestation" and .expired != true) | .id' | head -1)
+    art=$(gh api "repos/$repo/actions/runs/$id/artifacts" -q '.artifacts[] | select(.name == "review-attestation" and .expired != true) | .id' | sed -n '1p')
     # Runs made before the attestation step existed (review.yml before this change) carry no
     # artifact, so their reviewed range cannot be proven: never auto-deployable. That is a
     # one-time bootstrap: the commit that introduces the attestation is deployed by hand
