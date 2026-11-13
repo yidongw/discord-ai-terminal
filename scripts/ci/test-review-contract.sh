@@ -120,7 +120,7 @@ echo "ok (h)(e) - dev range: only trusted, attested reviews are a base"
 # (b) tests-only fix rounds
 git update-ref refs/remotes/origin/main "$P"
 S=$(c "dev change"); F=$(c "fix" "Review-Fix-Of: $S")
-reset; run 3 "review $S" success failure "$P" "" blocked; run 4 "review $F" success skipped "$S" tests-only-fix
+reset; run 3 "review $S" success failure "$P" "" blocked; ATT_MAIN=$P run 4 "review $F" success skipped "$S" tests-only-fix
 RP "$F" o/r || fail "(b) a tests-only fix of blocked S with green tests is refused: $(cat "$T/err")"
 reset; run 3 "review $S" success failure "$P" "" blocked; run 4 "review $F" failure skipped "$S" tests-only-fix
 RP "$F" o/r && fail "(b) a tests-only fix with red tests passed"
@@ -166,7 +166,9 @@ echo "ok (g) - a tests-only fix lands only where main re-checks it (merge-branch
 # (a) + (f) main ranges
 g checkout -q --detach "$P"; H1=$(c "hotfix one" "Hotfix: one" h)
 g checkout -q -b side "$S"; g checkout -q --detach "$H1"; g merge -q --no-ff -m "train merge" -m "Train-Merge: $S" side; TM=$(git rev-parse HEAD)
-H2=$(c "hotfix two" "Hotfix: two" h)
+H2=$(c "hotfix two" "Hotfix: two
+Review-Fix-Of: $TM
+Review-Fix-Of: $H1" h)
 base() { bash "$CI/hotfix-review-base.sh" "$@" 2>/dev/null; }
 reset; run 6 "recheck $H1" success success "$P"
 [ "$(base "$H2")" = "$H1" ] || fail "(a) main range after a merge does not start at the last completed main review H1 (got $(base "$H2"))"
@@ -197,6 +199,8 @@ reset; git tag -f deployed "$H1" >/dev/null
 git tag -d deployed >/dev/null
 [ "$(base "$H2")" = "$TM" ] || fail "(f) no completed review and no deployed tag: not the parent"
 echo "ok (a)(e)(f)(h) - main: since the last completed, trusted, attested review (merges not skipped; every page; whole log); first run: the deployed sha"
+
+bash "$CI/test-review-regressions.sh" || fail "supplemental coverage/boundary regressions"
 
 # (a)(b)(d) review.yml wiring (needs PyYAML; the InstaBox test VM has none — checked where it exists)
 done_() { [ "$FAILS" = 0 ] || { echo "$FAILS check(s) failed" >&2; exit 1; }; echo "all passed"; exit 0; }

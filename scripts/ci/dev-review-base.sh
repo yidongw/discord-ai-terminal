@@ -47,6 +47,7 @@ DEPTH=${REVIEW_BASE_DEPTH:-80}
 api() { curl -fsSL -m 30 -H "Authorization: Bearer ${GH_TOKEN:-}" -H "Accept: application/vnd.github+json" "$API/repos/$REPO/$1"; }
 review_api() { api "$1"; }
 . "$(dirname "${BASH_SOURCE[0]}")/review-runs.sh"   # review_runs / review_attested: the one provenance rule
+. "$(dirname "${BASH_SOURCE[0]}")/review-coverage.sh"
 
 runs=""   # "<sha> <run id>" of the trusted "review <sha>" / "recheck <sha>" runs (the API lists newest first; every page)
 load_runs() {
@@ -107,8 +108,9 @@ only_fixes() { # only_fixes <base> <head>
 
 diff_base() { # diff_base <cover base> <head>
   local b=$1 h=$2 n
-  while n=$(git rev-list --first-parent --reverse "$b..$h" | head -1) && [ -n "$n" ] && [ "$n" != "$h" ]; do
+  while n=$(git rev-list --first-parent --reverse "$b..$h" | sed -n '1p') && [ -n "$n" ] && [ "$n" != "$h" ]; do
     clean_merge "$n" && git merge-base --is-ancestor "$n^2" "$MAINREF" 2>/dev/null || break
+    review_covered "$n" "$b" "$h" || break
     b=$n
   done
   printf '%s\n' "$b"
@@ -132,8 +134,8 @@ if parent=$(git rev-parse -q --verify "$head^1^{commit}") && ! git merge-base --
       case "${v%% *}" in
         pass|blocked)
           if [ "${v%% *}" = pass ] || repaired "$c" "$head"; then
-            if ! review_attested "${v##* }"; then
-              echo "dev-review-base: the review of ${c:0:12} (run ${v##* }) has no usable attestation — not a base, its commits are reviewed again" >&2
+            if ! review_link "${v##* }" "$c" "$mb" "$head" 0; then
+              echo "dev-review-base: the review of ${c:0:12} (run ${v##* }) has no usable coverage chain — not a base, its commits are reviewed again" >&2
               continue
             fi
             if [ -z "$limit" ] || git merge-base --is-ancestor "$c" "$limit"; then base=$c; break; fi

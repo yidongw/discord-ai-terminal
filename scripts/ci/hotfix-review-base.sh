@@ -31,32 +31,20 @@ api() { curl -fsSL -m 30 -H "Authorization: Bearer ${GH_TOKEN:-}" -H "Accept: ap
 # A main review COMPLETED only when its blocking step ran to a verdict (discord-ai-terminal contract, CLAUDE.md "Shipping"):
 # the step "Review (blocking …" succeeded, or failed WITH the reviewer's "review-gate: BLOCKED #n" in the job log. A review
 # job that died in its setup or commit gates, timed out, was cancelled or skipped reviewed nothing: its commits stay in range.
-completed() { # completed <run id>
-  local jobs st jid log
-  jobs=$(api "actions/runs/$1/jobs" 2>/dev/null) || return 1
-  st=$(jq -r '[.jobs[]? | select(.name == "review") | .steps[]? | select(.name | startswith("Review (blocking")) | .conclusion][0] // ""' <<<"$jobs" 2>/dev/null)
-  case "$st" in
-    success) return 0 ;;
-    failure) jid=$(jq -r '[.jobs[]? | select(.name == "review")][0].id // empty' <<<"$jobs")
-             [ -n "$jid" ] || return 1
-             # the whole log first, then match (as dev-review-base.sh / review-passed.sh): grep -q closing the pipe at
-             # the verdict made the upstream curl / sed die of SIGPIPE under pipefail when more log followed
-             log=$(api "actions/jobs/$jid/logs" 2>/dev/null) || return 1
-             grep -qE '^([^ ]+ )?review-gate: BLOCKED #[0-9]+' <<<"$log" ;;
-    *) return 1 ;;
-  esac
-}
 review_api() { api "$1"; }
 . "$(dirname "${BASH_SOURCE[0]}")/review-runs.sh"   # review_runs / review_attested: the one provenance rule
+. "$(dirname "${BASH_SOURCE[0]}")/review-coverage.sh"
+# The same anchor used on fallback must also be reachable through every incremental base's proof.
+d=$(git rev-parse -q --verify "refs/tags/deployed^{commit}" 2>/dev/null || true)
+if [ -n "$d" ] && [ "$d" != "$head" ] && git merge-base --is-ancestor "$d" "$head"; then anchor=$d; else anchor=$parent; fi
 # "<sha> <run id>" of every trusted "recheck <sha>" run (the API lists newest first; every page)
 runs=$(review_runs | jq -r 'select(.display_title | test("^recheck [0-9a-f]{40}$")) | "\(.display_title[8:]) \(.id)"')
 base=""
 if [ -n "$runs" ]; then
   for c in $(git rev-list --first-parent -n "$DEPTH" "$parent"); do
     for id in $(awk -v c="$c" '$1 == c { print $2 }' <<<"$runs"); do
-      completed "$id" || continue
-      review_attested "$id" && { base=$c; break 2; }
-      echo "hotfix-review-base: the review of ${c:0:12} (run $id) has no usable attestation — not a base, its commits are reviewed again" >&2
+      review_link "$id" "$c" "$anchor" "$head" 0 && { base=$c; break 2; }
+      echo "hotfix-review-base: the review of ${c:0:12} (run $id) has no usable coverage chain — not a base, its commits are reviewed again" >&2
     done
   done
 fi
