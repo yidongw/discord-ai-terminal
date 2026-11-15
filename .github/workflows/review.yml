@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   sheepdog:
-    uses: yidongw/sheepdog/.github/workflows/review.yml@411ae040d3a03eda3aa58b70f28aaab1f2154468
+    uses: yidongw/sheepdog/.github/workflows/review.yml@e947a1d982ebc43ce15033aa32c8c1e4c8e0aa3f
     with:
       tests-runs-on: '["self-hosted","instabox","discord-ai-terminal-tests"]'   # back from A1 (11-12): 3 tests fail there in beforeEach, cause unknown
       review-runs-on: '["self-hosted","a1","discord-ai-terminal-review"]'
